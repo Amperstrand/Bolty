@@ -338,7 +338,7 @@ public: // Access specifier
         } else {
           Serial.println("Authentication 1 failed.");
           set_job_status_id(JOBSTATUS_ERROR);
-          // return false;
+          return job_status;
         }
         authenticated = 0;
         authenticated = nfc->ntag424_Authenticate(key_new[4], 4, 0x71);
@@ -441,6 +441,7 @@ public: // Access specifier
           Serial.println("Authentication failed.");
           success = false;
           set_job_status_id(JOBSTATUS_ERROR);
+          return job_status;
         }
         // try authenticating with the new key
         authenticated = 0;
