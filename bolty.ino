@@ -70,13 +70,10 @@ char ap_password[WIFI_AP_PASSWORD_LENGTH];
 AsyncWebServer server(80);
 const char *PARAM_CONFIG = "config";
 
-// NFC Pins
-#define PN532_SCK (17)
-#define PN532_MOSI (13)
-#define PN532_SS (15)
-#define PN532_MISO (12)
-#define PN532_RSTPD_N (2)
-// For RSTPD_N to work i had to desolder a 10k resistor between RSTPD_N and VCC
+// Hardware pin configuration — see hardware_config.h for board presets
+#include "hardware_config.h"
+// For RSTPD_N to work on TTGO, the author had to desolder a 10k pull-up
+// between RSTPD_N and VCC. This is not needed on DevKitC.
 
 #define APPS (3)
 #define APP_KEYSETUP (0)
