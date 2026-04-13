@@ -22,14 +22,16 @@
 #include "bolt.h"
 #include "gui.h"
 #include <SPI.h>
+
+#if HAS_WIFI
 #include <WiFi.h>
 #include <Wire.h>
 #include <esp_wifi.h>
+#include <qrcode_rep.h>
 #define DYNAMIC_JSON_DOCUMENT_SIZE 1024
 #include "ArduinoJson.h"
 #include "AsyncJson.h"
 #include "ESPAsyncWebSrv.h"
-//#include <WiFiClient.h>
 #include "FS.h"
 #include "SPIFFS.h"
 #include <WiFiAP.h>
@@ -37,11 +39,14 @@
 #include <ESP32-targz.h>
 #include "tarstream.h"
 #include "tardata.h"
+#endif
 
+#if HAS_WIFI
 #define WIFIMODE_AP 0
 #define WIFIMODE_STA 1
 
 #define CONFIGVERSION 1
+#endif
 
 #define WIFI_AP_PASSWORD_LENGTH 8
 
@@ -58,8 +63,7 @@ const char* http_default_password = "bolty";
 char charpool[] = {
     "qweertzunopaasdfghjkyxcvbnm-?234567890QWEERTYUOPAASDFGHJKLZXCVBNM"};
 
-// Set these to your desired credentials for WiFi AP-Mode.
-
+#if HAS_WIFI
 char *ap_ssid = "Bolty";
 #ifdef WIFI_AP_PASSWORD_STATIC
 char ap_password[] = WIFI_AP_PASSWORD_STATIC;
@@ -69,6 +73,7 @@ char ap_password[WIFI_AP_PASSWORD_LENGTH];
 
 AsyncWebServer server(80);
 const char *PARAM_CONFIG = "config";
+#endif
 
 // Hardware pin configuration — see hardware_config.h for board presets
 #include "hardware_config.h"
@@ -100,7 +105,9 @@ uint8_t app_active;
 int8_t app_next;
 uint8_t app_status;
 String SIpAddress = "Waiting for ip..";
+#if HAS_WIFI
 IPAddress myIP;
+#endif
 
 uint8_t active_bolt_config;
 sBoltConfig mBoltConfig;
@@ -125,6 +132,7 @@ struct sAppHandler {
 
 sAppHandler mAppHandler[APPS];
 
+#if HAS_WIFI
 void saveSettings() {
   char path[20];
   sprintf(path, "/settings.dat");
@@ -198,7 +206,15 @@ void loadSettings() {
   }
   dumpsettings();
 }
+#else
+void saveSettings() {}
 
+void loadSettings() {
+  memset(&mSettings, 0, sizeof(sSettings));
+}
+#endif
+
+#if HAS_WIFI
 void saveBoltConfig(uint8_t slot) {
   char path[20];
   sprintf(path, "/config%02x.dat", slot);
@@ -273,6 +289,23 @@ void importBoltConfig() {
   myFile.close();
   loadBoltConfig(active_bolt_config);
 }
+#else
+void saveBoltConfig(uint8_t slot) {
+  (void)slot;
+}
+
+void loadBoltConfig(uint8_t slot) {
+  (void)slot;
+  memset(&mBoltConfig, 0, sizeof(sBoltConfig));
+  strcpy(mBoltConfig.card_name, "*new*");
+}
+
+String exportBoltConfig() {
+  return String();
+}
+
+void importBoltConfig() {}
+#endif
 
 // Keysetup
 void app_keysetup_start() { Serial.println("app_KEYSETUP_start"); }
@@ -283,24 +316,33 @@ String app_message = default_app_message;
 void app_keysetup_loop() {
   if ((millis() - lasttime) > 200) {
     lasttime = millis();
-    tft.setFreeFont(&FreeSans9pt7b);
-    tft.setTextColor(APPRED);
-    if (bolty_hw_ready){
-      bool success = bolt.scanUID();
+    if (bolty_hw_ready) {
+      bolt.scanUID();
       app_message = bolt.getScannedUid();
     }
     if (app_message == "") {
       app_message = default_app_message;
     }
+#if HAS_DISPLAY
+    tft.setFreeFont(&FreeSans9pt7b);
+    tft.setTextColor(APPRED);
     tft.fillRect(0, -3 + (3 * 23), tft.width(), 21, APPWHITE);
+#endif
     displayTextCentered(-3 + (4 * 21), app_message);
   }
+#if HAS_WIFI
   if (!mSettings.wifi_enabled) {
     app_next = APP_BOLTBURN;
   }
+#else
+  if (app_message != default_app_message) {
+    app_next = APP_BOLTBURN;
+  }
+#endif
   delay(50);
 }
 
+#if HAS_WIFI
 String web_keysetup_processor(const String &var) {
   // Serial.println("web_keysetup_loop");
   if (var == "wallet_name")
@@ -315,6 +357,7 @@ String web_keysetup_processor(const String &var) {
     return mBoltConfig.uid;
   return processor_default(var);
 }
+#endif
 
 void app_keysetup_end() { Serial.println("app_KEYSETUP_end"); }
 
@@ -332,7 +375,7 @@ void APP_BOLTBURN_loop() {
   }
   previousMillis = millis();
   Interval = 100;
-  if (bolty_hw_ready){
+  if (bolty_hw_ready) {
     bolt.setDefautKeysCur();
     bolt.setNewKey(mBoltConfig.k0, 0);
     bolt.setNewKey(mBoltConfig.k1, 1);
@@ -346,11 +389,12 @@ void APP_BOLTBURN_loop() {
       Interval = 3000;
       dumpconfig();
     }
-  }
-  else{
+  } else {
+#if HAS_DISPLAY
     tft.setFreeFont(&FreeSans9pt7b);
     tft.setTextColor(APPRED);
     tft.fillRect(0, -3 + (3 * 23), tft.width(), 21, APPWHITE);
+#endif
     displayTextCentered(-3 + (4 * 21), "nfc hw not ready");
   }
 }
@@ -387,11 +431,13 @@ String processor_default(const String &var){
     return mBoltConfig.k3;
   if (var == "k4")
     return mBoltConfig.k4;
+#if HAS_WIFI
   if (var == "wifista")
         return String(mSettings.wifimode);
   if (var == "essid")
         if (mSettings.wifimode == WIFIMODE_STA)
                 return String(mSettings.essid);
+#endif
   /*if (var == "essid")
     //if (mSettings.wifimode == WIFIMODE_STA)
     return String(mSettings.essid);
@@ -399,12 +445,14 @@ String processor_default(const String &var){
   return String();
 }
 
+#if HAS_WIFI
 String web_burn_processor(const String &var) {
   Serial.println("web_ringsetup_loop");
   if (var == "job")
     return "Burn";
   return processor_default(var);
 }
+#endif
 void APP_BOLTBURN_end() { Serial.println("APP_BOLTBURN_end"); }
 // Ringsetup
 void APP_BOLTWIPE_start() { Serial.println("APP_BOLTWIPE_start"); }
@@ -416,7 +464,7 @@ void APP_BOLTWIPE_loop() {
   }
   previousMillis = millis();
   Interval = 100;
-  if (bolty_hw_ready){
+  if (bolty_hw_ready) {
     bolt.setDefautKeysNew();
     bolt.setCurKey(mBoltConfig.k0, 0);
     bolt.setCurKey(mBoltConfig.k1, 1);
@@ -429,30 +477,80 @@ void APP_BOLTWIPE_loop() {
       Interval = 3000;
       dumpconfig();
     }
-  }
-  else{
+  } else {
+#if HAS_DISPLAY
     tft.setFreeFont(&FreeSans9pt7b);
     tft.setTextColor(APPRED);
     tft.fillRect(0, -3 + (3 * 23), tft.width(), 21, APPWHITE);
+#endif
     displayTextCentered(-3 + (4 * 21), "nfc hw not ready");
   }
 }
 
+#if HAS_WIFI
 String web_ringwipe_processor(const String &var) {
   Serial.println("web_ringwipe_loop");
   if (var == "job")
     return "Wipe";
   return processor_default(var);
 }
+#endif
 void APP_BOLTWIPE_end() { Serial.println("APP_BOLTWIPE_end"); }
 
+#if HAS_WIFI
+bool SendQR(String input, AsyncResponseStream *response) {
+  int qrSize = 10;
+  int ec_lvl = 0;
+  int const sizes[18][4] = {
+      {17, 14, 11, 7},   {32, 26, 20, 14},  {53, 42, 32, 24},
+      {78, 62, 46, 34},  {106, 84, 60, 44}, {134, 106, 74, 58},
+      {154, 122, 86, 64}, {192, 152, 108, 84}, {230, 180, 130, 98},
+      {271, 213, 151, 119}, {321, 251, 177, 137}, {367, 287, 203, 155},
+      {425, 331, 241, 177}, {458, 362, 258, 194}, {520, 412, 292, 220},
+      {586, 450, 322, 250}, {644, 504, 364, 280},
+  };
+
+  int len = input.length();
+  for (int ii = 0; ii < 17; ii++) {
+    qrSize = ii + 1;
+    if (sizes[ii][ec_lvl] > len) {
+      break;
+    }
+  }
+
+  Serial.printf("len = %d, ec_lvl = %d, qrSize = %d\n", len, ec_lvl, qrSize);
+
+  QRCode qrcode;
+  uint8_t qrcodeData[qrcode_getBufferSize(qrSize)];
+  qrcode_initText(&qrcode, qrcodeData, qrSize, ec_lvl, input.c_str());
+
+  Serial.printf("saw qr mode = %d\n", qrcode.mode);
+
+  for (uint8_t y = 0; y < qrcode.size; y++) {
+    for (uint8_t x = 0; x < qrcode.size; x++) {
+      response->print(qrcode_getModule(&qrcode, x, y) ? "\u2588\u2588" : "  ");
+    }
+    response->print("<br/>");
+  }
+  return true;
+}
+#endif
+
 uint8_t lineh = 21;
+
+#if HAS_DISPLAY
 void update_screen() {
   tft.fillScreen(fromrgb(0xed, 0xef, 0xf2));
   int8_t ofs = -3;
   tft.fillRect(0, 0, tft.width(), 23, mAppHandler[app_active].app_bgcolor);
+#if HAS_BATTERY
   draw_battery(true);
+#endif
+#if HAS_WIFI
   draw_wifi(mSettings.wifi_enabled);
+#else
+  draw_wifi(false);
+#endif
 
   tft.setFreeFont(&FreeSans9pt7b);
   tft.setTextColor(APPWHITE);
@@ -461,8 +559,8 @@ void update_screen() {
   displayTextCentered(ofs + (2 * lineh), String(active_bolt_config + 1) + ". " +
                                              mBoltConfig.card_name);
   displayTextCentered(ofs + (3 * lineh), mAppHandler[app_active].app_desc);
+#if HAS_WIFI
   if (mSettings.wifi_enabled) {
-    // displayTextLeft(ofs + (4 * lineh), "WiFi");
     if (mSettings.wifimode == WIFIMODE_AP) {
       displayTextLeft(ofs + (5 * lineh),
                       "WiFi " + String(ap_ssid) + ":" + String(ap_password));
@@ -470,10 +568,17 @@ void update_screen() {
     SIpAddress = getIpAddress();
     displayTextLeft(ofs + (6 * lineh), SIpAddress);
   }
+#endif
   signal_update_screen = false;
 }
+#else
+void update_screen() {
+  signal_update_screen = false;
+}
+#endif
 
 void handle_events() {
+#if HAS_BUTTONS
   // Button 0 short clicky = next keyset
   if ((sharedvars.appbuttons[0] == 1) && (app_active != APP_KEYSETUP)) {
     // we dont want to interrupt anything done with keyysetup
@@ -518,13 +623,19 @@ void handle_events() {
   // reset button events
   sharedvars.appbuttons[0] = 0;
   sharedvars.appbuttons[1] = 0;
+#else
+  sharedvars.appbuttons[0] = 0;
+  sharedvars.appbuttons[1] = 0;
+#endif
 }
 
 void app_stateengine() {
   handle_events();
+#if HAS_DISPLAY
   if (signal_update_screen){
       update_screen();
   }
+#endif
   if (signal_restart_delayed > 0){
     delay(3000);
     ESP.restart();
@@ -545,11 +656,19 @@ void app_stateengine() {
   if (app_status == APP_STATUS_START) {
     (*mAppHandler[app_active].app_start)();
     app_status = APP_STATUS_LOOP;
+#if HAS_DISPLAY
     update_screen();
+#endif
   }
   if (app_status == APP_STATUS_LOOP) {
+#if HAS_BATTERY
     draw_battery();
+#endif
+#if HAS_WIFI
     draw_wifi(mSettings.wifi_enabled);
+#elif HAS_DISPLAY
+    draw_wifi(false);
+#endif
     (*mAppHandler[app_active].app_loop)();
   }
   if (app_status == APP_STATUS_END) {
@@ -586,6 +705,7 @@ void dumpsettings() {
   Serial.println(mSettings.http_password);
 }
 
+#if HAS_WIFI
 void checkparams(AsyncWebServerRequest *request) {
   if (request->hasParam("d")) {
     AsyncWebParameter *p = request->getParam("d");
@@ -604,6 +724,7 @@ void checkparams(AsyncWebServerRequest *request) {
   }
   Serial.println(active_bolt_config);
 }
+#endif
 
 void empty() {
   //
@@ -619,6 +740,7 @@ void randomchar(char *outbuf, uint8_t count) {
   outbuf[count] = 0;
 }
 
+#if HAS_WIFI
 String getIpAddress() {
   if (mSettings.wifimode == WIFIMODE_AP)
     myIP = WiFi.softAPIP();
@@ -700,6 +822,17 @@ void wifi_toogle() {
     wifi_start();
   }
 }
+#else
+String getIpAddress() {
+  return String("WiFi disabled");
+}
+
+void wifi_start() { Serial.println("WiFi disabled (headless mode)"); }
+
+void wifi_stop() {}
+
+void wifi_toogle() {}
+#endif
 
 void nfc_start() {
   Serial.println("switching nfc on");
@@ -712,6 +845,7 @@ void nfc_stop() {
 }
 
 // handles uploads
+#if HAS_WIFI
 void handleUpload(AsyncWebServerRequest *request, String filename, size_t index,
                   uint8_t *data, size_t len, bool final) {
   String logmessage = "Client:" + request->client()->remoteIP().toString() +
@@ -744,13 +878,20 @@ void handleUpload(AsyncWebServerRequest *request, String filename, size_t index,
     request->redirect("/");
   }
 }
+#endif
 
 void setup(void) {
   Serial.begin(115200);
   while (!Serial)
     delay(10); // for Leonardo/Micro/Zero
-  // setup tft display
+
   setup_display();
+
+#if !HAS_DISPLAY
+  Serial.println("=== Bolty Headless Mode ===");
+#endif
+
+#if HAS_WIFI
   // Initialize SPIFFS
   if (!tarGzFS.begin()) {
     Serial.println("An Error has occurred while mounting SPIFFS");
@@ -778,7 +919,8 @@ void setup(void) {
     displayMessage("updating...", 0);
     extractfiles();
   }
-  
+#endif
+
   displayMessage("setup nfc", 0);
   pinMode(PN532_RSTPD_N, OUTPUT);
   nfc_start();
@@ -814,6 +956,8 @@ void setup(void) {
   // initialize the bolt configurations
   active_bolt_config = 0;
   loadBoltConfig(active_bolt_config);
+
+#if HAS_WIFI
   Serial.println("Loading settings...");
   displayMessage("load settings", 0);
   loadSettings();
@@ -1027,6 +1171,9 @@ void setup(void) {
     Serial.println(SIpAddress);
   }
   Serial.println("Server started");
+#else
+  Serial.println("Headless mode ready. Type 'help' for commands.");
+#endif
 }
 
 void loop(void) {

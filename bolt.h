@@ -194,6 +194,7 @@ public: // Access specifier
 
   void set_job_status_id(uint8_t new_status) {
     job_status = new_status;
+#if HAS_DISPLAY
     uint16_t statcolor = APPBLACK;
     if (job_status == JOBSTATUS_ERROR) {
       statcolor = APPRED;
@@ -210,6 +211,10 @@ public: // Access specifier
     tft.fillRect(0, -3 + (3 * 23), tft.width(), 21, statcolor);
     displayTextCentered(-3 + (4 * 21), get_job_status());
     tft.setTextColor(APPBLACK);
+#else
+    Serial.print("[status] ");
+    Serial.println(get_job_status());
+#endif
   }
 
   long lastscan = 0;
