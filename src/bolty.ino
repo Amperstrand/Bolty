@@ -1222,6 +1222,10 @@ void serial_print_help() {
   Serial.println(F("  ndef              Read NDEF message (no auth needed)"));
   Serial.println(F("  auth              Test k0 authentication (tap card)"));
   Serial.println(F("  ver               GetVersion + NTAG424 check (tap card)"));
+  Serial.println(F("  --- Safety / Testing ---"));
+  Serial.println(F("  check             Auth with factory zero keys (confirm card is blank)"));
+  Serial.println(F("  dummyburn         Burn with zero keys + dummy URL (test write path)"));
+  Serial.println(F("  reset             Wipe from zero keys to zero keys (test wipe path)"));
   Serial.println();
 }
 
@@ -1453,6 +1457,81 @@ void handle_serial_command(String cmd) {
     } while (result == JOBSTATUS_WAITING);
     Serial.print(F("[wipe] ")); Serial.println(bolt.get_job_status());
     Serial.println(result == JOBSTATUS_DONE ? F("[wipe] SUCCESS") : F("[wipe] FAILED"));
+    led_blink(result == JOBSTATUS_DONE ? 3 : 5, 100);
+    serial_cmd_active = false;
+  }
+  else if (cmd == "check") {
+    if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
+    Serial.println(F("[check] Tap card now..."));
+    serial_cmd_active = true;
+    led_on();
+    bolt.setDefautKeysCur();
+    Serial.print(F("[check] Using zero key: "));
+    for (int i = 0; i < 16; i++) { if (bolt.key_cur[0][i] < 0x10) Serial.print("0"); Serial.print(bolt.key_cur[0][i], HEX); }
+    Serial.println();
+    unsigned long t0 = millis();
+    bool found = false;
+    do {
+      uint8_t uid[7] = {0};
+      uint8_t uidLen;
+      found = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, 100);
+      if (found) {
+        Serial.print(F("[check] UID: "));
+        bolt.nfc->PrintHex(uid, uidLen);
+      }
+      if (millis() - t0 > 15000) { Serial.println(F("[check] TIMEOUT")); serial_cmd_active = false; return; }
+    } while (!found);
+    delay(50);
+    uint8_t result = bolt.nfc->ntag424_Authenticate(bolt.key_cur[0], 0, 0x71);
+    Serial.println(result == 1 ? F("[check] SUCCESS — card has factory zero keys") : F("[check] FAILED — card does NOT have factory keys"));
+    led_blink(result == 1 ? 3 : 5, 100);
+    serial_cmd_active = false;
+  }
+  else if (cmd == "dummyburn") {
+    if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
+    Serial.println(F("[dummyburn] Tap card now..."));
+    serial_cmd_active = true;
+    led_on();
+    bolt.setDefautKeysCur();
+    bolt.setDefautKeysNew();
+    String lnurl = "https://dummy.test";
+    uint8_t result;
+    unsigned long t0 = millis();
+    do {
+      while (Serial.available()) Serial.read();
+      result = bolt.burn(lnurl);
+      if (millis() - t0 > 30000) {
+        Serial.println(F("[dummyburn] TIMEOUT — no card detected in 30s"));
+        serial_cmd_active = false;
+        return;
+      }
+    } while (result == JOBSTATUS_WAITING);
+    Serial.print(F("[dummyburn] ")); Serial.println(bolt.get_job_status());
+    Serial.println(result == JOBSTATUS_DONE ? F("[dummyburn] SUCCESS") : F("[dummyburn] FAILED"));
+    if (result == JOBSTATUS_DONE) Serial.println(F("[dummyburn] Card has dummy data — run 'reset' to wipe"));
+    led_blink(result == JOBSTATUS_DONE ? 3 : 5, 100);
+    serial_cmd_active = false;
+  }
+  else if (cmd == "reset") {
+    if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
+    Serial.println(F("[reset] Tap card now..."));
+    serial_cmd_active = true;
+    led_on();
+    bolt.setDefautKeysCur();
+    bolt.setDefautKeysNew();
+    uint8_t result;
+    unsigned long t0 = millis();
+    do {
+      while (Serial.available()) Serial.read();
+      result = bolt.wipe();
+      if (millis() - t0 > 30000) {
+        Serial.println(F("[reset] TIMEOUT — no card detected in 30s"));
+        serial_cmd_active = false;
+        return;
+      }
+    } while (result == JOBSTATUS_WAITING);
+    Serial.print(F("[reset] ")); Serial.println(bolt.get_job_status());
+    Serial.println(result == JOBSTATUS_DONE ? F("[reset] SUCCESS — card wiped to factory defaults") : F("[reset] FAILED"));
     led_blink(result == JOBSTATUS_DONE ? 3 : 5, 100);
     serial_cmd_active = false;
   }
