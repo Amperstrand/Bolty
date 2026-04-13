@@ -1176,7 +1176,144 @@ void setup(void) {
 #endif
 }
 
+#if !HAS_WIFI
+
+void serial_print_help() {
+  Serial.println();
+  Serial.println(F("=== Bolty Headless Mode ==="));
+  Serial.println(F("Commands:"));
+  Serial.println(F("  help              Show this help"));
+  Serial.println(F("  uid               Scan card and print UID"));
+  Serial.println(F("  status            Print current config and status"));
+  Serial.println(F("  keys <k0> <k1> <k2> <k3> <k4>  Set 5 keys (32-char hex each)"));
+  Serial.println(F("  url <lnurl>        Set LNURL for burn"));
+  Serial.println(F("  burn              Burn card (tap card, uses keys+url)"));
+  Serial.println(F("  wipe              Wipe card (tap card, uses keys)"));
+  Serial.println();
+}
+
+void serial_print_status() {
+  Serial.println();
+  Serial.print(F("  NFC HW: ")); Serial.println(bolty_hw_ready ? F("ready") : F("NOT ready"));
+  Serial.print(F("  Last UID: ")); Serial.println(bolt.getScannedUid());
+  Serial.print(F("  Job: ")); Serial.println(bolt.get_job_status());
+  Serial.print(F("  Card: ")); Serial.println(mBoltConfig.card_name);
+  Serial.print(F("  LNURL: ")); Serial.println(mBoltConfig.url);
+  Serial.print(F("  k0: ")); Serial.println(mBoltConfig.k0);
+  Serial.print(F("  k1: ")); Serial.println(mBoltConfig.k1);
+  Serial.print(F("  k2: ")); Serial.println(mBoltConfig.k2);
+  Serial.print(F("  k3: ")); Serial.println(mBoltConfig.k3);
+  Serial.print(F("  k4: ")); Serial.println(mBoltConfig.k4);
+  Serial.println();
+}
+
+void handle_serial_command(String cmd) {
+  cmd.trim();
+  if (cmd.length() == 0) return;
+
+  if (cmd == "help") {
+    serial_print_help();
+  }
+  else if (cmd == "uid") {
+    Serial.println(F("[cmd] Scanning for card..."));
+    if (bolty_hw_ready) {
+      if (bolt.scanUID()) {
+        Serial.print(F("[uid] ")); Serial.println(bolt.getScannedUid());
+        Serial.print(F("[ntag424] "));
+        Serial.println(bolt.nfc->ntag424_isNTAG424() ? "YES" : "NO");
+      } else {
+        Serial.println(F("[uid] No card detected"));
+      }
+    } else {
+      Serial.println(F("[error] NFC hardware not ready"));
+    }
+  }
+  else if (cmd == "status") {
+    serial_print_status();
+  }
+  else if (cmd.startsWith("keys ")) {
+    String args = cmd.substring(5);
+    int s1 = args.indexOf(' ');
+    int s2 = args.indexOf(' ', s1 + 1);
+    int s3 = args.indexOf(' ', s2 + 1);
+    int s4 = args.indexOf(' ', s3 + 1);
+    if (s1 < 0 || s2 < 0 || s3 < 0 || s4 < 0) {
+      Serial.println(F("[error] Usage: keys <k0> <k1> <k2> <k3> <k4>"));
+      return;
+    }
+    String k0 = args.substring(0, s1);
+    String k1 = args.substring(s1 + 1, s2);
+    String k2 = args.substring(s2 + 1, s3);
+    String k3 = args.substring(s3 + 1, s4);
+    String k4 = args.substring(s4 + 1);
+    if (k0.length() != 32 || k1.length() != 32 || k2.length() != 32 ||
+        k3.length() != 32 || k4.length() != 32) {
+      Serial.println(F("[error] Each key must be exactly 32 hex chars"));
+      return;
+    }
+    strncpy(mBoltConfig.k0, k0.c_str(), 33);
+    strncpy(mBoltConfig.k1, k1.c_str(), 33);
+    strncpy(mBoltConfig.k2, k2.c_str(), 33);
+    strncpy(mBoltConfig.k3, k3.c_str(), 33);
+    strncpy(mBoltConfig.k4, k4.c_str(), 33);
+    Serial.println(F("[keys] Keys set"));
+    Serial.print(F("  k0: ")); Serial.println(k0);
+    Serial.print(F("  k4: ")); Serial.println(k4);
+  }
+  else if (cmd.startsWith("url ")) {
+    String url = cmd.substring(4);
+    url.trim();
+    if (url.length() == 0) {
+      Serial.println(F("[error] Usage: url <lnurl>"));
+      return;
+    }
+    strncpy(mBoltConfig.url, url.c_str(), sizeof(mBoltConfig.url));
+    Serial.print(F("[url] Set to: ")); Serial.println(url);
+  }
+  else if (cmd == "burn") {
+    if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
+    if (strlen(mBoltConfig.url) == 0) { Serial.println(F("[error] No LNURL. Use: url <lnurl>")); return; }
+    if (strlen(mBoltConfig.k0) == 0) { Serial.println(F("[error] No keys. Use: keys <k0> <k1> <k2> <k3> <k4>")); return; }
+    Serial.println(F("[burn] Tap card now..."));
+    bolt.setDefautKeysCur();
+    bolt.setNewKey(mBoltConfig.k0, 0);
+    bolt.setNewKey(mBoltConfig.k1, 1);
+    bolt.setNewKey(mBoltConfig.k2, 2);
+    bolt.setNewKey(mBoltConfig.k3, 3);
+    bolt.setNewKey(mBoltConfig.k4, 4);
+    uint8_t result = bolt.burn(String(mBoltConfig.url));
+    Serial.print(F("[burn] ")); Serial.println(bolt.get_job_status());
+    Serial.println(result == JOBSTATUS_DONE ? F("[burn] SUCCESS") : F("[burn] FAILED"));
+  }
+  else if (cmd == "wipe") {
+    if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
+    if (strlen(mBoltConfig.k0) == 0) { Serial.println(F("[error] No keys. Use: keys <k0> <k1> <k2> <k3> <k4>")); return; }
+    Serial.println(F("[wipe] Tap card now..."));
+    bolt.setDefautKeysNew();
+    bolt.setCurKey(mBoltConfig.k0, 0);
+    bolt.setCurKey(mBoltConfig.k1, 1);
+    bolt.setCurKey(mBoltConfig.k2, 2);
+    bolt.setCurKey(mBoltConfig.k3, 3);
+    bolt.setCurKey(mBoltConfig.k4, 4);
+    uint8_t result = bolt.wipe();
+    Serial.print(F("[wipe] ")); Serial.println(bolt.get_job_status());
+    Serial.println(result == JOBSTATUS_DONE ? F("[wipe] SUCCESS") : F("[wipe] FAILED"));
+  }
+  else {
+    Serial.print(F("[error] Unknown: ")); Serial.println(cmd);
+  }
+}
+
+#endif
+
 void loop(void) {
+
+#if !HAS_WIFI
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    handle_serial_command(cmd);
+  }
+#endif
 
   app_stateengine();
 
