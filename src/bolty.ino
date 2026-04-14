@@ -1222,6 +1222,7 @@ void serial_print_help() {
   Serial.println(F("  ndef              Read NDEF message (no auth needed)"));
   Serial.println(F("  auth              Test k0 authentication (tap card)"));
   Serial.println(F("  ver               GetVersion + NTAG424 check (tap card)"));
+  Serial.println(F("  keyver            Read key versions (blank/provisioned check, tap card)"));
   Serial.println(F("  --- Safety / Testing ---"));
   Serial.println(F("  check             Auth with factory zero keys (confirm card is blank)"));
   Serial.println(F("  dummyburn         Burn with zero keys + dummy URL (test write path)"));
@@ -1242,6 +1243,70 @@ void serial_print_status() {
   Serial.print(F("  k3: ")); Serial.println(mBoltConfig.k3);
   Serial.print(F("  k4: ")); Serial.println(mBoltConfig.k4);
   Serial.println();
+}
+
+// GetKeyVersion — plain commode, requires ISOSelectFileByDFN first.
+// Returns the version byte for the given key (0-4), or 0xFF on error.
+//
+// Key version semantics (NXP NTAG424 DNA, AN12195):
+//   - Per-key version byte stored on the card (keys 0-4 each have their own)
+//   - Factory default: 0x00 for all keys
+//   - Set by the ChangeKey APDU — the card stores whatever byte is sent
+//   - Does NOT auto-increment; it's a write-once-per-change value
+//   - Used to detect if keys have been changed from factory defaults
+//   - The Adafruit library hardcodes version 0x01 in ntag424_ChangeKey()
+//     (line 2356: `uint8_t keyversion[1] = {0x01}`), so every burn/reset
+//     cycle sets version to 0x01 — it will never reach 0x02, 0x03, etc.
+//   - Official apps (bolt-nfc-android-app) pass keyVersion as a parameter
+//     and use it to detect provisioning state: 0x00 = blank, != 0x00 = provisioned
+//   - APDU: `90 64 00 00 01 {keyNo} 00` — PLAIN commode, no auth needed
+//
+// Practical implications for our firmware:
+//   - After factory reset: all keys at 0x00
+//   - After our dummyburn/reset: all keys at 0x01 (not 0x00)
+//   - keyver command checks these versions to determine card state
+//   - Pre-burn guard rejects if key 1 version != 0x00
+uint8_t ntag424_getKeyVersion(Adafruit_PN532 *nfc, uint8_t keyno) {
+  uint8_t dfn[] = {0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01};
+  nfc->ntag424_ISOSelectFileByDFN(dfn);
+  uint8_t cla[] = {0x90};
+  uint8_t ins[] = {0x64};
+  uint8_t p1[] = {0x00};
+  uint8_t p2[] = {0x00};
+  uint8_t cmd_header[] = {keyno};
+  uint8_t result[16];
+  int len = nfc->ntag424_apdu_send(cla, ins, p1, p2,
+      cmd_header, sizeof(cmd_header), NULL, 0, 0,
+      NTAG424_COMM_MODE_PLAIN, result, sizeof(result));
+  if (len >= 1) return result[0];
+  return 0xFF;
+}
+
+const char* ntag424_error_name(uint8_t sw1, uint8_t sw2) {
+  if (sw1 == 0x91) {
+    switch (sw2) {
+      case 0x00: return "OK";
+      case 0xAE: return "AUTHENTICATION_ERROR";
+      case 0xBE: return "BOUNDARY_ERROR";
+      case 0xEE: return "MEMORY_ERROR";
+      case 0x1E: return "INTEGRITY_ERROR";
+      case 0x7E: return "LENGTH_ERROR";
+      case 0x9D: return "PERMISSION_DENIED";
+      case 0xCA: return "COMMAND_ABORTED";
+      default:   return "UNKNOWN_ERROR";
+    }
+  }
+  if (sw1 == 0x69) {
+    switch (sw2) {
+      case 0x82: return "SECURITY_STATUS_NOT_SATISFIED";
+      case 0x85: return "CONDITIONS_NOT_SATISFIED";
+      case 0x88: return "REF_DATA_INVALID";
+      default:   return "UNKNOWN_ERROR";
+    }
+  }
+  if (sw1 == 0x6A && sw2 == 0x82) return "FILE_NOT_FOUND";
+  if (sw1 == 0x6A && sw2 == 0x86) return "INCORRECT_P1_P2";
+  return "UNKNOWN_ERROR";
 }
 
 void handle_serial_command(String cmd) {
@@ -1419,8 +1484,7 @@ void handle_serial_command(String cmd) {
     unsigned long t0 = millis();
     do {
       while (Serial.available()) Serial.read();
-      String lnurl = String(mBoltConfig.url);
-      result = bolt.burn(lnurl);
+      result = bolt.burn(String(mBoltConfig.url));
       if (millis() - t0 > 30000) {
         Serial.println(F("[burn] TIMEOUT — no card detected in 30s"));
         serial_cmd_active = false;
@@ -1429,6 +1493,18 @@ void handle_serial_command(String cmd) {
     } while (result == JOBSTATUS_WAITING);
     Serial.print(F("[burn] ")); Serial.println(bolt.get_job_status());
     Serial.println(result == JOBSTATUS_DONE ? F("[burn] SUCCESS") : F("[burn] FAILED"));
+    if (result == JOBSTATUS_DONE) {
+      // Verify: read back NDEF
+      uint8_t ndef_buf[256];
+      int ndef_len = bolt.nfc->ntag424_ISOReadFile(ndef_buf, sizeof(ndef_buf));
+      if (ndef_len > 0) {
+        Serial.print(F("[burn] VERIFY — NDEF readback OK ("));
+        Serial.print(ndef_len);
+        Serial.println(F(" bytes)"));
+      } else {
+        Serial.println(F("[burn] VERIFY — NDEF readback FAILED"));
+      }
+    }
     led_blink(result == JOBSTATUS_DONE ? 3 : 5, 100);
     serial_cmd_active = false;
   }
@@ -1458,6 +1534,51 @@ void handle_serial_command(String cmd) {
     Serial.print(F("[wipe] ")); Serial.println(bolt.get_job_status());
     Serial.println(result == JOBSTATUS_DONE ? F("[wipe] SUCCESS") : F("[wipe] FAILED"));
     led_blink(result == JOBSTATUS_DONE ? 3 : 5, 100);
+    serial_cmd_active = false;
+  }
+  else if (cmd == "keyver") {
+    if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
+    Serial.println(F("[keyver] Tap card now..."));
+    serial_cmd_active = true;
+    led_on();
+    unsigned long t0 = millis();
+    bool found = false;
+    do {
+      uint8_t uid[7] = {0};
+      uint8_t uidLen;
+      found = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, 100);
+      if (found) {
+        Serial.print(F("[keyver] UID: "));
+        bolt.nfc->PrintHex(uid, uidLen);
+      }
+      if (millis() - t0 > 15000) { Serial.println(F("[keyver] TIMEOUT")); serial_cmd_active = false; return; }
+    } while (!found);
+    delay(50);
+    bool all_zero = true;
+    for (int k = 0; k < 5; k++) {
+      uint8_t kv = ntag424_getKeyVersion(bolt.nfc, k);
+      Serial.print(F("[keyver] Key "));
+      Serial.print(k);
+      Serial.print(F(" version: 0x"));
+      if (kv < 0x10) Serial.print(F("0"));
+      Serial.print(kv, HEX);
+      if (kv == 0x00) {
+        Serial.println(F(" (factory default)"));
+      } else if (kv == 0xFF) {
+        Serial.print(F(" (ERROR: "));
+        Serial.print(ntag424_error_name(0x91, 0xAE));
+        Serial.println(F(")"));
+      } else {
+        Serial.println(F(" (changed)"));
+      }
+      if (kv != 0x00) all_zero = false;
+    }
+    if (all_zero) {
+      Serial.println(F("[keyver] Card is BLANK — factory default keys"));
+    } else {
+      Serial.println(F("[keyver] Card is PROVISIONED — keys have been set"));
+    }
+    led_blink(3, 100);
     serial_cmd_active = false;
   }
   else if (cmd == "check") {
