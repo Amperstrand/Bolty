@@ -178,23 +178,29 @@ reset             Wipe from zero keys to zero keys (test wipe path)
 | `dummyburn` | Yes | Yes (zero keys) | Burns with all-zero current keys, all-zero new keys, and dummy URL `https://dummy.test`. Tests the write path without risking real keys. 30-second timeout |
 | `reset` | Yes | Yes (zero keys) | Wipes from zero keys to zero keys. Used after dummyburn to return card to a known state. 30-second timeout |
 
-### Pre-Burn Guard Behavior
+### Pre-Burn / Pre-Wipe Guard Behavior (Bug G — FIXED in `34f6f14`)
 
-Both `burn` and `wipe` have a pre-flight check that runs before the main operation:
+Both `burn` and `wipe` have guard checks that run **inside** the card detection loop, ensuring the card actually being operated on is checked.
 
-**Burn pre-flight:**
-1. Attempts `readPassiveTargetID` with a 500ms timeout
-2. If card detected, reads key 1 version via `ntag424_getKeyVersion()`
-3. If version != 0x00, prints ABORT message and returns without burning
-4. If version == 0x00, prints "Pre-check OK" and proceeds
+**Implementation:**
+- `ntag424_getKeyVersion()` free function moved to `bolt.h` (before `class BoltDevice`) for shared access by `burn()` and `wipe()`
+- `JOBSTATUS_GUARD_REJECT` (6) added as new status constant with text "guard rejected - card not in expected state"
 
-**Wipe pre-flight:**
-1. Same 500ms scan window
-2. If card detected, reads key 1 version
-3. If version == 0x00, prints ABORT (card already has factory keys) and returns
-4. If version != 0x00, prints "Pre-check OK" and proceeds
+**Burn guard** (inside `burn()` after card detected + NTAG424 confirmed):
+1. Reads key 1 version via `ntag424_getKeyVersion(nfc, 1)`
+2. If version != 0x00 → card already provisioned → prints ABORT, sets `JOBSTATUS_GUARD_REJECT`, returns
+3. If version == 0x00 → factory keys → prints "Pre-burn check OK", proceeds
 
-**Known flaw (Bug G):** The 500ms pre-flight window is too short. If the card is not yet on the reader when the command is issued, the pre-flight silently passes without checking. The guard runs once and does not retry. The fix should move the guard logic inside the main retry loop so it checks the card that is actually about to be operated on.
+**Wipe guard** (inside `wipe()` after card detected + NTAG424 confirmed):
+1. Reads key 1 version via `ntag424_getKeyVersion(nfc, 1)`
+2. If version == 0x00 → card already has factory keys → prints ABORT, sets `JOBSTATUS_GUARD_REJECT`, returns
+3. If version != 0x00 → card was provisioned → prints "Pre-wipe check OK" with version hex, proceeds
+
+**Serial command handlers** (`bolty.ino`):
+- Both `burn` and `wipe` handlers check for `JOBSTATUS_GUARD_REJECT` after the do-while loop
+- On guard rejection: prints "[burn|wipe] ABORTED - guard rejected (card not in expected state)", blinks LED 5 times, returns
+
+**Why inside the loop (Bug G fix):** The original 500ms pre-flight ran once before the main retry loop. If no card was present in that window, the guard silently passed and the card that eventually arrived was never checked. Moving guards inside the loop ensures the actual card being operated on is validated.
 
 ### Burn Verification
 
@@ -228,27 +234,30 @@ Discovered and verified on hardware. Reads the version byte for a given key slot
 - **CommMode**: `NTAG424_COMM_MODE_PLAIN` (no authentication required)
 - **CRITICAL prerequisite**: Must call `ISOSelectFileByDFN({0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01})` first. Without this file selection, the card returns garbage data.
 - **Response**: `{version_byte, 0x91, 0x00}` (3 bytes, SW1=0x91, SW2=0x00 on success)
-- **Implementation in bolty.ino**: `ntag424_getKeyVersion()` function (line ~1250)
+- **Implementation in bolt.h**: `ntag424_getKeyVersion()` free function (before `class BoltDevice`, moved from bolty.ino in `34f6f14`)
 
-**Key version semantics (NXP AN12195, official Android app source):**
+**Key version semantics (NXP AN12195, official Android app source, updated after `ba21c78` wipe fix):**
 
 | State | Key Version Byte | Meaning |
 |-------|-----------------|---------|
 | Factory blank card | `0x00` | Keys are all zeros, card has never been provisioned |
-| After any ChangeKey | `0x01` | Key has been changed at least once |
+| After `burn` | `0x01` | Key has been changed (provisioned with static keys) |
+| After `wipe` (current firmware) | `0x00` | Wipe now explicitly passes `keyversion=0x00`, restoring factory-identical version byte |
 
 The key version is a **per-key byte** stored on the card (keys 0-4 each have their own version). It is set by the `ChangeKey` APDU and stored verbatim — **the card does NOT auto-increment it**. The version byte is whatever the sender puts in the APDU payload.
 
-The Adafruit-PN532-NTAG424 library hardcodes `0x01` in `ntag424_ChangeKey()` (Adafruit_PN532_NTAG424.cpp line 2356: `uint8_t keyversion[1] = {0x01}`). This means every call to ChangeKey — whether burning or resetting — sets the version to `0x01`, regardless of the current version on the card. The version will never reach `0x02`, `0x03`, etc. with the stock library.
+**Before `273f0ba` (library fix):** The library hardcoded `0x01` in every `ntag424_ChangeKey()` call. This meant wipe also set versions to `0x01`, making wiped cards distinguishable from factory-blank by version alone.
+
+**After `273f0ba` + `ba21c78`:** `ntag424_ChangeKey()` accepts explicit `keyversion`. Burn uses `0x01`, wipe uses `0x00`. A wiped card now has key versions `0x00` AND key values `0x00` — identical to a factory card. The `check` command (zero-key auth) still works as the definitive confirmation.
 
 The official Android app (`boltcard/bolt-nfc-android-app`, `Ntag424.js`) passes keyVersion as a parameter to `changeKey()`, giving the caller control over the value. It uses this to detect provisioning state: `keyVersion('01') != '00'` means "already provisioned."
 
-Practical implications for our firmware:
+Practical implications for our firmware (current):
 - Factory-fresh card: all key versions at `0x00`
-- After our `dummyburn` or `reset`: all key versions at `0x01` (not `0x00`)
-- `check` command authenticates with zero keys, which still works after reset because the key VALUES are zero even though the version is `0x01`
-- Pre-burn guard checks key 1 version == `0x00` to detect blank cards — this correctly blocks re-burning a card that was already burned and then reset (version `0x01`)
-- To restore version `0x00` appearance, a factory reset would be needed (NTAG424 has no software factory reset — only physical manufacturing can set `0x00`)
+- After `burn`: all key versions at `0x01`
+- After `wipe`: all key versions at `0x00` (same as factory)
+- `check` command (zero-key auth) is the definitive blank-card test
+- Pre-burn guard (checks version == `0x00`) now correctly allows re-burning a wiped card
 
 ### ChangeKey Protocol
 
@@ -264,7 +273,7 @@ Key 0 ChangeKey specifics:
 Keys 1-4 ChangeKey specifics:
 - Sends `XOR(oldKey, newKey) + KeyVersion + CRC32(newKey)`
 - The XOR means the card computes `newKey = received XOR oldKey`
-- Key version is hardcoded to `0x01` by the library
+- Key version is now a parameter to `ntag424_ChangeKey()` (default `0x01` in .h declaration). Burn passes explicit `0x01`, wipe passes explicit `0x00`.
 
 The atomic nature of ChangeKey is important: each individual key change either succeeds completely or fails completely. There is no partial key update.
 
@@ -292,7 +301,7 @@ The piccOffset and macOffset are computed dynamically based on the LNURL length:
 - `piccDataOffset = lnurl.length() + 10`
 - `sdmMacOffset = lnurl.length() + 45`
 
-For wipe, file settings are set to `{0x00, 0xE0, 0xEE}` (SDM and mirroring disabled).
+For wipe, file settings are set to `{0x40, 0xE0, 0xEE, 0x01, 0xFF, 0xFF}` (6 bytes — matches official Android app's `resetFileSettings()`). The `0x40` byte keeps the SDM option bit set, `0x01` sets SDMOptions, and `0xFF, 0xFF` disables SDM access rights.
 
 ### Error Codes
 
@@ -310,6 +319,8 @@ From the official Android app. Mapped in bolty.ino as `ntag424_error_name()` (li
 | `91 7E` | LENGTH_ERROR | Wrong data length for command |
 | `91 9D` | PERMISSION_DENIED | Insufficient access rights |
 | `91 CA` | COMMAND_ABORTED | Command was aborted |
+| `91 9E` | PARAMETER_ERROR | Invalid parameter in command |
+| `91 F0` | FILE_NOT_FOUND | DESFire-level file not found (distinct from ISO `6A 82`) |
 | `69 82` | SECURITY_STATUS_NOT_SATISFIED | Command requires authentication but none active |
 | `69 85` | CONDITIONS_NOT_SATISFIED | Pre-conditions for command not met |
 | `69 88` | REF_DATA_INVALID | Referenced data (key) is invalid |
@@ -485,7 +496,7 @@ Python/FastAPI. Open source.
 
 | UID | State | Notes |
 |-----|-------|-------|
-| `04:06:60:FA:96:73:80` | Wiped (zero keys, ver=0x01) | Full cycle test card. Used for all automated testing. |
+| `04:06:60:FA:96:73:80` | Blank (wiped, zero keys, ver=0x01) | Full cycle test card. Phone test PASSED — NFC URL with SDM parameters readable on phone. Used for all automated testing. |
 | `04:25:60:7A:8F:69:80` | Provisioned | Provisioned with unknown keys via LNbits boltcardpoc |
 | `04:33:65:FA:96:73:80` | Bricked (permanently) | Corrupted keys from library bug #3 (setkey_enc vs setkey_dec). No recovery path — confirmed from NXP AN12196: no factory reset, AppMasterKey=key0 not key14, 91 40 on key 14 attempt confirms key 14 doesn't exist as valid slot |
 
@@ -509,14 +520,15 @@ After running `reset`, `keyver` shows all key versions as `0x01`, not `0x00`. Th
 
 This means:
 - Factory blank card: all versions `0x00`
-- After our `reset`: all versions `0x01` (but key VALUES are still zero, so `check` auth succeeds)
-- The pre-burn guard (checks version == `0x00`) correctly blocks burns on reset cards — this is intentional safety behavior, not a bug
+- After our `reset` (pre-T2): all versions `0x01` (but key VALUES are still zero, so `check` auth succeeds)
+- After our `wipe` (post-T2 with `keyversion=0x00`): all versions `0x00` — identical to factory blank
+- The pre-burn guard (checks version == `0x00`) now correctly allows re-burning a wiped card
 
-### Pre-Burn Guard Flaw (Bug G)
+### Pre-Burn Guard Flaw (Bug G — FIXED)
 
-The 500ms pre-flight window in `burn` and `wipe` is too short. The guard runs once with `readPassiveTargetID(..., 500)`. If no card is present in that 500ms window, the guard silently passes without performing any check, and the main loop proceeds to wait for a card with a 30-second timeout. The card that eventually arrives is never checked.
+The 500ms pre-flight window in `burn` and `wipe` was too short. The guard ran once with `readPassiveTargetID(..., 500)`. If no card was present in that 500ms window, the guard silently passed without performing any check, and the main loop proceeded to wait for a card with a 30-second timeout. The card that eventually arrived was never checked.
 
-Fix: move the guard logic inside the main do-while loop so it runs against the card that is actually about to be operated on.
+**Fix (commit `34f6f14`):** Moved the guard logic inside the main do-while loop so it runs against the card that is actually about to be operated on. See Section 4 (Pre-Burn / Pre-Wipe Guard Behavior) for implementation details.
 
 ### Full Provisioning Cycle Test (PASS)
 
@@ -553,11 +565,28 @@ URL = "https://example.com/bolt"
 
 - **Local path**: `/home/ubuntu/src/pn532/Adafruit-PN532-NTAG424/`
 - **Remote**: `git@github.com:Amperstrand/Adafruit-PN532-NTAG424.git`
-- **Branch**: `master` (clean, fix branches deleted)
-- **HEAD**: `a4b1db7` (`fix: use write_and_read for ESP32 SPI full-duplex`)
+- **Branch**: `fix/3-setkey-enc-spi` (active hardware branch)
+- **HEAD**: `273f0ba` (`feat: add keyVersion parameter to ntag424_ChangeKey (default 0x01)`)
 - **NTAG424DEBUG**: disabled in source (line 75 of .cpp, also commented out in bolt.h)
 - **Constructor**: `Adafruit_PN532(clk, miso, mosi, ss)` — 4 args, no RST pin
 - **No patches needed** — stock upstream libraries work on ESP32 with software SPI
+
+#### `ntag424_ChangeKey` API Change (commit `273f0ba`)
+
+Signature changed to accept an explicit `keyversion` parameter:
+
+```cpp
+// Old (hardcoded 0x01):
+uint8_t ntag424_ChangeKey(uint8_t *oldkey, uint8_t *newkey, uint8_t keynumber);
+
+// New (explicit, default 0x01):
+uint8_t ntag424_ChangeKey(uint8_t *oldkey, uint8_t *newkey,
+                          uint8_t keynumber, uint8_t keyversion = 0x01);
+```
+
+- **Burn** passes `keyversion=0x01` explicitly
+- **Wipe** passes `keyversion=0x00` — so after wipe, key versions return to `0x00` (indistinguishable from factory blank)
+- This matches the official Android app's behavior (passes keyVersion as caller-controlled parameter)
 
 ### Dependencies
 
@@ -662,7 +691,7 @@ All fix branches pushed to remote Amperstrand fork. Each has proof output posted
 | D: isNTAG424() resets session | NTAG424 library line ~2597 | Known, not fixed (polling loop now disabled in headless) |
 | E: Polling loop races with serial commands | `bolty.ino` `loop()` / `app_stateengine()` | Fixed (polling loop disabled entirely in headless) |
 | F: LED assumed on GPIO2 | `hardware_config.h` | Fixed (DevKitC V4 has no user-controllable LED, LED_PIN set to -1) |
-| G: Pre-burn guard design flaw | `bolty.ino` burn() ~line 1458, wipe() ~line 1518 | Known, not fixed. 500ms pre-flight window too short, guard passes when card not yet present. Fix: move guard inside main retry loop |
+| G: Pre-burn guard design flaw | `bolty.ino` burn() ~line 1458, wipe() ~line 1518 | **FIXED** (`34f6f14`). Guards moved inside card detection loop. Now checks the actual card about to be operated on. Burn rejects if key 1 version != 0x00 (already provisioned). Wipe rejects if key 1 version == 0x00 (factory keys, nothing to wipe). Added JOBSTATUS_GUARD_REJECT (6) status code. |
 | H: `ndef` command single-poll failure | `bolty.ino` ndef handler | Fixed. After burn, `readPassiveTargetID` with 2000ms timeout fails to re-enumerate card. Fixed with retry loop (100ms per attempt, 15s overall) |
 | I: Post-burn NDEF verification fails with `69 82` | `bolty.ino` burn() post-burn verify | Fixed. After auth/key change, ISO app selection state is lost. Fixed by adding SELECT AID + SELECT E104 before ReadBinary |
 
@@ -673,18 +702,31 @@ All fix branches pushed to remote Amperstrand fork. Each has proof output posted
 Branch: `feat/headless-esp32-devkitc`
 
 ```
+34f6f14  feat: add pre-burn/pre-wipe guards inside card detection loop
+b884c83  fix: add missing NTAG424 error codes to error mapping
+ba21c78  fix: correct wipe file settings and pass explicit keyVersion
+90ddfa4  docs: add test scripts, AGENTS.md reference, and .gitignore
+92a0885  feat: paginated NDEF reads, post-burn verify, and debug flag
 3921ecb  feat: add keyver command, error mapping, and post-burn NDEF verification
-25800a6  feat: add check/dummyburn/reset safety commands for zero-key testing
 1f227a1  build: set upload port to CP2102 USB-UART bridge
-9099d22  fix: disable LED — DevKitC V4 has no user-controllable LED
-9da6745  feat: add LED feedback, ndef command, and disable polling loop in headless mode
-754a35c  fix: prevent false SUCCESS when auth fails in burn/wipe
-db96225  refactor: move source to src/ with headless and optional feature guards
-40be377  build: add PlatformIO build system with headless mode
-2d5d4c1  feat: make hardware pins configurable via hardware_config.h
+25800a6  feat: add check/dummyburn/reset safety commands for zero-key testing
 ```
 
-Working tree: **DIRTY** — Phase 2 changes uncommitted: ndef retry loop + paginated reads, post-burn verify with SELECT AID + ISOReadBinary, NTAG424DEBUG build flag in platformio.ini. Library changes uncommitted: ISOReadBinary method, uint16_t bufsize, read_len cap, GetVersion rewrite, apdu_send SPI read fix.
+Library branch `fix/3-setkey-enc-spi`:
+
+```
+273f0ba  feat: add keyVersion parameter to ntag424_ChangeKey (default 0x01)
+c8550f4  fix: add ISOReadBinary, fix GetVersion multi-frame, fix apdu_send SPI read
+a4b1db7  fix: use write_and_read for ESP32 SPI full-duplex (issue #19)
+```
+
+Working tree: **CLEAN** — All changes committed. Commits `ba21c78`, `b884c83`, `34f6f14` were added by a follow-up session on 2026-04-14 and are **not yet flashed to ESP32**. Rebuild and reflash before testing guard or wipe-keyversion behavior:
+
+```bash
+cd /home/ubuntu/src/pn532/Bolty
+rm -rf .pio/libdeps   # pick up library changes
+pio run -t upload
+```
 
 ---
 
@@ -714,24 +756,26 @@ Working tree: **DIRTY** — Phase 2 changes uncommitted: ndef retry loop + pagin
 - Zero-key cycle test passed on hardware
 - Committed as `3921ecb`
 
-**Phase 2 (Full Provisioning Cycle)**: COMPLETE.
-- Full burn->verify->ndef read->wipe->verify cycle working
+**Phase 2 (Full Provisioning Cycle)**: COMPLETE — **Phone test PASSED on 2026-04-14.**
+- Full burn→verify→ndef read→wipe→verify cycle working end-to-end
+- Phone successfully read NFC URL with SDM parameters (`?p=...&c=...`) from provisioned card
 - Static test keys (1111.../2222.../3333...)
 - Automated test: test_full_cycle.py — all 7 phases pass
-- Library fixes: ISOReadBinary, GetVersion rewrite, apdu_send SPI read, uint16_t bufsize, read_len cap
-- Firmware fixes: ndef retry loop, paginated reads, post-burn verify SELECT AID
-- Card state detection: key version + zero-key auth tiebreaker
+- Library fixes: ISOReadBinary, GetVersion rewrite, apdu_send SPI read, uint16_t bufsize, read_len cap, keyVersion parameter
+- Firmware fixes: ndef retry loop, paginated reads, post-burn verify SELECT AID, wipe file settings, pre-burn/pre-wipe guards
+- Card state detection: key version + zero-key auth tiebreaker (with new firmware: wipe returns versions to 0x00 so version alone is sufficient)
 
 ---
 
 ## 13. Remaining Work
 
-1. **Create clean commits** — atomic commits for library and firmware changes
-2. **Phone test** — manually test provisioned card on phone, then wipe
-3. **Phase 3: LNbits integration** — import card credentials JSON, SUN verification
-4. **Phase 4: WiFi mode** — ESPAsyncWebServer, remote provisioning
-5. **Phase 5: Advanced features** — random UID, SUN verification (AES-CBC decrypt with k1, AES-CMAC verify with k2, counter replay protection)
-6. **Upstream library fixes** — merge proven fixes into master. Address remaining issues (#1 MAC counter, #11 cla/ins API, #18 ReadData bypass)
+1. ~~Create clean commits~~ — DONE (library `c8550f4`, firmware `92a0885` + `90ddfa4`)
+2. ~~Phone test~~ — DONE. NFC URL with SDM parameters readable on phone. Card wiped back to blank after test.
+3. ~~Feature parity with Android app~~ — DONE (2026-04-14). 5 tasks completed: keyVersion param (T1), wipe fileSettings + keyVersion args (T2), pre-burn/pre-wipe guards (T3), 4 missing error codes (T4), 6 GitHub issues filed (T5). Commits: library `273f0ba`, firmware `ba21c78` + `b884c83` + `34f6f14`. **Not yet hardware-tested** — flash and test before using guards or wipe keyVersion in production.
+4. **Phase 3: LNbits integration** — import card credentials JSON, SUN verification
+5. **Phase 4: WiFi mode** — ESPAsyncWebServer, remote provisioning
+6. **Phase 5: Advanced features** — random UID, SUN verification (AES-CBC decrypt with k1, AES-CMAC verify with k2, counter replay protection)
+7. **Upstream library fixes** — merge proven fixes into master. Address remaining issues (#1 MAC counter, #11 cla/ins API, #18 ReadData bypass)
 
 ---
 
