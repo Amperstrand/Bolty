@@ -326,9 +326,10 @@ public: // Access specifier
           nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
                                           (uint8_t)sizeof(fileSettings),
                                           (uint8_t)NTAG424_COMM_MODE_FULL);
-          for (int i = 0; i < 5; i++) {
+
+           for (int i = 0; i < 5; i++) {
             success &=
-                nfc->ntag424_ChangeKey(key_cur[4 - i], key_new[4 - i], 4 - i);
+                nfc->ntag424_ChangeKey(key_cur[4 - i], key_new[4 - i], 4 - i, 0x01);
             if (!success) {
               Serial.print("ChangeKey error! Key: ");
               Serial.println(i);
@@ -411,7 +412,7 @@ public: // Access specifier
           int piccDataOffset = 81;
           int sdmMacOffset = 116;
 
-          uint8_t fileSettings[] = {0x00, 0xE0, 0xEE};
+          uint8_t fileSettings[] = {0x40, 0xE0, 0xEE, 0x01, 0xFF, 0xFF};
 
           nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
                                           (uint8_t)sizeof(fileSettings),
@@ -419,7 +420,7 @@ public: // Access specifier
 
           for (int i = 0; i < 5; i++) {
             success &=
-                nfc->ntag424_ChangeKey(key_cur[4 - i], key_new[4 - i], 4 - i);
+                nfc->ntag424_ChangeKey(key_cur[4 - i], key_new[4 - i], 4 - i, 0x00);
             if (!success) {
               Serial.print("ChangeKey error! Key: ");
               Serial.println(i);
