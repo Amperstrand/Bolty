@@ -1376,37 +1376,147 @@ void handle_serial_command(String cmd) {
     led_blink(result == 1 ? 3 : 5, 100);
     serial_cmd_active = false;
   }
-  else if (cmd == "ndef") {
-    if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
-    Serial.println(F("[ndef] Tap card now..."));
-    serial_cmd_active = true;
-    led_on();
-    uint8_t uid[7] = {0};
-    uint8_t uid_len = 0;
-    if (bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uid_len, 2000)) {
-      uint8_t ndef[256] = {0};
-      uint8_t len = bolt.nfc->ntag424_ISOReadFile(ndef, 256);
-      if (len > 0) {
-        Serial.print(F("[ndef] HEX ("));
-        Serial.print(len);
-        Serial.print(F(" bytes): "));
-        bolt.nfc->PrintHex(ndef, len > 128 ? 128 : len);
-        Serial.print(F("[ndef] ASCII: "));
-        for (int i = 0; i < len && i < 256; i++) {
-          Serial.write(ndef[i] >= 0x20 && ndef[i] < 0x7F ? ndef[i] : '.');
-        }
-        Serial.println();
-        led_blink(3, 100);
-      } else {
-        Serial.println(F("[ndef] No NDEF data (card may not be NTAG424)"));
-        led_blink(5, 100);
-      }
-    } else {
-      Serial.println(F("[ndef] No card detected"));
-      led_blink(5, 100);
+   // ── NDEF read using ISO-7816-4 ReadBinary ──
+   //
+   // Reads the NDEF file (E104) via ISO-7816 SELECT + READ BINARY.
+   // This works both before and after burn (with SDM enabled).
+   //
+   // Why not DESFire ReadData (0xAD)?
+   //   ReadData returns 91 9D (File Not Found) when the application
+   //   is not selected. Even with ISO select, it fails on SDM-enabled
+   //   files. Both the Bolt Android app and iOS implementations use
+   //   ISO-7816 ReadBinary instead.
+   //
+   // Why not the library's ISOReadFile?
+   //   It does GetFileSettings → SELECT → ReadBinary, but GetFileSettings
+   //   returns garbage on SDM-enabled files, causing a negative filesize
+   //   and failure.
+   //
+   // Ref: Android Ntag424.js isoReadBinary() (lines 716-745)
+   //       iOS ntag424-macos readNDEFURL() (lines 91-179)
+   //       CoreExtendedNFC Type4NDEF.readNDEF() (lines 55-114)
+   //
+   // Sequence: SELECT AID (D2760000850101) → SELECT FILE (E104) →
+   //           READ BINARY (offset=0, len=2) → READ BINARY (offset=2, len=nlen)
+   //
+    else if (cmd == "ndef") {
+     if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
+     Serial.println(F("[ndef] Tap card now..."));
+     serial_cmd_active = true;
+     led_on();
+     uint8_t uid[7] = {0};
+     uint8_t uid_len = 0;
+     unsigned long t0_ndef = millis();
+     bool found_ndef = false;
+     do {
+       found_ndef = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uid_len, 100);
+       if (millis() - t0_ndef > 15000) break;
+     } while (!found_ndef);
+     if (found_ndef) {
+       uint8_t ndef[256] = {0};
+       int len = 0;
+
+       // Select NTAG424 application + NDEF file E104
+       uint8_t dfn[] = {0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01};
+       bool sel_ok = bolt.nfc->ntag424_ISOSelectFileByDFN(dfn);
+       Serial.print(F("[ndef] SELECT AID: ")); Serial.println(sel_ok ? "OK" : "FAIL");
+       if (!sel_ok) goto ndef_fail;
+
+       bool file_ok = bolt.nfc->ntag424_ISOSelectFileById(0xE104);
+       Serial.print(F("[ndef] SELECT FILE E104: ")); Serial.println(file_ok ? "OK" : "FAIL");
+       if (!file_ok) goto ndef_fail;
+
+       // Read NLEN (first 3 bytes: 2-byte NLEN + 1 extra) at file offset 0
+       // Uses proper Case 2 APDU via ntag424_ISOReadBinary (no Lc byte).
+       // Ref: library ntag424_ISOReadFile lines 2993-3009
+       uint8_t nlen_buf[32] = {0};
+       uint8_t nlen_resp_len = bolt.nfc->ntag424_ISOReadBinary(0, 3, nlen_buf, sizeof(nlen_buf));
+       Serial.print(F("[ndef] NLEN read: ")); Serial.print(nlen_resp_len); Serial.println(F(" bytes"));
+
+       if (nlen_resp_len < 3 || nlen_buf[nlen_resp_len - 2] != 0x90 || nlen_buf[nlen_resp_len - 1] != 0x00) {
+         Serial.print(F("[ndef] NLEN read failed, SW="));
+         if (nlen_resp_len >= 2) {
+           Serial.print(nlen_buf[nlen_resp_len - 2], HEX);
+           Serial.print(nlen_buf[nlen_resp_len - 1], HEX);
+         }
+         Serial.println();
+         goto ndef_fail;
+       }
+
+       int nlen = (nlen_buf[0] << 8) | nlen_buf[1];
+       Serial.print(F("[ndef] NLEN=")); Serial.println(nlen);
+
+       if (nlen == 0 || nlen > 252) {
+         Serial.println(F("[ndef] No NDEF data (NLEN=0) or invalid NLEN"));
+         goto ndef_fail;
+       }
+
+       // Read NDEF body at file offset 2 (after NLEN) using paginated reads.
+       // PN532 pn532_packetbuffer is 64 bytes → max ~54 bytes card data per read.
+       // We read in 48-byte chunks to stay safely within limits.
+       // Ref: library ntag424_ISOReadFile() uses 32-byte pages (line ~3072-3155)
+       //
+       // File layout: [NLEN_H][NLEN_L][NDEF_record_header(5+)][URL_payload]
+       uint8_t body_buf[256] = {0};
+       int total_to_read = nlen;  // NLEN = total NDEF message length
+       int total_read = 0;
+       const int PAGE_SIZE = 48;  // safe within 64-byte pn532_packetbuffer
+       bool read_ok = true;
+
+       while (total_read < total_to_read && total_read < (int)sizeof(body_buf)) {
+         int chunk = total_to_read - total_read;
+         if (chunk > PAGE_SIZE) chunk = PAGE_SIZE;
+         if (total_read + chunk > (int)sizeof(body_buf)) chunk = sizeof(body_buf) - total_read;
+
+         uint8_t chunk_buf[56] = {0};
+         uint8_t chunk_rl = bolt.nfc->ntag424_ISOReadBinary(
+           2 + total_read, (uint8_t)chunk, chunk_buf, sizeof(chunk_buf));
+
+         if (chunk_rl < 3 || chunk_buf[chunk_rl-2] != 0x90 || chunk_buf[chunk_rl-1] != 0x00) {
+           Serial.print(F("[ndef] Body page read failed at offset "));
+           Serial.print(2 + total_read);
+           Serial.print(F(" SW="));
+           if (chunk_rl >= 2) {
+             Serial.print(chunk_buf[chunk_rl-2], HEX); Serial.print(F(" "));
+             Serial.print(chunk_buf[chunk_rl-1], HEX);
+           }
+           Serial.println();
+           read_ok = false;
+           break;
+         }
+         int data_bytes = chunk_rl - 2;  // subtract SW1 SW2
+         memcpy(body_buf + total_read, chunk_buf, data_bytes);
+         total_read += data_bytes;
+
+         Serial.print(F("[ndef] Read page: offset="));
+         Serial.print(2 + total_read - data_bytes);
+         Serial.print(F(" got=")); Serial.print(data_bytes);
+         Serial.print(F(" total=")); Serial.println(total_read);
+       }
+
+       if (!read_ok) goto ndef_fail;
+
+       len = total_read;
+       if (len > (int)sizeof(ndef)) len = sizeof(ndef);
+       memcpy(ndef, body_buf, len);
+
+       Serial.print(F("[ndef] OK (")); Serial.print(len); Serial.println(F(" bytes)"));
+       Serial.print(F("[ndef] hex: "));
+       bolt.nfc->PrintHex(ndef, len > 128 ? 128 : len);
+       Serial.print(F("[ndef] ASCII: "));
+       for (int i = 0; i < len; i++) {
+         Serial.write(ndef[i] >= 0x20 && ndef[i] < 0x7F ? ndef[i] : '.');
+       }
+       Serial.println();
+       led_blink(3, 100);
+       serial_cmd_active = false;
+     } else {
+ndef_fail:
+       Serial.println(F("[ndef] FAILED — card not detected or read error"));
+       led_blink(5, 100);
+       serial_cmd_active = false;
+     }
     }
-    serial_cmd_active = false;
-  }
   else if (cmd == "ver") {
     if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
     serial_cmd_active = true;
@@ -1493,18 +1603,65 @@ void handle_serial_command(String cmd) {
     } while (result == JOBSTATUS_WAITING);
     Serial.print(F("[burn] ")); Serial.println(bolt.get_job_status());
     Serial.println(result == JOBSTATUS_DONE ? F("[burn] SUCCESS") : F("[burn] FAILED"));
-    if (result == JOBSTATUS_DONE) {
-      // Verify: read back NDEF
-      uint8_t ndef_buf[256];
-      int ndef_len = bolt.nfc->ntag424_ISOReadFile(ndef_buf, sizeof(ndef_buf));
-      if (ndef_len > 0) {
-        Serial.print(F("[burn] VERIFY — NDEF readback OK ("));
-        Serial.print(ndef_len);
-        Serial.println(F(" bytes)"));
-      } else {
-        Serial.println(F("[burn] VERIFY — NDEF readback FAILED"));
+      if (result == JOBSTATUS_DONE) {
+        // Post-burn NDEF verification: confirm NLEN is valid and peek at first bytes.
+        // After burn, auth session changes card state — must re-select AID + file.
+        // Ref: Android bolt-nfc-android-app isoReadBinary always does
+        //      SELECT AID → SELECT FILE before ReadBinary.
+        //
+        // Note: PN532 pn532_packetbuffer is only 64 bytes, so max card data per
+        // read is ~54 bytes (64 - 8 header - 2 SW). Full NDEF readback needs
+        // pagination — use the 'ndef' command for that. Here we just sanity-check.
+        uint8_t v_dfn[] = {0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01};
+        bool v_sel1 = bolt.nfc->ntag424_ISOSelectFileByDFN(v_dfn);
+        bool v_sel2 = bolt.nfc->ntag424_ISOSelectFileById(0xE104);
+        Serial.print(F("[burn] VERIFY — SELECT AID: "));
+        Serial.println(v_sel1 ? F("OK") : F("FAIL"));
+        Serial.print(F("[burn] VERIFY — SELECT E104: "));
+        Serial.println(v_sel2 ? F("OK") : F("FAIL"));
+        if (v_sel1 && v_sel2) {
+          // Read NLEN (2 bytes) + 1 extra = 3 bytes at offset 0
+          uint8_t nlen_buf[8] = {0};
+          uint8_t nlen_rl = bolt.nfc->ntag424_ISOReadBinary(0, 3, nlen_buf, sizeof(nlen_buf));
+          if (nlen_rl >= 3 && nlen_buf[nlen_rl-2] == 0x90 && nlen_buf[nlen_rl-1] == 0x00) {
+            int nlen = (nlen_buf[0] << 8) | nlen_buf[1];
+            Serial.print(F("[burn] VERIFY — NLEN=")); Serial.println(nlen);
+            if (nlen > 0 && nlen <= 252) {
+              // Read first chunk (max 48 bytes to stay within 64-byte SPI buffer)
+              uint8_t peek_len = (nlen + 3 > 48) ? 48 : (nlen + 3);
+              uint8_t body_buf[52] = {0};
+              uint8_t body_rl = bolt.nfc->ntag424_ISOReadBinary(2, peek_len, body_buf, sizeof(body_buf));
+              if (body_rl >= 4 && body_buf[body_rl-2] == 0x90 && body_buf[body_rl-1] == 0x00) {
+                int dlen = body_rl - 2;
+                Serial.print(F("[burn] VERIFY — NDEF peek OK ("));
+                Serial.print(dlen); Serial.print(F(" of ")); Serial.print(nlen);
+                Serial.println(F(" bytes)"));
+                Serial.print(F("[burn] VERIFY — ASCII: "));
+                for (int i = 0; i < dlen; i++) {
+                  Serial.write(body_buf[i] >= 0x20 && body_buf[i] < 0x7F ? body_buf[i] : '.');
+                }
+                Serial.println();
+              } else {
+                Serial.print(F("[burn] VERIFY — NDEF body read failed SW="));
+                if (body_rl >= 2) {
+                  Serial.print(body_buf[body_rl-2], HEX); Serial.print(F(" "));
+                  Serial.print(body_buf[body_rl-1], HEX);
+                }
+                Serial.println();
+              }
+            } else {
+              Serial.println(F("[burn] VERIFY — NLEN invalid or zero"));
+            }
+          } else {
+            Serial.print(F("[burn] VERIFY — NLEN read failed SW="));
+            if (nlen_rl >= 2) {
+              Serial.print(nlen_buf[nlen_rl-2], HEX); Serial.print(F(" "));
+              Serial.print(nlen_buf[nlen_rl-1], HEX);
+            }
+            Serial.println();
+          }
+        }
       }
-    }
     led_blink(result == JOBSTATUS_DONE ? 3 : 5, 100);
     serial_cmd_active = false;
   }
