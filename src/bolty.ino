@@ -91,6 +91,10 @@ const char *PARAM_CONFIG = "config";
 
 BoltDevice bolt(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS);
 
+// Forward declarations (needed for PlatformIO — Arduino IDE auto-generates these)
+void dumpconfig();
+void dumpsettings();
+
 struct sSettings {
   char essid[33];
   char password[65];
@@ -113,6 +117,7 @@ uint8_t active_bolt_config;
 sBoltConfig mBoltConfig;
 
 bool signal_update_screen = false;
+volatile bool serial_cmd_active = false;
 int signal_restart_delayed = 0;
 
 bool bolty_hw_ready = false;
@@ -307,6 +312,21 @@ String exportBoltConfig() {
 void importBoltConfig() {}
 #endif
 
+#if LED_PIN >= 0
+void led_on() { digitalWrite(LED_PIN, LOW); }
+void led_off() { digitalWrite(LED_PIN, HIGH); }
+void led_blink(int count, int ms) {
+  for (int i = 0; i < count; i++) {
+    led_on(); delay(ms); led_off();
+    if (i < count - 1) delay(ms);
+  }
+}
+#else
+void led_on() {}
+void led_off() {}
+void led_blink(int, int) {}
+#endif
+
 // Keysetup
 void app_keysetup_start() { Serial.println("app_KEYSETUP_start"); }
 
@@ -314,7 +334,7 @@ long lasttime = 0;
 String default_app_message = "* Buttons are locked! *";
 String app_message = default_app_message;
 void app_keysetup_loop() {
-  if ((millis() - lasttime) > 200) {
+  if (!serial_cmd_active && (millis() - lasttime) > 200) {
     lasttime = millis();
     if (bolty_hw_ready) {
       bolt.scanUID();
@@ -335,9 +355,10 @@ void app_keysetup_loop() {
     app_next = APP_BOLTBURN;
   }
 #else
-  if (app_message != default_app_message) {
-    app_next = APP_BOLTBURN;
-  }
+  // Auto-advance disabled for headless serial testing
+  // if (app_message != default_app_message) {
+  //   app_next = APP_BOLTBURN;
+  // }
 #endif
   delay(50);
 }
@@ -923,11 +944,19 @@ void setup(void) {
 
   displayMessage("setup nfc", 0);
   pinMode(PN532_RSTPD_N, OUTPUT);
+#if LED_PIN >= 0
+  pinMode(LED_PIN, OUTPUT);
+  led_off();
+#endif
   nfc_start();
   bolty_hw_ready = bolt.begin();
   Serial.println("Setup done!");
   app_active = APP_KEYSETUP;
+#if HAS_WIFI
   app_next = APP_BOLTBURN;
+#else
+  app_next = APP_KEYSETUP;
+#endif
   app_status = APP_STATUS_START;
   mAppHandler[APP_KEYSETUP].app_title = "Key-Setup";
   mAppHandler[APP_KEYSETUP].app_desc = "Use a webbrowser";
@@ -1173,6 +1202,7 @@ void setup(void) {
   Serial.println("Server started");
 #else
   Serial.println("Headless mode ready. Type 'help' for commands.");
+  led_blink(bolty_hw_ready ? 2 : 5, 100);
 #endif
 }
 
@@ -1189,6 +1219,14 @@ void serial_print_help() {
   Serial.println(F("  url <lnurl>        Set LNURL for burn"));
   Serial.println(F("  burn              Burn card (tap card, uses keys+url)"));
   Serial.println(F("  wipe              Wipe card (tap card, uses keys)"));
+  Serial.println(F("  ndef              Read NDEF message (no auth needed)"));
+  Serial.println(F("  auth              Test k0 authentication (tap card)"));
+  Serial.println(F("  ver               GetVersion + NTAG424 check (tap card)"));
+  Serial.println(F("  keyver            Read key versions (blank/provisioned check, tap card)"));
+  Serial.println(F("  --- Safety / Testing ---"));
+  Serial.println(F("  check             Auth with factory zero keys (confirm card is blank)"));
+  Serial.println(F("  dummyburn         Burn with zero keys + dummy URL (test write path)"));
+  Serial.println(F("  reset             Wipe from zero keys to zero keys (test wipe path)"));
   Serial.println();
 }
 
@@ -1207,6 +1245,39 @@ void serial_print_status() {
   Serial.println();
 }
 
+// ntag424_getKeyVersion moved to bolt.h for use by burn/wipe guards
+
+const char* ntag424_error_name(uint8_t sw1, uint8_t sw2) {
+  if (sw1 == 0x91) {
+    switch (sw2) {
+      case 0x00: return "OK";
+      case 0xAE: return "AUTHENTICATION_ERROR";
+      case 0xBE: return "BOUNDARY_ERROR";
+      case 0xEE: return "MEMORY_ERROR";
+      case 0x1E: return "INTEGRITY_ERROR";
+      case 0x7E: return "LENGTH_ERROR";
+      case 0x9D: return "PERMISSION_DENIED";
+      case 0xCA: return "COMMAND_ABORTED";
+      case 0x9E: return "PARAMETER_ERROR";
+      case 0x40: return "NO_SUCH_KEY";
+      case 0xAD: return "AUTHENTICATION_DELAY";
+      case 0xF0: return "FILE_NOT_FOUND";
+      default:   return "UNKNOWN_ERROR";
+    }
+  }
+  if (sw1 == 0x69) {
+    switch (sw2) {
+      case 0x82: return "SECURITY_STATUS_NOT_SATISFIED";
+      case 0x85: return "CONDITIONS_NOT_SATISFIED";
+      case 0x88: return "REF_DATA_INVALID";
+      default:   return "UNKNOWN_ERROR";
+    }
+  }
+  if (sw1 == 0x6A && sw2 == 0x82) return "FILE_NOT_FOUND";
+  if (sw1 == 0x6A && sw2 == 0x86) return "INCORRECT_P1_P2";
+  return "UNKNOWN_ERROR";
+}
+
 void handle_serial_command(String cmd) {
   cmd.trim();
   if (cmd.length() == 0) return;
@@ -1217,20 +1288,226 @@ void handle_serial_command(String cmd) {
   else if (cmd == "uid") {
     Serial.println(F("[cmd] Scanning for card..."));
     if (bolty_hw_ready) {
+      led_on();
       if (bolt.scanUID()) {
+        led_blink(3, 100);
         Serial.print(F("[uid] ")); Serial.println(bolt.getScannedUid());
         Serial.print(F("[ntag424] "));
         Serial.println(bolt.nfc->ntag424_isNTAG424() ? "YES" : "NO");
       } else {
+        led_off();
         Serial.println(F("[uid] No card detected"));
       }
     } else {
+      led_off();
       Serial.println(F("[error] NFC hardware not ready"));
     }
   }
   else if (cmd == "status") {
     serial_print_status();
   }
+  else if (cmd == "auth") {
+    if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
+    Serial.println(F("[auth] Tap card now..."));
+    serial_cmd_active = true;
+    led_on();
+    bolt.setCurKey(String(mBoltConfig.k0), 0);
+    Serial.print(F("[auth] Trying k0: "));
+    for (int i = 0; i < 16; i++) { if (bolt.key_cur[0][i] < 0x10) Serial.print("0"); Serial.print(bolt.key_cur[0][i], HEX); }
+    Serial.println();
+    Serial.print(F("[auth] k0 bytes: "));
+    for (int i = 0; i < 16; i++) {
+      Serial.print(bolt.key_cur[0][i], DEC);
+      Serial.print(" ");
+    }
+    Serial.println();
+    unsigned long t0 = millis();
+    bool found = false;
+    do {
+      uint8_t uid[7] = {0};
+      uint8_t uidLen;
+      found = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, 100);
+      if (found) {
+        Serial.print(F("[auth] UID: "));
+        bolt.nfc->PrintHex(uid, uidLen);
+      }
+      if (millis() - t0 > 15000) { Serial.println(F("[auth] TIMEOUT")); serial_cmd_active = false; return; }
+    } while (!found);
+    delay(50);
+    Serial.println(F("[auth] About to authenticate..."));
+    uint8_t result = bolt.nfc->ntag424_Authenticate(bolt.key_cur[0], 0, 0x71);
+    Serial.print(F("[auth] ntag424_Authenticate returned: "));
+    Serial.println(result);
+    Serial.print(F("[auth] Session authenticated: "));
+    Serial.println(bolt.nfc->ntag424_Session.authenticated);
+    Serial.print(F("[auth] Result: "));
+    Serial.println(result == 1 ? "SUCCESS" : "FAILED");
+    led_blink(result == 1 ? 3 : 5, 100);
+    serial_cmd_active = false;
+  }
+   // ── NDEF read using ISO-7816-4 ReadBinary ──
+   //
+   // Reads the NDEF file (E104) via ISO-7816 SELECT + READ BINARY.
+   // This works both before and after burn (with SDM enabled).
+   //
+   // Why not DESFire ReadData (0xAD)?
+   //   ReadData returns 91 9D (File Not Found) when the application
+   //   is not selected. Even with ISO select, it fails on SDM-enabled
+   //   files. Both the Bolt Android app and iOS implementations use
+   //   ISO-7816 ReadBinary instead.
+   //
+   // Why not the library's ISOReadFile?
+   //   It does GetFileSettings → SELECT → ReadBinary, but GetFileSettings
+   //   returns garbage on SDM-enabled files, causing a negative filesize
+   //   and failure.
+   //
+   // Ref: Android Ntag424.js isoReadBinary() (lines 716-745)
+   //       iOS ntag424-macos readNDEFURL() (lines 91-179)
+   //       CoreExtendedNFC Type4NDEF.readNDEF() (lines 55-114)
+   //
+   // Sequence: SELECT AID (D2760000850101) → SELECT FILE (E104) →
+   //           READ BINARY (offset=0, len=2) → READ BINARY (offset=2, len=nlen)
+   //
+    else if (cmd == "ndef") {
+     if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
+     Serial.println(F("[ndef] Tap card now..."));
+     serial_cmd_active = true;
+     led_on();
+     uint8_t uid[7] = {0};
+     uint8_t uid_len = 0;
+     unsigned long t0_ndef = millis();
+     bool found_ndef = false;
+     do {
+       found_ndef = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uid_len, 100);
+       if (millis() - t0_ndef > 15000) break;
+     } while (!found_ndef);
+     if (found_ndef) {
+       uint8_t ndef[256] = {0};
+       int len = 0;
+
+       // Select NTAG424 application + NDEF file E104
+       uint8_t dfn[] = {0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01};
+       bool sel_ok = bolt.nfc->ntag424_ISOSelectFileByDFN(dfn);
+       Serial.print(F("[ndef] SELECT AID: ")); Serial.println(sel_ok ? "OK" : "FAIL");
+       if (!sel_ok) goto ndef_fail;
+
+       bool file_ok = bolt.nfc->ntag424_ISOSelectFileById(0xE104);
+       Serial.print(F("[ndef] SELECT FILE E104: ")); Serial.println(file_ok ? "OK" : "FAIL");
+       if (!file_ok) goto ndef_fail;
+
+       // Read NLEN (first 3 bytes: 2-byte NLEN + 1 extra) at file offset 0
+       // Uses proper Case 2 APDU via ntag424_ISOReadBinary (no Lc byte).
+       // Ref: library ntag424_ISOReadFile lines 2993-3009
+       uint8_t nlen_buf[32] = {0};
+       uint8_t nlen_resp_len = bolt.nfc->ntag424_ISOReadBinary(0, 3, nlen_buf, sizeof(nlen_buf));
+       Serial.print(F("[ndef] NLEN read: ")); Serial.print(nlen_resp_len); Serial.println(F(" bytes"));
+
+       if (nlen_resp_len < 3 || nlen_buf[nlen_resp_len - 2] != 0x90 || nlen_buf[nlen_resp_len - 1] != 0x00) {
+         Serial.print(F("[ndef] NLEN read failed, SW="));
+         if (nlen_resp_len >= 2) {
+           Serial.print(nlen_buf[nlen_resp_len - 2], HEX);
+           Serial.print(nlen_buf[nlen_resp_len - 1], HEX);
+         }
+         Serial.println();
+         goto ndef_fail;
+       }
+
+       int nlen = (nlen_buf[0] << 8) | nlen_buf[1];
+       Serial.print(F("[ndef] NLEN=")); Serial.println(nlen);
+
+       if (nlen == 0 || nlen > 252) {
+         Serial.println(F("[ndef] No NDEF data (NLEN=0) or invalid NLEN"));
+         goto ndef_fail;
+       }
+
+       // Read NDEF body at file offset 2 (after NLEN) using paginated reads.
+       // PN532 pn532_packetbuffer is 64 bytes → max ~54 bytes card data per read.
+       // We read in 48-byte chunks to stay safely within limits.
+       // Ref: library ntag424_ISOReadFile() uses 32-byte pages (line ~3072-3155)
+       //
+       // File layout: [NLEN_H][NLEN_L][NDEF_record_header(5+)][URL_payload]
+       uint8_t body_buf[256] = {0};
+       int total_to_read = nlen;  // NLEN = total NDEF message length
+       int total_read = 0;
+       const int PAGE_SIZE = 48;  // safe within 64-byte pn532_packetbuffer
+       bool read_ok = true;
+
+       while (total_read < total_to_read && total_read < (int)sizeof(body_buf)) {
+         int chunk = total_to_read - total_read;
+         if (chunk > PAGE_SIZE) chunk = PAGE_SIZE;
+         if (total_read + chunk > (int)sizeof(body_buf)) chunk = sizeof(body_buf) - total_read;
+
+         uint8_t chunk_buf[56] = {0};
+         uint8_t chunk_rl = bolt.nfc->ntag424_ISOReadBinary(
+           2 + total_read, (uint8_t)chunk, chunk_buf, sizeof(chunk_buf));
+
+         if (chunk_rl < 3 || chunk_buf[chunk_rl-2] != 0x90 || chunk_buf[chunk_rl-1] != 0x00) {
+           Serial.print(F("[ndef] Body page read failed at offset "));
+           Serial.print(2 + total_read);
+           Serial.print(F(" SW="));
+           if (chunk_rl >= 2) {
+             Serial.print(chunk_buf[chunk_rl-2], HEX); Serial.print(F(" "));
+             Serial.print(chunk_buf[chunk_rl-1], HEX);
+           }
+           Serial.println();
+           read_ok = false;
+           break;
+         }
+         int data_bytes = chunk_rl - 2;  // subtract SW1 SW2
+         memcpy(body_buf + total_read, chunk_buf, data_bytes);
+         total_read += data_bytes;
+
+         Serial.print(F("[ndef] Read page: offset="));
+         Serial.print(2 + total_read - data_bytes);
+         Serial.print(F(" got=")); Serial.print(data_bytes);
+         Serial.print(F(" total=")); Serial.println(total_read);
+       }
+
+       if (!read_ok) goto ndef_fail;
+
+       len = total_read;
+       if (len > (int)sizeof(ndef)) len = sizeof(ndef);
+       memcpy(ndef, body_buf, len);
+
+       Serial.print(F("[ndef] OK (")); Serial.print(len); Serial.println(F(" bytes)"));
+       Serial.print(F("[ndef] hex: "));
+       bolt.nfc->PrintHex(ndef, len > 128 ? 128 : len);
+       Serial.print(F("[ndef] ASCII: "));
+       for (int i = 0; i < len; i++) {
+         Serial.write(ndef[i] >= 0x20 && ndef[i] < 0x7F ? ndef[i] : '.');
+       }
+       Serial.println();
+       led_blink(3, 100);
+       serial_cmd_active = false;
+     } else {
+ndef_fail:
+       Serial.println(F("[ndef] FAILED — card not detected or read error"));
+       led_blink(5, 100);
+       serial_cmd_active = false;
+     }
+    }
+  else if (cmd == "ver") {
+    if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
+    serial_cmd_active = true;
+    uint8_t uid[7] = {0};
+    uint8_t uidLen;
+    uint8_t ok = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, 100);
+    Serial.print(F("[ver] Card detected: "));
+    Serial.println(ok ? "YES" : "NO");
+    if (ok) {
+      bolt.nfc->ntag424_GetVersion();
+      Serial.print(F("[ver] HWType: 0x"));
+      Serial.print(bolt.nfc->ntag424_VersionInfo.HWType, HEX);
+      Serial.print(F(" expected: 0x04 match: "));
+      Serial.println(bolt.nfc->ntag424_VersionInfo.HWType == 0x04 ? "YES" : "NO");
+      Serial.print(F("[ver] isNTAG424: "));
+      Serial.println(bolt.nfc->ntag424_isNTAG424() ? "YES" : "NO");
+      Serial.print(F("[ver] HWType after isNTAG424: 0x"));
+      Serial.println(bolt.nfc->ntag424_VersionInfo.HWType, HEX);
+    }
+    serial_cmd_active = false;
+  }
+>>>>>>> feat/headless-esp32-devkitc:src/bolty.ino
   else if (cmd.startsWith("keys ")) {
     String args = cmd.substring(5);
     int s1 = args.indexOf(' ');
@@ -1275,29 +1552,244 @@ void handle_serial_command(String cmd) {
     if (strlen(mBoltConfig.url) == 0) { Serial.println(F("[error] No LNURL. Use: url <lnurl>")); return; }
     if (strlen(mBoltConfig.k0) == 0) { Serial.println(F("[error] No keys. Use: keys <k0> <k1> <k2> <k3> <k4>")); return; }
     Serial.println(F("[burn] Tap card now..."));
+    serial_cmd_active = true;
+    led_on();
     bolt.setDefautKeysCur();
     bolt.setNewKey(mBoltConfig.k0, 0);
     bolt.setNewKey(mBoltConfig.k1, 1);
     bolt.setNewKey(mBoltConfig.k2, 2);
     bolt.setNewKey(mBoltConfig.k3, 3);
     bolt.setNewKey(mBoltConfig.k4, 4);
-    uint8_t result = bolt.burn(String(mBoltConfig.url));
+    uint8_t result;
+    unsigned long t0 = millis();
+    do {
+      while (Serial.available()) Serial.read();
+      result = bolt.burn(String(mBoltConfig.url));
+      if (millis() - t0 > 30000) {
+        Serial.println(F("[burn] TIMEOUT — no card detected in 30s"));
+        serial_cmd_active = false;
+        return;
+      }
+    } while (result == JOBSTATUS_WAITING);
+    if (result == JOBSTATUS_GUARD_REJECT) {
+      Serial.println(F("[burn] ABORTED - guard rejected (card not in expected state)"));
+      led_blink(5, 100);
+      serial_cmd_active = false;
+      return;
+    }
     Serial.print(F("[burn] ")); Serial.println(bolt.get_job_status());
     Serial.println(result == JOBSTATUS_DONE ? F("[burn] SUCCESS") : F("[burn] FAILED"));
+    serial_cmd_active = false;
+        return;
+      }
+    } while (result == JOBSTATUS_WAITING);
+    if (result == JOBSTATUS_GUARD_REJECT) {
+      Serial.println(F("[burn] ABORTED - guard rejected (card not in expected state)"));
+      led_blink(5, 100);
+      serial_cmd_active = false;
+      return;
+    }
+    Serial.print(F("[burn] ")); Serial.println(bolt.get_job_status());
+    Serial.println(result == JOBSTATUS_DONE ? F("[burn] SUCCESS") : F("[burn] FAILED"));
+      if (result == JOBSTATUS_DONE) {
+        // Post-burn NDEF verification: confirm NLEN is valid and peek at first bytes.
+        // After burn, auth session changes card state — must re-select AID + file.
+        // Ref: Android bolt-nfc-android-app isoReadBinary always does
+        //      SELECT AID → SELECT FILE before ReadBinary.
+        //
+        // Note: PN532 pn532_packetbuffer is only 64 bytes, so max card data per
+        // read is ~54 bytes (64 - 8 header - 2 SW). Full NDEF readback needs
+        // pagination — use the 'ndef' command for that. Here we just sanity-check.
+        uint8_t v_dfn[] = {0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01};
+        bool v_sel1 = bolt.nfc->ntag424_ISOSelectFileByDFN(v_dfn);
+        bool v_sel2 = bolt.nfc->ntag424_ISOSelectFileById(0xE104);
+        Serial.print(F("[burn] VERIFY — SELECT AID: "));
+        Serial.println(v_sel1 ? F("OK") : F("FAIL"));
+        Serial.print(F("[burn] VERIFY — SELECT E104: "));
+        Serial.println(v_sel2 ? F("OK") : F("FAIL"));
+        if (v_sel1 && v_sel2) {
+          // Read NLEN (2 bytes) + 1 extra = 3 bytes at offset 0
+          uint8_t nlen_buf[8] = {0};
+          uint8_t nlen_rl = bolt.nfc->ntag424_ISOReadBinary(0, 3, nlen_buf, sizeof(nlen_buf));
+          if (nlen_rl >= 3 && nlen_buf[nlen_rl-2] == 0x90 && nlen_buf[nlen_rl-1] == 0x00) {
+            int nlen = (nlen_buf[0] << 8) | nlen_buf[1];
+            Serial.print(F("[burn] VERIFY — NLEN=")); Serial.println(nlen);
+            if (nlen > 0 && nlen <= 252) {
+              // Read first chunk (max 48 bytes to stay within 64-byte SPI buffer)
+              uint8_t peek_len = (nlen + 3 > 48) ? 48 : (nlen + 3);
+              uint8_t body_buf[52] = {0};
+              uint8_t body_rl = bolt.nfc->ntag424_ISOReadBinary(2, peek_len, body_buf, sizeof(body_buf));
+              if (body_rl >= 4 && body_buf[body_rl-2] == 0x90 && body_buf[body_rl-1] == 0x00) {
+                int dlen = body_rl - 2;
+                Serial.print(F("[burn] VERIFY — NDEF peek OK ("));
+                Serial.print(dlen); Serial.print(F(" of ")); Serial.print(nlen);
+                Serial.println(F(" bytes)"));
+                Serial.print(F("[burn] VERIFY — ASCII: "));
+                for (int i = 0; i < dlen; i++) {
+                  Serial.write(body_buf[i] >= 0x20 && body_buf[i] < 0x7F ? body_buf[i] : '.');
+                }
+                Serial.println();
+              } else {
+                Serial.print(F("[burn] VERIFY — NDEF body read failed SW="));
+                if (body_rl >= 2) {
+                  Serial.print(body_buf[body_rl-2], HEX); Serial.print(F(" "));
+                  Serial.print(body_buf[body_rl-1], HEX);
+                }
+                Serial.println();
+              }
+            } else {
+              Serial.println(F("[burn] VERIFY — NLEN invalid or zero"));
+            }
+          } else {
+            Serial.print(F("[burn] VERIFY — NLEN read failed SW="));
+            if (nlen_rl >= 2) {
+              Serial.print(nlen_buf[nlen_rl-2], HEX); Serial.print(F(" "));
+              Serial.print(nlen_buf[nlen_rl-1], HEX);
+            }
+            Serial.println();
+          }
+        }
+      }
+    led_blink(result == JOBSTATUS_DONE ? 3 : 5, 100);
+    serial_cmd_active = false;
+>>>>>>> feat/headless-esp32-devkitc:src/bolty.ino
   }
   else if (cmd == "wipe") {
     if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
     if (strlen(mBoltConfig.k0) == 0) { Serial.println(F("[error] No keys. Use: keys <k0> <k1> <k2> <k3> <k4>")); return; }
     Serial.println(F("[wipe] Tap card now..."));
+    serial_cmd_active = true;
+    led_on();
     bolt.setDefautKeysNew();
     bolt.setCurKey(mBoltConfig.k0, 0);
     bolt.setCurKey(mBoltConfig.k1, 1);
     bolt.setCurKey(mBoltConfig.k2, 2);
     bolt.setCurKey(mBoltConfig.k3, 3);
     bolt.setCurKey(mBoltConfig.k4, 4);
-    uint8_t result = bolt.wipe();
+    uint8_t result;
+    unsigned long t0 = millis();
+    do {
+      while (Serial.available()) Serial.read();
+      result = bolt.wipe();
+      if (millis() - t0 > 30000) {
+        Serial.println(F("[wipe] TIMEOUT — no card detected in 30s"));
+        serial_cmd_active = false;
+        return;
+      }
+    } while (result == JOBSTATUS_WAITING);
+    if (result == JOBSTATUS_GUARD_REJECT) {
+      Serial.println(F("[wipe] ABORTED - guard rejected (card not in expected state)"));
+      led_blink(5, 100);
+      serial_cmd_active = false;
+      return;
+    }
     Serial.print(F("[wipe] ")); Serial.println(bolt.get_job_status());
     Serial.println(result == JOBSTATUS_DONE ? F("[wipe] SUCCESS") : F("[wipe] FAILED"));
+    led_blink(result == JOBSTATUS_DONE ? 3 : 5, 100);
+    serial_cmd_active = false;
+  }
+  else if (cmd == "keyver") {
+    if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
+    Serial.println(F("[keyver] Tap card now..."));
+    serial_cmd_active = true;
+    led_on();
+    unsigned long t0 = millis();
+    bool found = false;
+    do {
+      uint8_t uid[7] = {0};
+      uint8_t uidLen;
+      found = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, 100);
+      if (found) {
+        Serial.print(F("[keyver] UID: "));
+        bolt.nfc->PrintHex(uid, uidLen);
+      } else {
+        Serial.println(F(" (changed)"));
+      }
+      if (kv != 0x00) all_zero = false;
+    }
+    if (all_zero) {
+      Serial.println(F("[keyver] Card is BLANK — factory default keys"));
+    } else {
+      Serial.println(F("[keyver] Card is PROVISIONED — keys have been set"));
+    }
+    led_blink(3, 100);
+    serial_cmd_active = false;
+  }
+  else if (cmd == "check") {
+    if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
+    Serial.println(F("[check] Tap card now..."));
+    serial_cmd_active = true;
+    led_on();
+    bolt.setDefautKeysCur();
+    Serial.print(F("[check] Using zero key: "));
+    for (int i = 0; i < 16; i++) { if (bolt.key_cur[0][i] < 0x10) Serial.print("0"); Serial.print(bolt.key_cur[0][i], HEX); }
+    Serial.println();
+    unsigned long t0 = millis();
+    bool found = false;
+    do {
+      uint8_t uid[7] = {0};
+      uint8_t uidLen;
+      found = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, 100);
+      if (found) {
+        Serial.print(F("[check] UID: "));
+        bolt.nfc->PrintHex(uid, uidLen);
+      }
+      if (millis() - t0 > 15000) { Serial.println(F("[check] TIMEOUT")); serial_cmd_active = false; return; }
+    } while (!found);
+    delay(50);
+    uint8_t result = bolt.nfc->ntag424_Authenticate(bolt.key_cur[0], 0, 0x71);
+    Serial.println(result == 1 ? F("[check] SUCCESS — card has factory zero keys") : F("[check] FAILED — card does NOT have factory keys"));
+    led_blink(result == 1 ? 3 : 5, 100);
+    serial_cmd_active = false;
+  }
+  else if (cmd == "dummyburn") {
+    if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
+    Serial.println(F("[dummyburn] Tap card now..."));
+    serial_cmd_active = true;
+    led_on();
+    bolt.setDefautKeysCur();
+    bolt.setDefautKeysNew();
+    String lnurl = "https://dummy.test";
+    uint8_t result;
+    unsigned long t0 = millis();
+    do {
+      while (Serial.available()) Serial.read();
+      result = bolt.burn(lnurl);
+      if (millis() - t0 > 30000) {
+        Serial.println(F("[dummyburn] TIMEOUT — no card detected in 30s"));
+        serial_cmd_active = false;
+        return;
+      }
+    } while (result == JOBSTATUS_WAITING);
+    Serial.print(F("[dummyburn] ")); Serial.println(bolt.get_job_status());
+    Serial.println(result == JOBSTATUS_DONE ? F("[dummyburn] SUCCESS") : F("[dummyburn] FAILED"));
+    if (result == JOBSTATUS_DONE) Serial.println(F("[dummyburn] Card has dummy data — run 'reset' to wipe"));
+    led_blink(result == JOBSTATUS_DONE ? 3 : 5, 100);
+    serial_cmd_active = false;
+  }
+  else if (cmd == "reset") {
+    if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
+    Serial.println(F("[reset] Tap card now..."));
+    serial_cmd_active = true;
+    led_on();
+    bolt.setDefautKeysCur();
+    bolt.setDefautKeysNew();
+    uint8_t result;
+    unsigned long t0 = millis();
+    do {
+      while (Serial.available()) Serial.read();
+      result = bolt.wipe();
+      if (millis() - t0 > 30000) {
+        Serial.println(F("[reset] TIMEOUT — no card detected in 30s"));
+        serial_cmd_active = false;
+        return;
+      }
+    } while (result == JOBSTATUS_WAITING);
+    Serial.print(F("[reset] ")); Serial.println(bolt.get_job_status());
+    Serial.println(result == JOBSTATUS_DONE ? F("[reset] SUCCESS — card wiped to factory defaults") : F("[reset] FAILED"));
+    led_blink(result == JOBSTATUS_DONE ? 3 : 5, 100);
+    serial_cmd_active = false;
+>>>>>>> feat/headless-esp32-devkitc:src/bolty.ino
   }
   else {
     Serial.print(F("[error] Unknown: ")); Serial.println(cmd);
@@ -1316,6 +1808,7 @@ void loop(void) {
 #endif
 
   app_stateengine();
+#endif
 
-  delay(100);
+  delay(10);
 }

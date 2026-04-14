@@ -100,7 +100,7 @@
 // ============================================================
 
 #ifdef BOARD_DEVKITC
-  #define LED_PIN       (2)   // ESP32 built-in LED
+  #define LED_PIN       (-1)  // DevKitC V4 has no user-controllable LED
 #else
   #define LED_PIN       (-1)  // TTGO uses TFT backlight as indicator
 #endif
