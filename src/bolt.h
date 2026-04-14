@@ -15,10 +15,12 @@
 #define JOBSTATUS_WIPING 3
 #define JOBSTATUS_DONE 4
 #define JOBSTATUS_ERROR 5
+#define JOBSTATUS_GUARD_REJECT 6
 
-String boltstatustext[6] = {
+String boltstatustext[7] = {
     "idle",          "waiting for nfc-tag..",  "provisioning data..",
     "wiping data..", "done - remove the card", "error",
+    "guard rejected - card not in expected state",
 };
 
 struct sBoltConfig {
@@ -101,6 +103,40 @@ uint8_t convertCharToHex(char ch) {
     break;
   }
   return returnType;
+}
+
+// GetKeyVersion — plain commode, requires ISOSelectFileByDFN first.
+// Returns the version byte for the given key (0-4), or 0xFF on error.
+//
+// Key version semantics (NXP NTAG424 DNA, AN12195):
+//   - Per-key version byte stored on the card (keys 0-4 each have their own)
+//   - Factory default: 0x00 for all keys
+//   - Set by the ChangeKey APDU — the card stores whatever byte is sent
+//   - Does NOT auto-increment; it's a write-once-per-change value
+//   - Used to detect if keys have been changed from factory defaults
+//   - Official apps (bolt-nfc-android-app) pass keyVersion as a parameter
+//     and use it to detect provisioning state: 0x00 = blank, != 0x00 = provisioned
+//   - APDU: `90 64 00 00 01 {keyNo} 00` -- PLAIN commode, no auth needed
+//
+// Practical implications for our firmware:
+//   - After factory reset: all keys at 0x00
+//   - After our dummyburn/reset: all keys at 0x01 (not 0x00)
+//   - keyver command checks these versions to determine card state
+//   - Pre-burn guard rejects if key 1 version != 0x00
+uint8_t ntag424_getKeyVersion(Adafruit_PN532 *nfc, uint8_t keyno) {
+  uint8_t dfn[] = {0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01};
+  nfc->ntag424_ISOSelectFileByDFN(dfn);
+  uint8_t cla[] = {0x90};
+  uint8_t ins[] = {0x64};
+  uint8_t p1[] = {0x00};
+  uint8_t p2[] = {0x00};
+  uint8_t cmd_header[] = {keyno};
+  uint8_t result[16];
+  int len = nfc->ntag424_apdu_send(cla, ins, p1, p2,
+      cmd_header, sizeof(cmd_header), NULL, 0, 0,
+      NTAG424_COMM_MODE_PLAIN, result, sizeof(result));
+  if (len >= 1) return result[0];
+  return 0xFF;
 }
 
 class BoltDevice {
@@ -272,6 +308,17 @@ public: // Access specifier
       //&& (nfc->ntag424_isNTAG424())
       if (((uidLength == 7) || (uidLength == 4)) &&
           (nfc->ntag424_isNTAG424())) {
+        // Pre-burn guard: reject if card is already provisioned
+        uint8_t kv = ntag424_getKeyVersion(nfc, 1);
+        if (kv != 0x00) {
+          Serial.print(F("ABORT: Card key 1 version is 0x"));
+          if (kv < 0x10) Serial.print(F("0"));
+          Serial.print(kv, HEX);
+          Serial.println(F(" - card appears provisioned. Wipe first."));
+          set_job_status_id(JOBSTATUS_GUARD_REJECT);
+          return job_status;
+        }
+        Serial.println(F("Pre-burn check OK - card has factory keys"));
         uint8_t filename[7] = {0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01};
         nfc->ntag424_ISOSelectFileByDFN(filename);
         int fileid = 0xe103;
@@ -389,6 +436,16 @@ public: // Access specifier
       //&& (nfc->ntag424_isNTAG424())
       if (((uidLength == 7) || (uidLength == 4)) &&
           (nfc->ntag424_isNTAG424())) {
+        // Pre-wipe guard: reject if card already has factory keys
+        uint8_t kv = ntag424_getKeyVersion(nfc, 1);
+        if (kv == 0x00) {
+          Serial.println(F("ABORT: Card key 1 version is 0x00 - card already has factory keys."));
+          set_job_status_id(JOBSTATUS_GUARD_REJECT);
+          return job_status;
+        }
+        Serial.print(F("Pre-wipe check OK - card key 1 version: 0x"));
+        if (kv < 0x10) Serial.print(F("0"));
+        Serial.println(kv, HEX);
         uint8_t filename[7] = {0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01};
         nfc->ntag424_ISOSelectFileByDFN(filename);
         int fileid = 0xe103;

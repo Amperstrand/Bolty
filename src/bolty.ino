@@ -1245,42 +1245,7 @@ void serial_print_status() {
   Serial.println();
 }
 
-// GetKeyVersion — plain commode, requires ISOSelectFileByDFN first.
-// Returns the version byte for the given key (0-4), or 0xFF on error.
-//
-// Key version semantics (NXP NTAG424 DNA, AN12195):
-//   - Per-key version byte stored on the card (keys 0-4 each have their own)
-//   - Factory default: 0x00 for all keys
-//   - Set by the ChangeKey APDU — the card stores whatever byte is sent
-//   - Does NOT auto-increment; it's a write-once-per-change value
-//   - Used to detect if keys have been changed from factory defaults
-//   - The Adafruit library hardcodes version 0x01 in ntag424_ChangeKey()
-//     (line 2356: `uint8_t keyversion[1] = {0x01}`), so every burn/reset
-//     cycle sets version to 0x01 — it will never reach 0x02, 0x03, etc.
-//   - Official apps (bolt-nfc-android-app) pass keyVersion as a parameter
-//     and use it to detect provisioning state: 0x00 = blank, != 0x00 = provisioned
-//   - APDU: `90 64 00 00 01 {keyNo} 00` — PLAIN commode, no auth needed
-//
-// Practical implications for our firmware:
-//   - After factory reset: all keys at 0x00
-//   - After our dummyburn/reset: all keys at 0x01 (not 0x00)
-//   - keyver command checks these versions to determine card state
-//   - Pre-burn guard rejects if key 1 version != 0x00
-uint8_t ntag424_getKeyVersion(Adafruit_PN532 *nfc, uint8_t keyno) {
-  uint8_t dfn[] = {0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01};
-  nfc->ntag424_ISOSelectFileByDFN(dfn);
-  uint8_t cla[] = {0x90};
-  uint8_t ins[] = {0x64};
-  uint8_t p1[] = {0x00};
-  uint8_t p2[] = {0x00};
-  uint8_t cmd_header[] = {keyno};
-  uint8_t result[16];
-  int len = nfc->ntag424_apdu_send(cla, ins, p1, p2,
-      cmd_header, sizeof(cmd_header), NULL, 0, 0,
-      NTAG424_COMM_MODE_PLAIN, result, sizeof(result));
-  if (len >= 1) return result[0];
-  return 0xFF;
-}
+// ntag424_getKeyVersion moved to bolt.h for use by burn/wipe guards
 
 const char* ntag424_error_name(uint8_t sw1, uint8_t sw2) {
   if (sw1 == 0x91) {
@@ -1605,6 +1570,12 @@ ndef_fail:
         return;
       }
     } while (result == JOBSTATUS_WAITING);
+    if (result == JOBSTATUS_GUARD_REJECT) {
+      Serial.println(F("[burn] ABORTED - guard rejected (card not in expected state)"));
+      led_blink(5, 100);
+      serial_cmd_active = false;
+      return;
+    }
     Serial.print(F("[burn] ")); Serial.println(bolt.get_job_status());
     Serial.println(result == JOBSTATUS_DONE ? F("[burn] SUCCESS") : F("[burn] FAILED"));
       if (result == JOBSTATUS_DONE) {
@@ -1692,6 +1663,12 @@ ndef_fail:
         return;
       }
     } while (result == JOBSTATUS_WAITING);
+    if (result == JOBSTATUS_GUARD_REJECT) {
+      Serial.println(F("[wipe] ABORTED - guard rejected (card not in expected state)"));
+      led_blink(5, 100);
+      serial_cmd_active = false;
+      return;
+    }
     Serial.print(F("[wipe] ")); Serial.println(bolt.get_job_status());
     Serial.println(result == JOBSTATUS_DONE ? F("[wipe] SUCCESS") : F("[wipe] FAILED"));
     led_blink(result == JOBSTATUS_DONE ? 3 : 5, 100);
