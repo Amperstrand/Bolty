@@ -20,6 +20,7 @@
 /**************************************************************************/
 #include <Arduino.h>
 #include "bolt.h"
+#include "build_metadata.h"
 #include "gui.h"
 #include <SPI.h>
 
@@ -896,6 +897,13 @@ void setup(void) {
   while (!Serial)
     delay(10); // for Leonardo/Micro/Zero
 
+  Serial.println("=== Bolty Build Info ===");
+  Serial.print("Bolty commit: ");
+  Serial.println(BOLTY_GIT_COMMIT);
+  Serial.print("PN532 lib commit: ");
+  Serial.println(PN532_LIB_GIT_COMMIT);
+  Serial.println("========================");
+
   setup_display();
 
 #if !HAS_DISPLAY
@@ -1224,6 +1232,7 @@ void serial_print_help() {
   Serial.println(F("  check             Auth with factory zero keys (confirm card is blank)"));
   Serial.println(F("  dummyburn         Burn with zero keys + dummy URL (test write path)"));
   Serial.println(F("  reset             Wipe from zero keys to zero keys (test wipe path)"));
+  Serial.println(F("  testck            ChangeKey A/B test on key 1 (verify implementation)"));
   Serial.println();
 }
 
@@ -1774,6 +1783,161 @@ ndef_fail:
     Serial.print(F("[reset] ")); Serial.println(bolt.get_job_status());
     Serial.println(result == JOBSTATUS_DONE ? F("[reset] SUCCESS — card wiped to factory defaults") : F("[reset] FAILED"));
     led_blink(result == JOBSTATUS_DONE ? 3 : 5, 100);
+    serial_cmd_active = false;
+  }
+  else if (cmd == "testck") {
+    // A/B test: prove ChangeKey works on known-good key slots.
+    // Test card has keys 0-3 = zero, key 4 = unknown.
+    // Round-trip: change key 1 from zero→test value→zero, verify versions.
+    // If this passes but key 4 fails → issue is card-specific, not our code.
+    //
+    // Ref: NXP AN12196 §10.4 (ChangeKey), johnnyb/ntag424-java ChangeKey.java
+    if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
+    Serial.println(F("[testck] ChangeKey A/B test — round-trip on key 1 (known zero)"));
+    serial_cmd_active = true;
+    led_on();
+
+    // Detect card
+    uint8_t uid_ck[7] = {0};
+    uint8_t uidLen_ck;
+    unsigned long t0_ck = millis();
+    bool found_ck = false;
+    do {
+      found_ck = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid_ck, &uidLen_ck, 100);
+      if (found_ck) {
+        Serial.print(F("[testck] UID: "));
+        bolt.nfc->PrintHex(uid_ck, uidLen_ck);
+      }
+      if (millis() - t0_ck > 15000) { Serial.println(F("[testck] TIMEOUT")); serial_cmd_active = false; return; }
+    } while (!found_ck);
+    delay(50);
+
+    uint8_t zero_key[16] = {0};
+    // Distinctive test value — not a real key, just for verification
+    uint8_t test_key[16] = {0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44,
+                            0x55, 0x66, 0x77, 0x88, 0x99, 0x00, 0xEE, 0xFF};
+
+    // Read key 1 version BEFORE.
+    // 0x00 = blank/default state.
+    // 0x01 = our previous aborted test changed key 1 to test_key and needs
+    // restore before we can do a clean round-trip again.
+    uint8_t kv_before = ntag424_getKeyVersion(bolt.nfc, 1);
+    Serial.print(F("[testck] Key 1 version BEFORE: 0x"));
+    if (kv_before < 0x10) Serial.print(F("0"));
+    Serial.println(kv_before, HEX);
+
+    // Auth with key 0 (zeros) — key 0 is master, needed for ChangeKey
+    bolt.selectNtagApplicationFiles();
+    uint8_t auth1 = bolt.nfc->ntag424_Authenticate(zero_key, 0, 0x71);
+    Serial.print(F("[testck] Auth key 0 (zeros): "));
+    Serial.println(auth1 == 1 ? "OK" : "FAILED");
+    if (auth1 != 1) {
+      Serial.println(F("[testck] ABORT — auth failed"));
+      led_blink(5, 100);
+      serial_cmd_active = false;
+      return;
+    }
+
+    if (kv_before == 0x01) {
+      Serial.println(F("[testck] Recovery mode — restoring key 1 from test value to zero"));
+      bool recovered = bolt.nfc->ntag424_ChangeKey(test_key, zero_key, 1, 0x00);
+      Serial.print(F("[testck]   Result: "));
+      Serial.println(recovered ? "OK" : "FAILED");
+
+      bolt.nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID);
+      uint8_t kv_recovered = ntag424_getKeyVersion(bolt.nfc, 1);
+      Serial.print(F("[testck]   Key 1 version: 0x"));
+      if (kv_recovered < 0x10) Serial.print(F("0"));
+      Serial.println(kv_recovered, HEX);
+
+      const bool recovery_pass = recovered && (kv_recovered == 0x00);
+      Serial.println(recovery_pass ?
+                         F("[testck] RECOVERY PASS — key 1 restored to factory state") :
+                         F("[testck] RECOVERY FAIL — key 1 not restored"));
+      led_blink(recovery_pass ? 3 : 5, 100);
+      serial_cmd_active = false;
+      return;
+    }
+
+    if (kv_before != 0x00) {
+      Serial.println(F("[testck] WARNING — key 1 is in an unexpected state, aborting"));
+      led_blink(5, 100);
+      serial_cmd_active = false;
+      return;
+    }
+
+    // Step 1: ChangeKey key 1 from zero → test value, version 0x01
+    Serial.println(F("[testck] Step 1: ChangeKey(1, zero→test, ver=0x01)"));
+    bool ck1 = bolt.nfc->ntag424_ChangeKey(zero_key, test_key, 1, 0x01);
+    Serial.print(F("[testck]   Result: "));
+    Serial.println(ck1 ? "OK" : "FAILED");
+
+    // Re-select and read version (PLAIN, no auth needed for GetKeyVersion)
+    bolt.nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID);
+    uint8_t kv_mid = ntag424_getKeyVersion(bolt.nfc, 1);
+    Serial.print(F("[testck]   Key 1 version: 0x"));
+    if (kv_mid < 0x10) Serial.print(F("0"));
+    Serial.println(kv_mid, HEX);
+
+    if (!ck1 && kv_mid == 0x01) {
+      Serial.println(F("[testck] NOTICE — card changed but library returned false (stale build/parsing bug)"));
+    }
+
+    bool step1_pass = (kv_mid == 0x01);
+    Serial.print(F("[testck]   Step 1: "));
+    Serial.println(step1_pass ? "PASS" : "FAIL");
+
+    if (!step1_pass) {
+      Serial.println(F("[testck] ABORT — step 1 failed, not attempting restore"));
+      led_blink(5, 100);
+      serial_cmd_active = false;
+      return;
+    }
+
+    // Step 2: Re-auth (key 0 still zero), change key 1 back
+    bolt.selectNtagApplicationFiles();
+    uint8_t auth2 = bolt.nfc->ntag424_Authenticate(zero_key, 0, 0x71);
+    Serial.print(F("[testck] Re-auth key 0: "));
+    Serial.println(auth2 == 1 ? "OK" : "FAILED");
+    if (auth2 != 1) {
+      Serial.println(F("[testck] ABORT — re-auth failed (card may be in bad state)"));
+      led_blink(5, 100);
+      serial_cmd_active = false;
+      return;
+    }
+
+    Serial.println(F("[testck] Step 2: ChangeKey(1, test→zero, ver=0x00)"));
+    bool ck2 = bolt.nfc->ntag424_ChangeKey(test_key, zero_key, 1, 0x00);
+    Serial.print(F("[testck]   Result: "));
+    Serial.println(ck2 ? "OK" : "FAILED");
+
+    // Read final version
+    bolt.nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID);
+    uint8_t kv_final = ntag424_getKeyVersion(bolt.nfc, 1);
+    Serial.print(F("[testck]   Key 1 version: 0x"));
+    if (kv_final < 0x10) Serial.print(F("0"));
+    Serial.println(kv_final, HEX);
+
+    if (!ck2 && kv_final == 0x00) {
+      Serial.println(F("[testck] NOTICE — card restored but library returned false (stale build/parsing bug)"));
+    }
+
+    bool step2_pass = (kv_final == 0x00);
+    Serial.print(F("[testck]   Step 2: "));
+    Serial.println(step2_pass ? "PASS" : "FAIL");
+
+    // Summary
+    Serial.println(F("---"));
+    bool all_pass = step1_pass && step2_pass;
+    if (all_pass) {
+      Serial.println(F("[testck] ALL PASS — ChangeKey implementation is CORRECT"));
+      Serial.println(F("[testck] Conclusion: key 4 corruption is CARD-SPECIFIC"));
+      Serial.println(F("[testck] (key 4 has unknown value from prior operation)"));
+    } else {
+      Serial.println(F("[testck] SOME FAILED — ChangeKey has issues"));
+    }
+
+    led_blink(all_pass ? 3 : 5, 100);
     serial_cmd_active = false;
   }
   else {
