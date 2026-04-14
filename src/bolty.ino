@@ -1293,6 +1293,10 @@ const char* ntag424_error_name(uint8_t sw1, uint8_t sw2) {
       case 0x7E: return "LENGTH_ERROR";
       case 0x9D: return "PERMISSION_DENIED";
       case 0xCA: return "COMMAND_ABORTED";
+      case 0x9E: return "PARAMETER_ERROR";
+      case 0x40: return "NO_SUCH_KEY";
+      case 0xAD: return "AUTHENTICATION_DELAY";
+      case 0xF0: return "FILE_NOT_FOUND";
       default:   return "UNKNOWN_ERROR";
     }
   }
