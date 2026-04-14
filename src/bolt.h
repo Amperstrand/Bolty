@@ -5,6 +5,7 @@
 //#define PN532DEBUG
 
 #include "gui.h"
+#include "hardware_config.h"
 #include <Adafruit_PN532_NTAG424.h>
 #include <SPI.h>
 #include <Wire.h>
@@ -123,6 +124,10 @@ public: // Access specifier
   uint8_t job_status; // 0=idle; 1=wait for tag; 2=busy provisioning;3=busy wipe
   uint8_t job_perc;
   uint8_t job_ok;
+  uint8_t _consecutive_scan_failures = 0;
+  static const uint8_t MAX_SCAN_FAILURES = 5;
+  static const unsigned long REINIT_BACKOFF_MS = 30000;
+  unsigned long _last_pn532_reinit_ms = 0;
   String last_scanned_uid;
 
   BoltDevice(uint8_t SCK, uint8_t MISO, uint8_t MOSI,
@@ -216,8 +221,34 @@ public: // Access specifier
 
     // configure board to read RFID tags
     nfc->SAMConfig();
+    _consecutive_scan_failures = 0;
+    _last_pn532_reinit_ms = 0;
 
     Serial.println("NFC Ready...");
+    return true;
+  }
+
+  bool reinitPN532() {
+    // Issue #7: this SPI build passes no reset pin to Adafruit_PN532, so the
+    // library reset path is a no-op and recovery must drive RSTPD_N directly.
+    _last_pn532_reinit_ms = millis();
+    pinMode(PN532_RSTPD_N, OUTPUT);
+    digitalWrite(PN532_RSTPD_N, LOW);
+    delay(100);
+    digitalWrite(PN532_RSTPD_N, HIGH);
+    delay(10);
+
+    nfc->begin();
+
+    uint32_t versiondata = nfc->getFirmwareVersion();
+    if (!versiondata) {
+      Serial.println("PN532 reinit failed: firmware query returned no data");
+      return false;
+    }
+
+    nfc->SAMConfig();
+    _last_pn532_reinit_ms = millis();
+    Serial.println("PN532 reinit complete");
     return true;
   }
 
@@ -268,12 +299,26 @@ public: // Access specifier
     success =
         nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, 100);
     if (success) {
+      _consecutive_scan_failures = 0;
       nfc->PrintHex(uid, uidLength);
       if (((uidLength == 7) || (uidLength == 4)) &&
           (nfc->ntag424_isNTAG424())) {
         lastscan = millis();
         last_scanned_uid = convertIntToHex(uid, uidLength);
         return true;
+      }
+    } else {
+      _consecutive_scan_failures++;
+      // Issue #7 / ESPEasy pattern: repeated passive-read failures can mean the
+      // RF field is stuck, but normal idle polling also returns false, so keep a
+      // cooldown to avoid reset loops while no card is present.
+      if (_consecutive_scan_failures >= MAX_SCAN_FAILURES &&
+          (_last_pn532_reinit_ms == 0 ||
+           (millis() - _last_pn532_reinit_ms) >= REINIT_BACKOFF_MS)) {
+        Serial.println("PN532 scan failures exceeded threshold, reinitializing");
+        if (reinitPN532()) {
+          _consecutive_scan_failures = 0;
+        }
       }
     }
     return false;

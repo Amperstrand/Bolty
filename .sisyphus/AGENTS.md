@@ -767,15 +767,72 @@ pio run -t upload
 
 ---
 
-## 13. Remaining Work
+## 13. PN532 Reliability — Known RF Field Stuck State
+
+### Issue
+
+**GitHub issue**: [Amperstrand/Bolty#7](https://github.com/Amperstrand/Bolty/issues/7) — "PN532 RF field becomes unresponsive after prolonged idle — needs hardware reset to recover"
+
+After the ESP32+PN532 has been running idle for some time (observed between sessions, possibly hours), the PN532 stops detecting cards. `readPassiveTargetID()` returns failure consistently even with a card physically on the reader. The PN532 still responds to `getFirmwareVersion()` over SPI — only the RF subsystem is stuck.
+
+This is a **known PN532 hardware/firmware characteristic**, confirmed by multiple open-source projects (ESPEasy, RIOT-OS, ESPHome, libnfc) that implement recovery mechanisms for exactly this behavior.
+
+### Detection
+
+The stuck state is detectable because:
+- `getFirmwareVersion()` succeeds (pure SPI, no RF) → PN532 chip is alive
+- `readPassiveTargetID()` fails consistently (requires RF field) → RF subsystem is stuck
+- `status` reports `NFC HW: ready` because the init check only calls `getFirmwareVersion()`
+
+### Fix
+
+A PN532 hardware reset + re-init cycle fixes it: `nfc->reset()` → delay → `nfc->wakeup()` → `nfc->getFirmwareVersion()` → `nfc->SAMConfig()`. This is what we currently do manually via DTR/RTS toggle when the stuck state is detected.
+
+### What to watch for (reproduction)
+
+We have NOT reliably reproduced the stuck state. If it happens again, note:
+1. How long was the device idle before the stuck state?
+2. Was there a card on the reader the entire time?
+3. Did `getFirmwareVersion()` return a valid version? (It should — SPI stays alive)
+4. How many consecutive `readPassiveTargetID()` failures before you gave up?
+5. Did `nfc_stop()` → delay → `nfc_start()` → `nfc->begin()` fix it? Or did you need a full ESP32 reboot?
+
+### Not the same as intermittent scan failures
+
+Stress testing showed ~50% `readPassiveTargetID` failure rate with 2.2-second polling intervals — but this is a serial timing artifact (the `scanUID()` 2-second debounce vs 2.2s poll cycle), NOT the RF-field stuck state. The stuck state is **100% persistent failure** — every single scan fails, not intermittent. If you see intermittent failures, it's timing. If you see 100% persistent failure with card on reader, it's the stuck state.
+
+### Current code gaps
+
+- **No watchdog/health-check logic exists** in the firmware
+- **`nfc_stop()`/`nfc_start()` only used for deep sleep** (bolty.ino line 618), never for recovery
+- **`setPassiveActivationRetries()` exists in library but is never called** — could configure `InListPassiveTarget` retry behavior
+- **`scanUID()` returns false with no recovery** — no re-init attempt after failures
+- **Library `reset()` timing is minimal**: LOW → 1ms → HIGH → 2ms. RIOT-OS uses 400ms LOW for reliability.
+
+### Recommended implementation (tracked in issue #7)
+
+1. **Boot reset**: Toggle RSTPD_N LOW for 100ms+ before `nfc->begin()` in setup()
+2. **Pre-scan health check**: If no successful scan in >60s, verify PN532 health before next operation
+3. **Error counting**: Track consecutive `readPassiveTargetID()` failures. After 5+, trigger `pn532_reinit()`
+4. **`pn532_reinit()` function**: `reset()` → delay → `wakeup()` → `getFirmwareVersion()` → `SAMConfig()`
+
+### Build cache caveat
+
+**PlatformIO caches library builds in `.pio/build/esp32dev/libeac/`**. When the local library changes, PlatformIO may not recompile it (it only recompiles the main sketch). After library changes, manually purge: `rm -rf .pio/build/esp32dev/libeac/` before rebuilding. This caused a real false-negative during testing — the old ChangeKey code (checking `result[0:1]`) was still running from cache despite source changes.
+
+---
+
+## 14. Remaining Work
 
 1. ~~Create clean commits~~ — DONE (library `c8550f4`, firmware `92a0885` + `90ddfa4`)
 2. ~~Phone test~~ — DONE. NFC URL with SDM parameters readable on phone. Card wiped back to blank after test.
 3. ~~Feature parity with Android app~~ — DONE (2026-04-14). 5 tasks completed: keyVersion param (T1), wipe fileSettings + keyVersion args (T2), pre-burn/pre-wipe guards (T3), 4 missing error codes (T4), 6 GitHub issues filed (T5). Commits: library `273f0ba`, firmware `ba21c78` + `b884c83` + `34f6f14`. **Not yet hardware-tested** — flash and test before using guards or wipe keyVersion in production.
-4. **Phase 3: LNbits integration** — import card credentials JSON, SUN verification
-5. **Phase 4: WiFi mode** — ESPAsyncWebServer, remote provisioning
-6. **Phase 5: Advanced features** — random UID, SUN verification (AES-CBC decrypt with k1, AES-CMAC verify with k2, counter replay protection)
-7. **Upstream library fixes** — merge proven fixes into master. Address remaining issues (#1 MAC counter, #11 cla/ins API, #18 ReadData bypass)
+4. ~~Refactor both repos~~ — DONE (2026-04-14). Library: extracted ChangeKey helpers, fixed FULL-mode response parsing (issue #23), DRY refactor for GetCardUID/GetTTStatus/ISOSelect/FormatNDEF, gated debug prints. Bolty: extracted BoltDevice helpers, centralized NTAG424 constants, simplified convertCharToHex, fixed uninitialized success accumulator, fixed post-auth key index, static boltstatustext. Commits: library `5349624` + `4c03141`, Bolty `471c9ae` + `1c2d9c2`. All pushed. Issues #22 and #23 closed with detailed comments.
+5. **PN532 reliability** (issue #7) — Implement boot reset, health check, and error counting with auto-recovery. See Section 13 for details.
+6. **Phase 3: LNbits integration** — import card credentials JSON, SUN verification
+7. **Phase 4: WiFi mode** — ESPAsyncWebServer, remote provisioning
+8. **Phase 5: Advanced features** — random UID, SUN verification (AES-CBC decrypt with k1, AES-CMAC verify with k2, counter replay protection)
+9. **Upstream library fixes** — merge proven fixes into master. Address remaining issues (#1 MAC counter, #11 cla/ins API, #18 ReadData bypass)
 
 ---
 

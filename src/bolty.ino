@@ -938,6 +938,13 @@ void setup(void) {
   pinMode(LED_PIN, OUTPUT);
   led_off();
 #endif
+  // Issue #7: force a real PN532 hardware reset before startup. RIOT-OS keeps
+  // RSTPD_N low for 400 ms, and ESPEasy also relies on reinit when the reader
+  // stops responding after repeated errors.
+  digitalWrite(PN532_RSTPD_N, LOW);
+  delay(100);
+  digitalWrite(PN532_RSTPD_N, HIGH);
+  delay(10);
   nfc_start();
   bolty_hw_ready = bolt.begin();
   Serial.println("Setup done!");
