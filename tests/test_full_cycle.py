@@ -92,9 +92,6 @@ def main():
         sys.exit(1)
 
     # Phase 1: Detect card state
-    # Key version alone can't distinguish "wiped to zeros" (version 0x01) from
-    # "provisioned with static keys" (also version 0x01). We use `check` (zero-key
-    # auth) as the tiebreaker when versions are non-zero.
     print(f"\n{BOLD}PHASE 1: Detect card state{RESET_C}")
     resp = send_cmd(ser, "keyver", 12.0)
     verbose(resp)
@@ -112,8 +109,6 @@ def main():
         print(f"  {GREEN}Card is FACTORY BLANK (version 0x00){RESET_C}")
         card_state = "blank"
     elif all_changed:
-        # Versions are non-zero — could be wiped-to-zeros or provisioned.
-        # Try zero-key auth to distinguish.
         print(f"  Key versions are 0x01 — checking if keys are actually zeros...")
         time.sleep(0.5)
         resp = send_cmd(ser, "check", 12.0)
@@ -246,9 +241,9 @@ def main():
     resp = send_cmd(ser, "keyver", 12.0)
     verbose(resp)
     versions = extract_key_versions(resp)
-    step("7a", "all keys at 0x01 (wiped)",
-         all(v == 0x01 for v in versions.values()) and len(versions) == 5,
-         f"Got: {versions}")
+    step("7a", "all keys at 0x00 (factory-identical after wipe with keyversion=0x00)",
+          all(v == 0x00 for v in versions.values()) and len(versions) == 5,
+          f"Got: {versions}")
 
     resp = send_cmd(ser, "check", 12.0)
     verbose(resp)
