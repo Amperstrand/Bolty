@@ -1507,7 +1507,6 @@ ndef_fail:
     }
     serial_cmd_active = false;
   }
->>>>>>> feat/headless-esp32-devkitc:src/bolty.ino
   else if (cmd.startsWith("keys ")) {
     String args = cmd.substring(5);
     int s1 = args.indexOf(' ');
@@ -1568,18 +1567,6 @@ ndef_fail:
       if (millis() - t0 > 30000) {
         Serial.println(F("[burn] TIMEOUT — no card detected in 30s"));
         serial_cmd_active = false;
-        return;
-      }
-    } while (result == JOBSTATUS_WAITING);
-    if (result == JOBSTATUS_GUARD_REJECT) {
-      Serial.println(F("[burn] ABORTED - guard rejected (card not in expected state)"));
-      led_blink(5, 100);
-      serial_cmd_active = false;
-      return;
-    }
-    Serial.print(F("[burn] ")); Serial.println(bolt.get_job_status());
-    Serial.println(result == JOBSTATUS_DONE ? F("[burn] SUCCESS") : F("[burn] FAILED"));
-    serial_cmd_active = false;
         return;
       }
     } while (result == JOBSTATUS_WAITING);
@@ -1652,7 +1639,6 @@ ndef_fail:
       }
     led_blink(result == JOBSTATUS_DONE ? 3 : 5, 100);
     serial_cmd_active = false;
->>>>>>> feat/headless-esp32-devkitc:src/bolty.ino
   }
   else if (cmd == "wipe") {
     if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
@@ -1702,6 +1688,24 @@ ndef_fail:
       if (found) {
         Serial.print(F("[keyver] UID: "));
         bolt.nfc->PrintHex(uid, uidLen);
+      }
+      if (millis() - t0 > 15000) { Serial.println(F("[keyver] TIMEOUT")); serial_cmd_active = false; return; }
+    } while (!found);
+    delay(50);
+    bool all_zero = true;
+    for (int k = 0; k < 5; k++) {
+      uint8_t kv = ntag424_getKeyVersion(bolt.nfc, k);
+      Serial.print(F("[keyver] Key "));
+      Serial.print(k);
+      Serial.print(F(" version: 0x"));
+      if (kv < 0x10) Serial.print(F("0"));
+      Serial.print(kv, HEX);
+      if (kv == 0x00) {
+        Serial.println(F(" (factory default)"));
+      } else if (kv == 0xFF) {
+        Serial.print(F(" (ERROR: "));
+        Serial.print(ntag424_error_name(0x91, 0xAE));
+        Serial.println(F(")"));
       } else {
         Serial.println(F(" (changed)"));
       }
@@ -1789,7 +1793,6 @@ ndef_fail:
     Serial.println(result == JOBSTATUS_DONE ? F("[reset] SUCCESS — card wiped to factory defaults") : F("[reset] FAILED"));
     led_blink(result == JOBSTATUS_DONE ? 3 : 5, 100);
     serial_cmd_active = false;
->>>>>>> feat/headless-esp32-devkitc:src/bolty.ino
   }
   else {
     Serial.print(F("[error] Unknown: ")); Serial.println(cmd);
@@ -1805,8 +1808,7 @@ void loop(void) {
     String cmd = Serial.readStringUntil('\n');
     handle_serial_command(cmd);
   }
-#endif
-
+#else
   app_stateengine();
 #endif
 
