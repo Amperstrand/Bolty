@@ -397,12 +397,7 @@ void APP_BOLTBURN_loop() {
   previousMillis = millis();
   Interval = 100;
   if (bolty_hw_ready) {
-    bolt.setDefautKeysCur();
-    bolt.setNewKey(mBoltConfig.k0, 0);
-    bolt.setNewKey(mBoltConfig.k1, 1);
-    bolt.setNewKey(mBoltConfig.k2, 2);
-    bolt.setNewKey(mBoltConfig.k3, 3);
-    bolt.setNewKey(mBoltConfig.k4, 4);
+    bolt.loadKeysForBurn(mBoltConfig);
     String lnurl = String(mBoltConfig.url);
     uint8_t burn_result = bolt.burn(lnurl);
     if (burn_result != JOBSTATUS_WAITING) {
@@ -486,12 +481,7 @@ void APP_BOLTWIPE_loop() {
   previousMillis = millis();
   Interval = 100;
   if (bolty_hw_ready) {
-    bolt.setDefautKeysNew();
-    bolt.setCurKey(mBoltConfig.k0, 0);
-    bolt.setCurKey(mBoltConfig.k1, 1);
-    bolt.setCurKey(mBoltConfig.k2, 2);
-    bolt.setCurKey(mBoltConfig.k3, 3);
-    bolt.setCurKey(mBoltConfig.k4, 4);
+    bolt.loadKeysForWipe(mBoltConfig);
     uint8_t wipe_result = bolt.wipe();
     if (wipe_result != JOBSTATUS_WAITING) {
       previousMillis = millis();
@@ -1386,14 +1376,10 @@ void handle_serial_command(String cmd) {
        int len = 0;
 
        // Select NTAG424 application + NDEF file E104
-       uint8_t dfn[] = {0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01};
-       bool sel_ok = bolt.nfc->ntag424_ISOSelectFileByDFN(dfn);
-       Serial.print(F("[ndef] SELECT AID: ")); Serial.println(sel_ok ? "OK" : "FAIL");
-       if (!sel_ok) goto ndef_fail;
-
-       bool file_ok = bolt.nfc->ntag424_ISOSelectFileById(0xE104);
-       Serial.print(F("[ndef] SELECT FILE E104: ")); Serial.println(file_ok ? "OK" : "FAIL");
-       if (!file_ok) goto ndef_fail;
+        bool sel_ok = bolt.selectNdefFileOnly();
+        Serial.print(F("[ndef] SELECT AID: ")); Serial.println(sel_ok ? "OK" : "FAIL");
+        if (!sel_ok) goto ndef_fail;
+        Serial.println(F("[ndef] SELECT FILE E104: OK"));
 
        // Read NLEN (first 3 bytes: 2-byte NLEN + 1 extra) at file offset 0
        // Uses proper Case 2 APDU via ntag424_ISOReadBinary (no Lc byte).
@@ -1553,12 +1539,7 @@ ndef_fail:
     Serial.println(F("[burn] Tap card now..."));
     serial_cmd_active = true;
     led_on();
-    bolt.setDefautKeysCur();
-    bolt.setNewKey(mBoltConfig.k0, 0);
-    bolt.setNewKey(mBoltConfig.k1, 1);
-    bolt.setNewKey(mBoltConfig.k2, 2);
-    bolt.setNewKey(mBoltConfig.k3, 3);
-    bolt.setNewKey(mBoltConfig.k4, 4);
+    bolt.loadKeysForBurn(mBoltConfig);
     uint8_t result;
     unsigned long t0 = millis();
     do {
@@ -1587,9 +1568,8 @@ ndef_fail:
         // Note: PN532 pn532_packetbuffer is only 64 bytes, so max card data per
         // read is ~54 bytes (64 - 8 header - 2 SW). Full NDEF readback needs
         // pagination — use the 'ndef' command for that. Here we just sanity-check.
-        uint8_t v_dfn[] = {0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01};
-        bool v_sel1 = bolt.nfc->ntag424_ISOSelectFileByDFN(v_dfn);
-        bool v_sel2 = bolt.nfc->ntag424_ISOSelectFileById(0xE104);
+        bool v_sel1 = bolt.selectNdefFileOnly();
+        bool v_sel2 = v_sel1;
         Serial.print(F("[burn] VERIFY — SELECT AID: "));
         Serial.println(v_sel1 ? F("OK") : F("FAIL"));
         Serial.print(F("[burn] VERIFY — SELECT E104: "));
@@ -1646,12 +1626,7 @@ ndef_fail:
     Serial.println(F("[wipe] Tap card now..."));
     serial_cmd_active = true;
     led_on();
-    bolt.setDefautKeysNew();
-    bolt.setCurKey(mBoltConfig.k0, 0);
-    bolt.setCurKey(mBoltConfig.k1, 1);
-    bolt.setCurKey(mBoltConfig.k2, 2);
-    bolt.setCurKey(mBoltConfig.k3, 3);
-    bolt.setCurKey(mBoltConfig.k4, 4);
+    bolt.loadKeysForWipe(mBoltConfig);
     uint8_t result;
     unsigned long t0 = millis();
     do {

@@ -17,7 +17,12 @@
 #define JOBSTATUS_ERROR 5
 #define JOBSTATUS_GUARD_REJECT 6
 
-String boltstatustext[7] = {
+static const uint8_t NTAG424_AID[7] = {0xD2, 0x76, 0x00, 0x00,
+                                       0x85, 0x01, 0x01};
+static const uint16_t NTAG424_CC_FILE_ID = 0xE103;
+static const uint16_t NTAG424_NDEF_FILE_ID = 0xE104;
+
+static String boltstatustext[7] = {
     "idle",          "waiting for nfc-tag..",  "provisioning data..",
     "wiping data..", "done - remove the card", "error",
     "guard rejected - card not in expected state",
@@ -48,61 +53,14 @@ String convertIntToHex(uint8_t *input, uint8_t len) {
 }
 
 uint8_t convertCharToHex(char ch) {
-  uint8_t returnType;
-  switch (toupper(ch)) {
-  case '0':
-    returnType = 0;
-    break;
-  case '1':
-    returnType = 1;
-    break;
-  case '2':
-    returnType = 2;
-    break;
-  case '3':
-    returnType = 3;
-    break;
-  case '4':
-    returnType = 4;
-    break;
-  case '5':
-    returnType = 5;
-    break;
-  case '6':
-    returnType = 6;
-    break;
-  case '7':
-    returnType = 7;
-    break;
-  case '8':
-    returnType = 8;
-    break;
-  case '9':
-    returnType = 9;
-    break;
-  case 'A':
-    returnType = 10;
-    break;
-  case 'B':
-    returnType = 11;
-    break;
-  case 'C':
-    returnType = 12;
-    break;
-  case 'D':
-    returnType = 13;
-    break;
-  case 'E':
-    returnType = 14;
-    break;
-  case 'F':
-    returnType = 15;
-    break;
-  default:
-    returnType = 0;
-    break;
+  const char upper = toupper(ch);
+  if (upper >= '0' && upper <= '9') {
+    return upper - '0';
   }
-  return returnType;
+  if (upper >= 'A' && upper <= 'F') {
+    return upper - 'A' + 10;
+  }
+  return 0;
 }
 
 // GetKeyVersion — plain commode, requires ISOSelectFileByDFN first.
@@ -118,14 +76,12 @@ uint8_t convertCharToHex(char ch) {
 //     and use it to detect provisioning state: 0x00 = blank, != 0x00 = provisioned
 //   - APDU: `90 64 00 00 01 {keyNo} 00` -- PLAIN commode, no auth needed
 //
-// Practical implications for our firmware:
-//   - After factory reset: all keys at 0x00
-//   - After our dummyburn/reset: all keys at 0x01 (not 0x00)
-//   - keyver command checks these versions to determine card state
-//   - Pre-burn guard rejects if key 1 version != 0x00
+  // Practical implications for our firmware:
+  //   - After factory reset: all keys at 0x00
+  //   - keyver command checks these versions to determine card state
+  //   - Pre-burn guard rejects if key 1 version != 0x00
 uint8_t ntag424_getKeyVersion(Adafruit_PN532 *nfc, uint8_t keyno) {
-  uint8_t dfn[] = {0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01};
-  nfc->ntag424_ISOSelectFileByDFN(dfn);
+  nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID);
   uint8_t cla[] = {0x90};
   uint8_t ins[] = {0x64};
   uint8_t p1[] = {0x00};
@@ -182,6 +138,48 @@ public: // Access specifier
 
   void setDefautKeysNew() { setDefautKeys(key_new); }
   void setDefautKeysCur() { setDefautKeys(key_cur); }
+
+  void loadKeysForBurn(const sBoltConfig &config) {
+    setDefautKeysCur();
+    setNewKey(config.k0, 0);
+    setNewKey(config.k1, 1);
+    setNewKey(config.k2, 2);
+    setNewKey(config.k3, 3);
+    setNewKey(config.k4, 4);
+  }
+
+  void loadKeysForWipe(const sBoltConfig &config) {
+    setDefautKeysNew();
+    setCurKey(config.k0, 0);
+    setCurKey(config.k1, 1);
+    setCurKey(config.k2, 2);
+    setCurKey(config.k3, 3);
+    setCurKey(config.k4, 4);
+  }
+
+  bool selectNtagApplicationFiles() {
+    return nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID) &&
+           nfc->ntag424_ISOSelectFileById(NTAG424_CC_FILE_ID) &&
+           nfc->ntag424_ISOSelectFileById(NTAG424_NDEF_FILE_ID);
+  }
+
+  bool selectNdefFileOnly() {
+    return nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID) &&
+           nfc->ntag424_ISOSelectFileById(NTAG424_NDEF_FILE_ID);
+  }
+
+  bool changeAllKeys(uint8_t target_key_version) {
+    for (int i = 0; i < 5; i++) {
+      const uint8_t key_index = 4 - i;
+      if (!nfc->ntag424_ChangeKey(key_cur[key_index], key_new[key_index],
+                                  key_index, target_key_version)) {
+        Serial.print("ChangeKey error! Key: ");
+        Serial.println(key_index);
+        return false;
+      }
+    }
+    return true;
+  }
 
   void setKey(uint8_t keys[16], String key) {
     for (int i = 0; i < key.length(); i += 2) {
@@ -284,7 +282,7 @@ public: // Access specifier
   String getScannedUid() { return last_scanned_uid; }
 
   uint8_t burn(String lnurl) {
-    uint8_t success;
+    uint8_t success = true;
     uint8_t uid[] = {0, 0, 0, 0, 0, 0, 0}; // Buffer to store the returned UID
     uint8_t uidLength; // Length of the UID (4 or 7 bytes depending on ISO14443A
                        // card type)
@@ -319,13 +317,7 @@ public: // Access specifier
           return job_status;
         }
         Serial.println(F("Pre-burn check OK - card has factory keys"));
-        uint8_t filename[7] = {0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01};
-        nfc->ntag424_ISOSelectFileByDFN(filename);
-        int fileid = 0xe103;
-        nfc->ntag424_ISOSelectFileById(fileid);
-        fileid = 0xe104;
-        nfc->ntag424_ISOSelectFileById(fileid);
-        uint8_t FileSetting[16];
+        selectNtagApplicationFiles();
         uint8_t uriIdentifier = 0;
         int piccDataOffset = lnurl.length() + 10;
         int sdmMacOffset = lnurl.length() + 45;
@@ -333,7 +325,7 @@ public: // Access specifier
         uint8_t len = lnurl.length();
         uint8_t ndefheader[7] = {
             0x0,     /* Tag Field (0x03 = NDEF Message) */
-            len + 5, /* Payload Length (not including 0xFE trailer) */
+            static_cast<uint8_t>(len + 5), /* Payload Length (not including 0xFE trailer) */
             0xD1, /* NDEF Record Header (TNF=0x1:Well known record + SR + ME +
                      MB) */
             0x01, /* Type Length for the record type indicator */
@@ -355,41 +347,37 @@ public: // Access specifier
           Serial.println("Enable Mirroring and SDM.");
           // int piccDataOffset = 81;
           // int sdmMacOffset = 116;
-          uint8_t fileSettings[] = {0x40,
-                                    0x00,
-                                    0xE0,
-                                    0xC1,
-                                    0xFF,
-                                    0x12,
-                                    piccDataOffset & 0xff,
-                                    (piccDataOffset >> 8) & 0xff,
-                                    (piccDataOffset >> 16) & 0xff,
-                                    sdmMacOffset & 0xff,
-                                    (sdmMacOffset >> 8) & 0xff,
-                                    (sdmMacOffset >> 16) & 0xff,
-                                    sdmMacOffset & 0xff,
-                                    (sdmMacOffset >> 8) & 0xff,
-                                    (sdmMacOffset >> 16) & 0xff};
+           uint8_t fileSettings[] = {0x40,
+                                     0x00,
+                                     0xE0,
+                                     0xC1,
+                                     0xFF,
+                                     0x12,
+                                     static_cast<uint8_t>(piccDataOffset & 0xff),
+                                     static_cast<uint8_t>((piccDataOffset >> 8) & 0xff),
+                                     static_cast<uint8_t>((piccDataOffset >> 16) & 0xff),
+                                     static_cast<uint8_t>(sdmMacOffset & 0xff),
+                                     static_cast<uint8_t>((sdmMacOffset >> 8) & 0xff),
+                                     static_cast<uint8_t>((sdmMacOffset >> 16) & 0xff),
+                                     static_cast<uint8_t>(sdmMacOffset & 0xff),
+                                     static_cast<uint8_t>((sdmMacOffset >> 8) & 0xff),
+                                     static_cast<uint8_t>((sdmMacOffset >> 16) & 0xff)};
           nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
                                           (uint8_t)sizeof(fileSettings),
                                           (uint8_t)NTAG424_COMM_MODE_FULL);
 
-           for (int i = 0; i < 5; i++) {
-            success &=
-                nfc->ntag424_ChangeKey(key_cur[4 - i], key_new[4 - i], 4 - i, 0x01);
-            if (!success) {
-              Serial.print("ChangeKey error! Key: ");
-              Serial.println(i);
-              set_job_status_id(JOBSTATUS_ERROR);
-            }
-          }
-        } else {
+           success &= changeAllKeys(0x01);
+           if (!success) {
+             set_job_status_id(JOBSTATUS_ERROR);
+             return job_status;
+           }
+          } else {
           Serial.println("Authentication 1 failed.");
           set_job_status_id(JOBSTATUS_ERROR);
           return job_status;
         }
         authenticated = 0;
-        authenticated = nfc->ntag424_Authenticate(key_new[4], 4, 0x71);
+        authenticated = nfc->ntag424_Authenticate(key_new[0], 0, 0x71);
         // Display the current page number
         Serial.print("Response ");
         // Display the results, depending on 'success'
@@ -409,7 +397,7 @@ public: // Access specifier
   }
 
   uint8_t wipe() {
-    uint8_t success;
+    uint8_t success = true;
     uint8_t uid[] = {0, 0, 0, 0, 0, 0, 0}; // Buffer to store the returned UID
     uint8_t uidLength; // Length of the UID (4 or 7 bytes depending on ISO14443A
                        // card type)
@@ -446,16 +434,7 @@ public: // Access specifier
         Serial.print(F("Pre-wipe check OK - card key 1 version: 0x"));
         if (kv < 0x10) Serial.print(F("0"));
         Serial.println(kv, HEX);
-        uint8_t filename[7] = {0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01};
-        nfc->ntag424_ISOSelectFileByDFN(filename);
-        int fileid = 0xe103;
-        nfc->ntag424_ISOSelectFileById(fileid);
-        fileid = 0xe104;
-        nfc->ntag424_ISOSelectFileById(fileid);
-        uint8_t uriIdentifier = 0;
-        char url[] = " ";
-        // Figure out how long the string is
-        uint8_t len = strlen(url);
+        selectNtagApplicationFiles();
         uint8_t keyno = 0;
         uint8_t authenticated =
             nfc->ntag424_Authenticate(key_cur[keyno], keyno, 0x71);
@@ -466,31 +445,19 @@ public: // Access specifier
         if (authenticated == 1) {
           Serial.println("Authentication successful.");
           Serial.println("Disable Mirroring and SDM.");
-          int piccDataOffset = 81;
-          int sdmMacOffset = 116;
-
           uint8_t fileSettings[] = {0x40, 0xE0, 0xEE, 0x01, 0xFF, 0xFF};
 
           nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
                                           (uint8_t)sizeof(fileSettings),
                                           (uint8_t)NTAG424_COMM_MODE_FULL);
 
-          for (int i = 0; i < 5; i++) {
-            success &=
-                nfc->ntag424_ChangeKey(key_cur[4 - i], key_new[4 - i], 4 - i, 0x00);
-            if (!success) {
-              Serial.print("ChangeKey error! Key: ");
-              Serial.println(i);
-              job_status = JOBSTATUS_ERROR;
-            }
+          success &= changeAllKeys(0x00);
+          if (!success) {
+            set_job_status_id(JOBSTATUS_ERROR);
+            return job_status;
           }
 
-          uint8_t filename[7] = {0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01};
-          nfc->ntag424_ISOSelectFileByDFN(filename);
-          int fileid = 0xe103;
-          nfc->ntag424_ISOSelectFileById(fileid);
-          fileid = 0xe104;
-          nfc->ntag424_ISOSelectFileById(fileid);
+          selectNtagApplicationFiles();
 
           if (nfc->ntag424_FormatNDEF()) {
             job_perc = 100;
@@ -503,7 +470,7 @@ public: // Access specifier
         }
         // try authenticating with the new key
         authenticated = 0;
-        authenticated = nfc->ntag424_Authenticate(key_new[4], 4, 0x71);
+        authenticated = nfc->ntag424_Authenticate(key_new[0], 0, 0x71);
         if (authenticated == 1) {
           Serial.println("Authentication 2 Success.");
           set_job_status_id(JOBSTATUS_DONE);
