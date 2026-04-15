@@ -150,6 +150,7 @@ url <lnurl>        Set LNURL for burn command
 burn              Provision card: write NDEF + change keys (tap card, uses k0)
 wipe              Wipe card: zero keys + format NDEF (tap card, uses k0)
 ndef              Read NDEF message without auth (tap card). Paginated 48-byte reads, retry loop (100ms/15s)
+derivekeys        Read-only deterministic derivation; load keys into config only on full p=/c= verification
 auth              Test k0 authentication (tap card)
 ver               GetVersion + isNTAG424 check (tap card)
 keyver            Read key versions (blank/provisioned check, tap card)
@@ -171,6 +172,7 @@ reset             Wipe from zero keys to zero keys (test wipe path)
 | `burn` | Yes | Yes (k0) | Full provisioning: writes NDEF with the LNURL, configures SDM file settings, changes all 5 keys. See pre-burn guard below |
 | `wipe` | Yes | Yes (k0) | Resets card: zeroes all keys, disables SDM/mirroring, formats NDEF. See pre-wipe guard below |
 | `ndef` | Yes | No | Reads NDEF via ISO-7816 SELECT AID + SELECT FILE + ReadBinary with paginated 48-byte reads. Retry loop with 100ms poll, 15s timeout. Prints hex and ASCII. Phones can also read Bolt Card URLs without knowing card keys |
+| `derivekeys` | Yes | No | Reads NDEF, derives deterministic Bolt Card keys for known issuer keys, verifies `p=` with K1 and `c=` with K2, and only then loads K0-K4 into `mBoltConfig`. Leaves config unchanged on partial/no match |
 | `auth` | Yes | Yes (k0) | Attempts authentication with configured k0. Prints result and session state. 15-second timeout |
 | `ver` | Yes | No | Reads GetVersion from card. Reports whether card is NTAG424 DNA |
 | `keyver` | Yes | No | Reads version byte for all 5 keys via GetKeyVersion APDU. Reports whether card is BLANK (all 0x00) or PROVISIONED. 15-second timeout |
@@ -826,8 +828,128 @@ Working tree: **CLEAN** — All changes committed and pushed. Both repos at late
 - PN532 reliability: boot hardware reset, reinitPN532() with error counting, auto-recovery from RF stuck state (issue #7)
 - Build pinning: pre-build script pins PN532 lib to committed snapshot, generates build_metadata.h with both SHAs, boot prints provenance
 - Key 1 recovery: testck command restored key 1 from stale-library-induced corruption
-- Key 4 investigation: proven card-specific (blank card E2E rotates key 4 correctly in both directions)
+- Key 4 investigation: root cause found — `reset` command was unsafe, hardcoded key_cur to zeros. Recovery via `recoverkey`.
 - **E2E test on blank card `04:9F:70:FA:96:73:80`**: burn (all 5 keys 0x00→0x01) → wipe (all 5 keys 0x01→0x00) → zero-key auth verified
+- Key 4 recovery on `04:06:60:FA:96:73:80`: old key was `3333...` (static K4/K2 test key), recovered to zero via `recover4`
+- Safety: `reset` command disabled, `dummyburn` no longer suggests `reset`
+- Commits: `e2d57b8` (safety fix + recover4) + `3f25fb1` (diagnose + recoverkey)
+
+**Phase 2.6 (Card State Detection + Diagnostics)**: COMPLETE — 2026-04-15.
+- `diagnose` command: reads all 5 key versions, tests zero-key auth on key 0, classifies card state
+- `recoverkey <slot> <hex>`: generalization of `recover4`, works on any key slot 0-4
+- Card `04:33:65:FA:96:73:80` confirmed bricked: all keys version 0x01, zero-key auth fails, key values unknown
+- Card `04:06:60:FA:96:73:80` recovered to blank (key 4 was `3333...`)
+- Card `04:25:60:7A:8F:69:80` — pending physical card swap for diagnosis
+
+**Phase 2.7 (Read-Only Card Inspector)**: COMPLETE IN WORKTREE — 2026-04-15.
+- New `inspect` command: fully non-destructive card identifier / reader for unknown cards
+- Output includes: UID, compact UID, NTAG424 GetVersion summary, all 5 key versions (PLAIN mode), NDEF file settings, SDM settings/offsets, NDEF payload, URI extraction, Bolt Card heuristics (`lnurlw`, `p=`, `c=`)
+- `inspect` performs **no authentication attempts, no writes, no key changes** — safe default for unknown cards
+- Forked PN532 library refactored with reusable read-only helpers: `ntag424_GetKeyVersion()`, `ntag424_ISOSelectCCFile()`, `ntag424_ISOSelectNDEFFile()`, `ntag424_ReadNDEFMessage()`
+- `ndef` command refactored to use library `ReadNDEFMessage()` instead of sketch-local paginated read logic
+- Hardware validation on card `04:33:65:FA:96:73:80` (provisioned/bricked): inspector successfully read UID, GetVersion, all key versions, file settings, SDM config, and confirmed `NLEN=0` without authentication
+- Validation exposed and fixed two unrelated bugs:
+  - `convertIntToHex()` buffer overflow in `bolt.h` (`char[2]` for `%02X`) caused ESP32 crash during UID compact print
+  - forked library `ntag424_GetVersion()` corrupted its own version struct by copying 5 bytes into `FabKey[2]`; production info parsing corrected
+- Remaining caveat: this work is uncommitted in both repos and currently validated via a temporary dirty-build test copy because Bolty’s build pinning exports committed PN532 library HEAD only
+
+**Phase 2.8 (Deterministic Key Loading)**: COMPLETE IN WORKTREE — 2026-04-15.
+- New `derivekeys` command: safe deterministic key loader for known Bolt Card issuer keys
+- Flow: read UID + NDEF URI → parse `p=`/`c=` → try known issuer keys (`00..00`, `00..01`) → verify K1 by decrypting `p=` → verify K2 by checking `c=` for tested versions (`1`, `0`)
+- On **FULL MATCH**: load derived K0-K4 into `mBoltConfig` and print them
+- On **PARTIAL** (K1 match but no K2/c= match): print strong-indicator warning and leave config unchanged
+- On **FAIL**: print that no deterministic key set was confirmed and leave config unchanged
+- Safety rule: `derivekeys` is read-only against the card. It does not authenticate and does not write. Reading NDEF still advances the SDM read counter, which is expected and harmless.
+
+---
+
+### Card State Detection — Diagnostic Procedures
+
+#### Serial Commands
+
+| Command | Purpose |
+|---------|---------|
+| `inspect` | **Safe default** for unknown cards — read-only UID / NTAG424 / key versions / file settings / NDEF / Bolt Card heuristics, no auth, no writes |
+| `derivekeys` | Deterministic read-only key recovery for known issuers — only loads config keys after full K1+K2 verification |
+| `diagnose` | Full card state analysis — reads all key versions, tests zero-key auth, classifies state, suggests next action |
+| `keyver` | Quick key version read (PLAIN mode, no auth needed) |
+| `check` | Test zero-key auth on key 0 (confirm blank card) |
+| `recoverkey <slot> <hex>` | Targeted single-key recovery — authenticate with zero key 0, then ChangeKey slot to zero |
+| `wipe` | Full card wipe — requires keys set via `keys` command first |
+| `ver` | GetVersion — confirms card is NTAG424 DNA |
+
+#### Card State Classification (output of `diagnose`)
+
+```
+Key versions   | Zero-key auth | State          | Action
+---------------|---------------|----------------|--------
+All 0x00       | OK            | BLANK          | Ready for burn
+All 0x00       | FAIL          | INCONSISTENT   | Auth counter lockout or hw issue
+Some != 0x00   | OK            | HALF-WIPED     | recoverkey per stuck key, or wipe with known keys
+Some != 0x00   | FAIL          | PROVISIONED    | wipe with known keys; if key 0 unknown → unrecoverable
+Any 0xFF       | —             | COMM ERROR     | Not NTAG424 or reader issue; try 'ver'
+```
+
+#### Safe Inspection Workflow (preferred for unknown cards)
+
+1. Run `inspect` first — this is the safe card identifier / reader path
+2. Confirm the card responds and whether it is NTAG424 DNA via `GetVersion`
+3. Read all 5 key versions in PLAIN mode (no auth)
+4. Read public NDEF file settings and SDM metadata
+5. Read the NDEF payload if `NLEN > 0`
+6. Extract URI if present and flag Bolt Card heuristics:
+   - `lnurlw://` URI scheme
+   - `p=` Secure Dynamic Messaging PICC data parameter
+   - `c=` Secure Dynamic Messaging CMAC parameter
+7. Only use `diagnose` if you intentionally want the auth-based recovery classifier
+
+**Important**: `inspect` does **not** try zero-key auth. This avoids incrementing auth failure counters on unknown/provisioned cards.
+
+#### Deterministic Recovery Workflow (preferred for LNbits / boltcardpoc-style cards)
+
+1. Run `inspect` to see whether the URI looks like a Bolt Card and whether `p=` / `c=` are present
+2. Run `derivekeys`
+3. Interpret the result:
+   - **FULL MATCH**: K1 and K2 were verified from live NDEF data and K0-K4 were loaded into config
+   - **PARTIAL**: K1 decrypted valid PICCData, but K2/c= did not verify; do **not** trust config for wipe yet
+   - **FAIL**: no tested deterministic issuer key matched; do not auth blindly
+4. If `derivekeys` reports **FULL MATCH**, run `auth` once to confirm K0 before wipe
+5. If `auth` succeeds, run `wipe`
+6. After wipe, confirm with `keyver` (all 0x00 expected) and `check` (zero-key auth should succeed)
+
+This follows the official deterministic reset guidance: validate `p=` and `c=` before trying app-master authentication.
+
+#### Recovery Decision Tree
+
+1. Run `diagnose` — get key versions and auth status
+2. **BLANK**: Nothing to do. Card is ready.
+3. **HALF-WIPED**: Key 0 (master) is still zero, so you can auth.
+   - Identify which keys have version != 0x00
+   - If you know the old key value: `recoverkey <slot> <old-key-hex>`
+   - If old key is unknown: try static test keys (`1111...`, `2222...`, `3333...`) in order
+   - Or: set all known current keys via `keys` command, then `wipe`
+4. **PROVISIONED**: Key 0 is non-zero.
+   - If you know all key values: `keys <k0> <k1> <k2> <k3> <k4>` then `wipe`
+   - If key 0 is unknown: **card is unrecoverable** — no master-key override exists
+5. **INCONSISTENT**: Rare. Wait 10+ seconds for auth counter to cool down, retry.
+6. **COMM ERROR**: Run `ver` to confirm card type. Check reader wiring.
+
+#### Card Inventory (2026-04-15)
+
+| UID | State | Notes |
+|-----|-------|-------|
+| `04:9F:70:FA:96:73:80` | BLANK (E2E verified) | Clean test card. Burn→wipe cycle proven. |
+| `04:06:60:FA:96:73:80` | BLANK (recovered) | Was half-wiped (key 4 = `3333...`). Recovered via recoverkey. |
+| `04:25:60:7A:8F:69:80` | UNKNOWN | Possibly provisioned via LNbits. Needs diagnosis. |
+| `04:33:65:FA:96:73:80` | BRICKED (confirmed) | All 5 keys version 0x01, zero-key auth fails. Key values unknown. Permanently unrecoverable. |
+
+#### Key 4 Recovery — Detailed Narrative
+
+**What happened**: The `reset` command hardcoded `key_cur[]` to zeros before calling `wipe()`. During wipe, `changeAllKeys()` iterates keys 4→3→2→1→0. For key 4, it called `ChangeKey(zero_key, zero_key, 4, 0x00)` — but the actual key 4 value was `33333333333333333333333333333333` (the static K4/K2 test key from a prior `dummyburn`). The XOR in the ChangeKey payload was wrong, so the card returned `91 1E` (INTEGRITY_ERROR). Keys 3→2→1→0 were successfully wiped because they were still zero. This left key 4 stuck at `3333...` with version `0x01` while all other keys were at zero.
+
+**How we recovered**: Built `recoverkey 4 33333333333333333333333333333333` which authenticates with zero key on key 0 (still zero), then calls `ChangeKey(3333...key, zero_key, 4, 0x00)`. Key 4 version dropped to 0x00, card fully blank.
+
+**Safety fix**: `reset` command is now disabled. The `wipe` command uses `loadKeysForWipe()` which correctly sets `key_cur` to the actual current key values.
 
 ---
 
@@ -894,10 +1016,11 @@ Stress testing showed ~50% `readPassiveTargetID` failure rate with 2.2-second po
 4. ~~Refactor both repos~~ — DONE (2026-04-14). Library: extracted ChangeKey helpers, fixed FULL-mode response parsing (issue #23), DRY refactor for GetCardUID/GetTTStatus/ISOSelect/FormatNDEF, gated debug prints. Bolty: extracted BoltDevice helpers, centralized NTAG424 constants, simplified convertCharToHex, fixed uninitialized success accumulator, fixed post-auth key index, static boltstatustext. Commits: library `5349624` + `4c03141`, Bolty `471c9ae` + `1c2d9c2`. All pushed. Issues #22 and #23 closed with detailed comments.
 5. ~~PN532 reliability~~ (issue #7) — DONE (2026-04-15). Boot reset (RSTPD_N 100ms), reinitPN532() with error counting, auto-recovery after 5 consecutive scan failures with 30s cooldown. Commit: `a40df18`. Pushed.
 6. ~~Build pinning and E2E test~~ — DONE (2026-04-15). Pre-build script pins PN532 lib to committed snapshot, boot logs both SHAs. Full E2E burn→wipe on blank card `04:9F:70:FA:96:73:80` PASSED. All 5 key slots including key 4 rotated correctly in both directions. Commits: `20de190` + `f0b1720` + `c789d20`. Pushed.
-7. **Phase 3: LNbits integration** — import card credentials JSON, SUN verification
-8. **Phase 4: WiFi mode** — ESPAsyncWebServer, remote provisioning
-9. **Phase 5: Advanced features** — random UID, SUN verification (AES-CBC decrypt with k1, AES-CMAC verify with k2, counter replay protection)
-10. **Upstream library fixes** — merge proven fixes into master. Address remaining issues (#1 MAC counter, #11 cla/ins API, #18 ReadData bypass)
+7. ~~Card state detection + diagnostics~~ — DONE (2026-04-15). `diagnose` command classifies cards as BLANK/PROVISIONED/HALF-WIPED/INCONSISTENT/COMM_ERROR. `recoverkey <slot> <hex>` for targeted single-key recovery. Card `04:33:65:FA:96:73:80` confirmed bricked. Card `04:06:60:FA:96:73:80` recovered to blank. Commits: `e2d57b8` + `3f25fb1`. Pushed.
+8. **Phase 3: LNbits integration** — import card credentials JSON, SUN verification
+9. **Phase 4: WiFi mode** — ESPAsyncWebServer, remote provisioning
+10. **Phase 5: Advanced features** — random UID, SUN verification (AES-CBC decrypt with k1, AES-CMAC verify with k2, counter replay protection)
+11. **Upstream library fixes** — merge proven fixes into master. Address remaining issues (#1 MAC counter, #11 cla/ins API, #18 ReadData bypass)
 
 ---
 
@@ -943,11 +1066,18 @@ Stress testing showed ~50% `readPassiveTargetID` failure rate with 2.2-second po
 - NTAG424 NDEF reading does NOT require authentication — `ntag424_ISOReadFile()` handles it
 - NTAG424 writing/provisioning DOES require k0 authentication
 - Card UID `04 9F 70 FA 96 73 80` is blank (E2E verified 2026-04-15) — available for testing
-- Card UID `04 06 60 FA 96 73 80` has key 4 corrupted (unknown value, version 0x01) — card-specific issue, not software bug. Keys 0-3 are zeros.
-- Card UID `04 25 60 7A 8F 69 80` is provisioned with unknown keys (LNbits boltcardpoc)
-- Card UID `04 33 65 FA 96 73 80` is bricked (corrupted keys from bug #3) — confirmed permanently bricked from NXP AN12196 analysis
+- Card UID `04 06 60 FA 96 73 80` was recovered from half-wiped state (key 4 was `3333...`, recovered via `recoverkey`). Now fully blank (all keys 0x00).
+- Card UID `04 25 60 7A 8F 69 80` is unknown state — possibly provisioned via LNbits boltcardpoc. Needs diagnosis.
+- Card UID `04 33 65 FA 96 73 80` is confirmed bricked — all 5 keys at version 0x01, zero-key auth fails, key values unknown. Unrecoverable.
 - ⛔ NEVER loop AUTH commands without a hard attempt limit (max 5 per key per session) — SeqFailCtr triggers at 50 consecutive failures, TotFailCtr permanently locks at 1000 total
+- Deterministic Bolt Card verification rule: `p=`/K1 and `c=`/K2 can be checked read-only from NDEF; K0/K3/K4 cannot be directly read-only verified
+- `derivekeys` must only populate `mBoltConfig` on a **FULL MATCH** (K1 + K2), never on K1-only evidence
 - Build always uses pinned library — `scripts/pin_committed_build.py` exports committed PN532 lib into `.pio/libdeps/` before every PlatformIO build. Both SHAs printed at boot.
 - After library source changes, always `rm -rf .pio` for full clean rebuild (PlatformIO caches aggressively)
 - "i would rather you use z.ai web search and zread mcp to read and understand how it works as manufacturer documentation"
+- `diagnose` command classifies card state as BLANK/PROVISIONED/HALF-WIPED/INCONSISTENT/COMM_ERROR
+- `recoverkey <slot> <hex>` does targeted single-key ChangeKey recovery (requires key 0 to be zero/known)
+- `reset` command is DISABLED — was unsafe, hardcoded key_cur to zeros. Use `wipe` with explicit keys.
+- ChangeKey failures (`91 1E`) do NOT increment auth failure counters — only auth failures do
+- NTAG424DEBUG is enabled in `platformio.ini` build flags for development (verbose APDU logging)
 - AppMasterKey = key 0x00 per NXP AN12196 — do NOT assume key 14 exists as a recovery mechanism

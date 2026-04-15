@@ -1225,10 +1225,12 @@ void serial_print_help() {
   Serial.println(F("  burn              Burn card (tap card, uses keys+url)"));
   Serial.println(F("  wipe              Wipe card (tap card, uses keys)"));
   Serial.println(F("  ndef              Read NDEF message (no auth needed)"));
+  Serial.println(F("  inspect           Full read-only card inspection (no auth, no writes)"));
+  Serial.println(F("  derivekeys        Load deterministic keys from read-only p=/c= verification"));
   Serial.println(F("  auth              Test k0 authentication (tap card)"));
   Serial.println(F("  ver               GetVersion + NTAG424 check (tap card)"));
   Serial.println(F("  keyver            Read key versions (blank/provisioned check, tap card)"));
-  Serial.println(F("  diagnose          Full card state detection (key versions + auth test)"));
+  Serial.println(F("  diagnose          Auth-based state detection (for recovery work)"));
   Serial.println(F("  --- Safety / Testing ---"));
   Serial.println(F("  check             Auth with factory zero keys (confirm card is blank)"));
   Serial.println(F("  dummyburn         Burn with zero keys + dummy URL (test write path)"));
@@ -1284,6 +1286,440 @@ const char* ntag424_error_name(uint8_t sw1, uint8_t sw2) {
   if (sw1 == 0x6A && sw2 == 0x82) return "FILE_NOT_FOUND";
   if (sw1 == 0x6A && sw2 == 0x86) return "INCORRECT_P1_P2";
   return "UNKNOWN_ERROR";
+}
+
+static void print_hex_byte_prefixed(uint8_t value) {
+  if (value < 0x10) Serial.print(F("0"));
+  Serial.print(value, HEX);
+}
+
+static uint8_t bcd_to_decimal(uint8_t value) {
+  return (uint8_t)(((value >> 4) & 0x0F) * 10 + (value & 0x0F));
+}
+
+static uint32_t decode_u24_le(const uint8_t *buf) {
+  return (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) | ((uint32_t)buf[2] << 16);
+}
+
+static bool ndef_extract_uri(const uint8_t *ndef, int len, String &uri) {
+  if (ndef == nullptr || len < 5) return false;
+
+  for (int i = 0; i <= len - 5; i++) {
+    if (ndef[i] == 0xD1 && ndef[i + 1] == 0x01 && ndef[i + 3] == 0x55) {
+      const int payload_len = ndef[i + 2];
+      if (payload_len < 1 || i + 4 + payload_len > len) return false;
+
+      const uint8_t prefix = ndef[i + 4];
+      switch (prefix) {
+        case 0x00: uri = ""; break;
+        case 0x01: uri = "http://www."; break;
+        case 0x02: uri = "https://www."; break;
+        case 0x03: uri = "http://"; break;
+        case 0x04: uri = "https://"; break;
+        default: uri = ""; break;
+      }
+
+      for (int j = 0; j < payload_len - 1; j++) {
+        const uint8_t ch = ndef[i + 5 + j];
+        uri += (ch >= 0x20 && ch < 0x7F) ? (char)ch : '.';
+      }
+      return true;
+    }
+  }
+
+  return false;
+}
+
+static void print_ndef_ascii(const uint8_t *ndef, int len) {
+  for (int i = 0; i < len; i++) {
+    Serial.write(ndef[i] >= 0x20 && ndef[i] < 0x7F ? ndef[i] : '.');
+  }
+  Serial.println();
+}
+
+static void print_boltcard_heuristics(const String &uri) {
+  Serial.println(F("[inspect] --- Boltcard Heuristics ---"));
+  if (uri.length() == 0) {
+    Serial.println(F("[inspect] No URI record found in NDEF."));
+    return;
+  }
+
+  const bool has_lnurlw = uri.startsWith("lnurlw://") || uri.indexOf("lnurlw://") >= 0;
+  const int p_idx = uri.indexOf("p=");
+  const int c_idx = uri.indexOf("c=");
+  const bool has_p = p_idx >= 0;
+  const bool has_c = c_idx >= 0;
+
+  Serial.print(F("[inspect] URI has lnurlw scheme: "));
+  Serial.println(has_lnurlw ? F("YES") : F("NO"));
+  Serial.print(F("[inspect] URI has p= param: "));
+  Serial.println(has_p ? F("YES") : F("NO"));
+  Serial.print(F("[inspect] URI has c= param: "));
+  Serial.println(has_c ? F("YES") : F("NO"));
+
+  if (has_p) {
+    Serial.print(F("[inspect] p= offset in URI: "));
+    Serial.println(p_idx);
+  }
+  if (has_c) {
+    Serial.print(F("[inspect] c= offset in URI: "));
+    Serial.println(c_idx);
+  }
+
+  const bool looks_boltcard = has_lnurlw || (has_p && has_c);
+  Serial.print(F("[inspect] Looks like Bolt Card: "));
+  Serial.println(looks_boltcard ? F("YES") : F("NO / UNKNOWN"));
+}
+
+static bool hex_nibble(char ch, uint8_t &value) {
+  if (ch >= '0' && ch <= '9') {
+    value = (uint8_t)(ch - '0');
+    return true;
+  }
+  if (ch >= 'a' && ch <= 'f') {
+    value = (uint8_t)(ch - 'a' + 10);
+    return true;
+  }
+  if (ch >= 'A' && ch <= 'F') {
+    value = (uint8_t)(ch - 'A' + 10);
+    return true;
+  }
+  return false;
+}
+
+static bool parse_hex_fixed(const String &hex, uint8_t *out, size_t out_len) {
+  if (hex.length() != (int)(out_len * 2)) return false;
+  for (size_t i = 0; i < out_len; i++) {
+    uint8_t upper = 0;
+    uint8_t lower = 0;
+    if (!hex_nibble(hex[(int)(i * 2)], upper) || !hex_nibble(hex[(int)(i * 2 + 1)], lower)) {
+      return false;
+    }
+    out[i] = (uint8_t)((upper << 4) | lower);
+  }
+  return true;
+}
+
+static bool uri_get_query_param(const String &uri, const char *name, String &value) {
+  value = "";
+  const int query_idx = uri.indexOf('?');
+  if (query_idx < 0) return false;
+
+  const String needle = String(name) + "=";
+  const int start = uri.indexOf(needle, query_idx + 1);
+  if (start < 0) return false;
+
+  const int value_start = start + needle.length();
+  int value_end = uri.indexOf('&', value_start);
+  if (value_end < 0) value_end = uri.length();
+  value = uri.substring(value_start, value_end);
+  return value.length() > 0;
+}
+
+static void print_hex_bytes_inline(const uint8_t *data, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    if (data[i] < 0x10) Serial.print(F("0"));
+    Serial.print(data[i], HEX);
+  }
+}
+
+static void store_hex_string(char *out, size_t out_size, const uint8_t *data, uint8_t len) {
+  if (out == nullptr || out_size == 0 || data == nullptr) return;
+  String hex = convertIntToHex((uint8_t *)data, len);
+  strncpy(out, hex.c_str(), out_size - 1);
+  out[out_size - 1] = '\0';
+}
+
+static void store_bolt_config_keys_from_bytes(sBoltConfig &config, const uint8_t keys[5][16]) {
+  store_hex_string(config.k0, sizeof(config.k0), keys[0], 16);
+  store_hex_string(config.k1, sizeof(config.k1), keys[1], 16);
+  store_hex_string(config.k2, sizeof(config.k2), keys[2], 16);
+  store_hex_string(config.k3, sizeof(config.k3), keys[3], 16);
+  store_hex_string(config.k4, sizeof(config.k4), keys[4], 16);
+}
+
+static void write_u32_le(uint32_t value, uint8_t out[4]) {
+  out[0] = (uint8_t)(value & 0xFF);
+  out[1] = (uint8_t)((value >> 8) & 0xFF);
+  out[2] = (uint8_t)((value >> 16) & 0xFF);
+  out[3] = (uint8_t)((value >> 24) & 0xFF);
+}
+
+static const uint8_t BOLTCARD_DET_TAG_CARDKEY[4] = {0x2D, 0x00, 0x3F, 0x75};
+static const uint8_t BOLTCARD_DET_TAG_K0[4] = {0x2D, 0x00, 0x3F, 0x76};
+static const uint8_t BOLTCARD_DET_TAG_K1[4] = {0x2D, 0x00, 0x3F, 0x77};
+static const uint8_t BOLTCARD_DET_TAG_K2[4] = {0x2D, 0x00, 0x3F, 0x78};
+static const uint8_t BOLTCARD_DET_TAG_K3[4] = {0x2D, 0x00, 0x3F, 0x79};
+static const uint8_t BOLTCARD_DET_TAG_K4[4] = {0x2D, 0x00, 0x3F, 0x7A};
+static const uint8_t BOLTCARD_ISSUER_KEY_ZERO[16] = {0};
+static const uint8_t BOLTCARD_ISSUER_KEY_DEV[16] = {
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x01,
+};
+static const uint32_t BOLTCARD_VERSION_CANDIDATES[2] = {1, 0};
+
+struct DeterministicBoltcardMatch {
+  bool saw_k1_match;
+  bool full_match;
+  uint32_t counter;
+  uint32_t version;
+  uint8_t issuer_key[16];
+  uint8_t decrypted[16];
+  uint8_t keys[5][16];
+};
+
+static void derive_deterministic_card_key(Adafruit_PN532 *nfc,
+                                          const uint8_t issuer_key[16],
+                                          const uint8_t uid[7],
+                                          uint32_t version,
+                                          uint8_t out_card_key[16]) {
+  (void)nfc;
+  uint8_t msg[15] = {0};
+  memcpy(msg, BOLTCARD_DET_TAG_CARDKEY, 4);
+  memcpy(msg + 4, uid, 7);
+  write_u32_le(version, msg + 11);
+  AES128_CMAC(issuer_key, msg, sizeof(msg), out_card_key);
+}
+
+static void derive_deterministic_boltcard_keys(Adafruit_PN532 *nfc,
+                                               const uint8_t issuer_key[16],
+                                               const uint8_t uid[7],
+                                               uint32_t version,
+                                               uint8_t out_keys[5][16]) {
+  (void)nfc;
+  uint8_t card_key[16] = {0};
+  derive_deterministic_card_key(nfc, issuer_key, uid, version, card_key);
+  AES128_CMAC(card_key, BOLTCARD_DET_TAG_K0, sizeof(BOLTCARD_DET_TAG_K0), out_keys[0]);
+  AES128_CMAC(issuer_key, BOLTCARD_DET_TAG_K1, sizeof(BOLTCARD_DET_TAG_K1), out_keys[1]);
+  AES128_CMAC(card_key, BOLTCARD_DET_TAG_K2, sizeof(BOLTCARD_DET_TAG_K2), out_keys[2]);
+  AES128_CMAC(card_key, BOLTCARD_DET_TAG_K3, sizeof(BOLTCARD_DET_TAG_K3), out_keys[3]);
+  AES128_CMAC(card_key, BOLTCARD_DET_TAG_K4, sizeof(BOLTCARD_DET_TAG_K4), out_keys[4]);
+}
+
+static bool deterministic_decrypt_p(Adafruit_PN532 *nfc,
+                                    const uint8_t k1[16],
+                                    const uint8_t p[16],
+                                    const uint8_t uid[7],
+                                    uint8_t decrypted[16],
+                                    uint32_t &counter_out) {
+  if (!nfc->ntag424_decrypt((uint8_t *)k1, 16, (uint8_t *)p, decrypted)) {
+    return false;
+  }
+  if (decrypted[0] != 0xC7) return false;
+  if (memcmp(decrypted + 1, uid, 7) != 0) return false;
+  counter_out = decode_u24_le(decrypted + 8);
+  return true;
+}
+
+static bool deterministic_verify_cmac(Adafruit_PN532 *nfc,
+                                      const uint8_t k2[16],
+                                      const uint8_t uid[7],
+                                      uint32_t counter,
+                                      const uint8_t expected_c[8]) {
+  (void)nfc;
+  uint8_t sv2[16] = {0x3C, 0xC3, 0x00, 0x01, 0x00, 0x80};
+  memcpy(sv2 + 6, uid, 7);
+  sv2[13] = (uint8_t)(counter & 0xFF);
+  sv2[14] = (uint8_t)((counter >> 8) & 0xFF);
+  sv2[15] = (uint8_t)((counter >> 16) & 0xFF);
+
+  uint8_t session_key[16] = {0};
+  AES128_CMAC(k2, sv2, sizeof(sv2), session_key);
+
+  uint8_t full_cmac[16] = {0};
+  AES128_CMAC(session_key, nullptr, 0, full_cmac);
+
+  uint8_t computed_c[8] = {0};
+  for (int i = 0; i < 8; i++) {
+    computed_c[i] = full_cmac[(i * 2) + 1];
+  }
+  return memcmp(computed_c, expected_c, sizeof(computed_c)) == 0;
+}
+
+static bool deterministic_try_known_matches(Adafruit_PN532 *nfc,
+                                            const uint8_t *uid,
+                                            uint8_t uid_len,
+                                            const String &uri,
+                                            DeterministicBoltcardMatch &match) {
+  memset(&match, 0, sizeof(match));
+  if (uid == nullptr || uid_len != 7 || uri.length() == 0) return false;
+
+  String p_hex;
+  if (!uri_get_query_param(uri, "p", p_hex)) return false;
+
+  uint8_t p_bytes[16] = {0};
+  if (!parse_hex_fixed(p_hex, p_bytes, sizeof(p_bytes))) return false;
+
+  String c_hex;
+  const bool has_c = uri_get_query_param(uri, "c", c_hex);
+  uint8_t c_bytes[8] = {0};
+  const bool c_parse_ok = has_c && parse_hex_fixed(c_hex, c_bytes, sizeof(c_bytes));
+
+  for (int candidate = 0; candidate < 2; candidate++) {
+    const uint8_t *issuer_key = (candidate == 0) ? BOLTCARD_ISSUER_KEY_ZERO : BOLTCARD_ISSUER_KEY_DEV;
+
+    uint8_t keys_v1[5][16] = {{0}};
+    derive_deterministic_boltcard_keys(nfc, issuer_key, uid, 1, keys_v1);
+
+    uint8_t decrypted[16] = {0};
+    uint32_t counter = 0;
+    const bool k1_match = deterministic_decrypt_p(nfc, keys_v1[1], p_bytes, uid, decrypted, counter);
+    if (!k1_match) continue;
+
+    match.saw_k1_match = true;
+    memcpy(match.issuer_key, issuer_key, sizeof(match.issuer_key));
+    memcpy(match.decrypted, decrypted, sizeof(match.decrypted));
+    match.counter = counter;
+
+    if (!c_parse_ok) {
+      return false;
+    }
+
+    for (int version_idx = 0; version_idx < 2; version_idx++) {
+      const uint32_t version = BOLTCARD_VERSION_CANDIDATES[version_idx];
+      uint8_t derived_keys[5][16] = {{0}};
+      derive_deterministic_boltcard_keys(nfc, issuer_key, uid, version, derived_keys);
+      if (!deterministic_verify_cmac(nfc, derived_keys[2], uid, counter, c_bytes)) continue;
+
+      match.full_match = true;
+      match.version = version;
+      memcpy(match.keys, derived_keys, sizeof(match.keys));
+      return true;
+    }
+
+    return false;
+  }
+
+  return false;
+}
+
+static void print_deterministic_boltcard_check(Adafruit_PN532 *nfc,
+                                               const uint8_t *uid,
+                                               uint8_t uid_len,
+                                               const String &uri) {
+  Serial.println(F("[inspect] --- Deterministic Key Derivation Check ---"));
+
+  if (uid_len != 7) {
+    Serial.println(F("[inspect] SKIPPED — deterministic Bolt Card derivation expects a 7-byte UID."));
+    return;
+  }
+  if (uri.length() == 0) {
+    Serial.println(F("[inspect] SKIPPED — no URI available for read-only deterministic verification."));
+    return;
+  }
+
+  String p_hex;
+  if (!uri_get_query_param(uri, "p", p_hex)) {
+    Serial.println(F("[inspect] SKIPPED — URI has no p= parameter to decrypt."));
+    return;
+  }
+
+  uint8_t p_bytes[16] = {0};
+  if (!parse_hex_fixed(p_hex, p_bytes, sizeof(p_bytes))) {
+    Serial.println(F("[inspect] FAIL — p= is not valid 16-byte hex."));
+    return;
+  }
+
+  String c_hex;
+  const bool has_c = uri_get_query_param(uri, "c", c_hex);
+  uint8_t c_bytes[8] = {0};
+  const bool c_parse_ok = has_c && parse_hex_fixed(c_hex, c_bytes, sizeof(c_bytes));
+
+  bool any_match = false;
+  bool any_full_match = false;
+
+  for (int candidate = 0; candidate < 2; candidate++) {
+    const uint8_t *issuer_key = (candidate == 0) ? BOLTCARD_ISSUER_KEY_ZERO : BOLTCARD_ISSUER_KEY_DEV;
+    const __FlashStringHelper *issuer_label =
+        (candidate == 0) ? F("00000000000000000000000000000000")
+                         : F("00000000000000000000000000000001");
+
+    uint8_t keys_v1[5][16] = {{0}};
+    derive_deterministic_boltcard_keys(nfc, issuer_key, uid, 1, keys_v1);
+
+    uint8_t decrypted[16] = {0};
+    uint32_t counter = 0;
+    const bool k1_match = deterministic_decrypt_p(nfc, keys_v1[1], p_bytes, uid, decrypted, counter);
+
+    Serial.print(F("[inspect] Issuer key "));
+    Serial.print(issuer_label);
+    Serial.print(F(" -> deterministic K1 read-only decrypt: "));
+    Serial.println(k1_match ? F("MATCH") : F("NO MATCH"));
+
+    if (!k1_match) {
+      continue;
+    }
+
+    any_match = true;
+    Serial.print(F("[inspect]   PICCData header: 0x"));
+    print_hex_byte_prefixed(decrypted[0]);
+    Serial.println();
+    Serial.print(F("[inspect]   Decrypted UID: "));
+    bolt.nfc->PrintHex(decrypted + 1, 7);
+    Serial.print(F("[inspect]   Read counter: "));
+    Serial.println(counter);
+    Serial.println(F("[inspect]   This card was decrypted with a deterministic K1 derived from the UID using the Bolt Card spec."));
+
+    if (!has_c) {
+      Serial.println(F("[inspect]   c= missing — cannot read-only verify deterministic K2/K0/K3/K4."));
+      Serial.println(F("[inspect]   This is a strong indicator only; it does not guarantee auth or wipe will succeed."));
+      continue;
+    }
+    if (!c_parse_ok) {
+      Serial.println(F("[inspect]   c= is malformed — cannot read-only verify deterministic K2/K0/K3/K4."));
+      Serial.println(F("[inspect]   This is a strong indicator only; it does not guarantee auth or wipe will succeed."));
+      continue;
+    }
+
+    int matched_version = -1;
+    uint8_t matched_keys[5][16] = {{0}};
+    for (int version_idx = 0; version_idx < 2; version_idx++) {
+      const uint32_t version = BOLTCARD_VERSION_CANDIDATES[version_idx];
+      uint8_t derived_keys[5][16] = {{0}};
+      derive_deterministic_boltcard_keys(nfc, issuer_key, uid, version, derived_keys);
+      const bool cmac_match = deterministic_verify_cmac(nfc, derived_keys[2], uid, counter, c_bytes);
+      Serial.print(F("[inspect]   Deterministic K2/c= check (version "));
+      Serial.print(version);
+      Serial.print(F("): "));
+      Serial.println(cmac_match ? F("MATCH") : F("NO MATCH"));
+      if (cmac_match && matched_version < 0) {
+        matched_version = (int)version;
+        memcpy(matched_keys, derived_keys, sizeof(matched_keys));
+      }
+    }
+
+    if (matched_version >= 0) {
+      any_full_match = true;
+      Serial.print(F("[inspect]   Full read-only deterministic match: issuer key "));
+      Serial.print(issuer_label);
+      Serial.print(F(", version "));
+      Serial.println(matched_version);
+      Serial.println(F("[inspect]   This strongly indicates the deterministic K0-K4 set for this issuer/version is correct."));
+      Serial.println(F("[inspect]   It is still not a guarantee that authenticate or wipe will succeed on this tag."));
+      Serial.println(F("[inspect]   Suggested keys command:"));
+      Serial.print(F("[inspect]   keys "));
+      Serial.print(convertIntToHex(matched_keys[0], 16));
+      Serial.print(F(" "));
+      Serial.print(convertIntToHex(matched_keys[1], 16));
+      Serial.print(F(" "));
+      Serial.print(convertIntToHex(matched_keys[2], 16));
+      Serial.print(F(" "));
+      Serial.print(convertIntToHex(matched_keys[3], 16));
+      Serial.print(F(" "));
+      Serial.println(convertIntToHex(matched_keys[4], 16));
+    } else {
+      Serial.println(F("[inspect]   K1 matched, but tested deterministic K2 versions did not validate c=."));
+      Serial.println(F("[inspect]   This is still a strong indicator that we probably know the issuer key and can likely recover the card more easily."));
+    }
+  }
+
+  if (!any_match) {
+    Serial.println(F("[inspect] No tested deterministic issuer key produced valid PICCData for this UID."));
+  } else if (!any_full_match) {
+    Serial.println(F("[inspect] Deterministic read-only verification found a K1 match, but no full K2/c= match for the tested versions."));
+  }
 }
 
 void handle_serial_command(String cmd) {
@@ -1388,108 +1824,280 @@ void handle_serial_command(String cmd) {
      do {
        found_ndef = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uid_len, 100);
        if (millis() - t0_ndef > 15000) break;
-     } while (!found_ndef);
-     if (found_ndef) {
-       uint8_t ndef[256] = {0};
-       int len = 0;
+      } while (!found_ndef);
+      if (found_ndef) {
+        uint8_t ndef[256] = {0};
+        int len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
+        if (len <= 0) {
+          if (len == 0) {
+            Serial.println(F("[ndef] No NDEF data (NLEN=0)"));
+          }
+          goto ndef_fail;
+        }
 
-       // Select NTAG424 application + NDEF file E104
-        bool sel_ok = bolt.selectNdefFileOnly();
-        Serial.print(F("[ndef] SELECT AID: ")); Serial.println(sel_ok ? "OK" : "FAIL");
-        if (!sel_ok) goto ndef_fail;
-        Serial.println(F("[ndef] SELECT FILE E104: OK"));
-
-       // Read NLEN (first 3 bytes: 2-byte NLEN + 1 extra) at file offset 0
-       // Uses proper Case 2 APDU via ntag424_ISOReadBinary (no Lc byte).
-       // Ref: library ntag424_ISOReadFile lines 2993-3009
-       uint8_t nlen_buf[32] = {0};
-       uint8_t nlen_resp_len = bolt.nfc->ntag424_ISOReadBinary(0, 3, nlen_buf, sizeof(nlen_buf));
-       Serial.print(F("[ndef] NLEN read: ")); Serial.print(nlen_resp_len); Serial.println(F(" bytes"));
-
-       if (nlen_resp_len < 3 || nlen_buf[nlen_resp_len - 2] != 0x90 || nlen_buf[nlen_resp_len - 1] != 0x00) {
-         Serial.print(F("[ndef] NLEN read failed, SW="));
-         if (nlen_resp_len >= 2) {
-           Serial.print(nlen_buf[nlen_resp_len - 2], HEX);
-           Serial.print(nlen_buf[nlen_resp_len - 1], HEX);
-         }
-         Serial.println();
-         goto ndef_fail;
-       }
-
-       int nlen = (nlen_buf[0] << 8) | nlen_buf[1];
-       Serial.print(F("[ndef] NLEN=")); Serial.println(nlen);
-
-       if (nlen == 0 || nlen > 252) {
-         Serial.println(F("[ndef] No NDEF data (NLEN=0) or invalid NLEN"));
-         goto ndef_fail;
-       }
-
-       // Read NDEF body at file offset 2 (after NLEN) using paginated reads.
-       // PN532 pn532_packetbuffer is 64 bytes → max ~54 bytes card data per read.
-       // We read in 48-byte chunks to stay safely within limits.
-       // Ref: library ntag424_ISOReadFile() uses 32-byte pages (line ~3072-3155)
-       //
-       // File layout: [NLEN_H][NLEN_L][NDEF_record_header(5+)][URL_payload]
-       uint8_t body_buf[256] = {0};
-       int total_to_read = nlen;  // NLEN = total NDEF message length
-       int total_read = 0;
-       const int PAGE_SIZE = 48;  // safe within 64-byte pn532_packetbuffer
-       bool read_ok = true;
-
-       while (total_read < total_to_read && total_read < (int)sizeof(body_buf)) {
-         int chunk = total_to_read - total_read;
-         if (chunk > PAGE_SIZE) chunk = PAGE_SIZE;
-         if (total_read + chunk > (int)sizeof(body_buf)) chunk = sizeof(body_buf) - total_read;
-
-         uint8_t chunk_buf[56] = {0};
-         uint8_t chunk_rl = bolt.nfc->ntag424_ISOReadBinary(
-           2 + total_read, (uint8_t)chunk, chunk_buf, sizeof(chunk_buf));
-
-         if (chunk_rl < 3 || chunk_buf[chunk_rl-2] != 0x90 || chunk_buf[chunk_rl-1] != 0x00) {
-           Serial.print(F("[ndef] Body page read failed at offset "));
-           Serial.print(2 + total_read);
-           Serial.print(F(" SW="));
-           if (chunk_rl >= 2) {
-             Serial.print(chunk_buf[chunk_rl-2], HEX); Serial.print(F(" "));
-             Serial.print(chunk_buf[chunk_rl-1], HEX);
-           }
-           Serial.println();
-           read_ok = false;
-           break;
-         }
-         int data_bytes = chunk_rl - 2;  // subtract SW1 SW2
-         memcpy(body_buf + total_read, chunk_buf, data_bytes);
-         total_read += data_bytes;
-
-         Serial.print(F("[ndef] Read page: offset="));
-         Serial.print(2 + total_read - data_bytes);
-         Serial.print(F(" got=")); Serial.print(data_bytes);
-         Serial.print(F(" total=")); Serial.println(total_read);
-       }
-
-       if (!read_ok) goto ndef_fail;
-
-       len = total_read;
-       if (len > (int)sizeof(ndef)) len = sizeof(ndef);
-       memcpy(ndef, body_buf, len);
-
-       Serial.print(F("[ndef] OK (")); Serial.print(len); Serial.println(F(" bytes)"));
-       Serial.print(F("[ndef] hex: "));
-       bolt.nfc->PrintHex(ndef, len > 128 ? 128 : len);
-       Serial.print(F("[ndef] ASCII: "));
-       for (int i = 0; i < len; i++) {
-         Serial.write(ndef[i] >= 0x20 && ndef[i] < 0x7F ? ndef[i] : '.');
-       }
-       Serial.println();
-       led_blink(3, 100);
-       serial_cmd_active = false;
-     } else {
+        Serial.print(F("[ndef] OK (")); Serial.print(len); Serial.println(F(" bytes)"));
+        Serial.print(F("[ndef] hex: "));
+        bolt.nfc->PrintHex(ndef, len > 128 ? 128 : len);
+        Serial.print(F("[ndef] ASCII: "));
+        print_ndef_ascii(ndef, len);
+        led_blink(3, 100);
+        serial_cmd_active = false;
+      } else {
 ndef_fail:
        Serial.println(F("[ndef] FAILED — card not detected or read error"));
        led_blink(5, 100);
        serial_cmd_active = false;
      }
     }
+    else if (cmd == "inspect") {
+      if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
+      Serial.println(F("[inspect] Tap card now..."));
+      serial_cmd_active = true;
+      led_on();
+
+      uint8_t uid[7] = {0};
+      uint8_t uid_len = 0;
+      unsigned long t0_inspect = millis();
+      bool found = false;
+      do {
+        found = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uid_len, 100);
+        if (millis() - t0_inspect > 15000) {
+          Serial.println(F("[inspect] TIMEOUT"));
+          serial_cmd_active = false;
+          return;
+        }
+      } while (!found);
+
+      Serial.println(F("[inspect] --- Card Presence ---"));
+      Serial.print(F("[inspect] UID length: "));
+      Serial.println(uid_len);
+      Serial.print(F("[inspect] UID: "));
+      bolt.nfc->PrintHex(uid, uid_len);
+      Serial.print(F("[inspect] UID compact: "));
+      Serial.println(convertIntToHex(uid, uid_len));
+      delay(50);
+
+      Serial.println(F("[inspect] --- Version / Type ---"));
+      const uint8_t version_ok = bolt.nfc->ntag424_GetVersion();
+      Serial.print(F("[inspect] GetVersion: "));
+      Serial.println(version_ok ? F("OK") : F("FAIL"));
+      if (version_ok) {
+        Serial.print(F("[inspect] NTAG424 HWType: 0x"));
+        print_hex_byte_prefixed(bolt.nfc->ntag424_VersionInfo.HWType);
+        Serial.println();
+        Serial.print(F("[inspect] NTAG424 SW version: "));
+        Serial.print(bolt.nfc->ntag424_VersionInfo.SWMajorVersion, DEC);
+        Serial.print(F("."));
+        Serial.println(bolt.nfc->ntag424_VersionInfo.SWMinorVersion, DEC);
+        Serial.print(F("[inspect] Prod week/year: CW "));
+        Serial.print(bolt.nfc->ntag424_VersionInfo.CWProd, DEC);
+        Serial.print(F(" / "));
+        Serial.print(2000 + bcd_to_decimal(bolt.nfc->ntag424_VersionInfo.YearProd));
+        Serial.println();
+      }
+      Serial.print(F("[inspect] isNTAG424: "));
+      Serial.println(version_ok && bolt.nfc->ntag424_VersionInfo.HWType == 0x04 ? F("YES") : F("NO / UNKNOWN"));
+
+      Serial.println(F("[inspect] --- Key Versions (read-only) ---"));
+      bool all_zero = true;
+      bool any_keyver_error = false;
+      if (!bolt.nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID)) {
+        Serial.println(F("[inspect] Failed to select NTAG424 application for key version reads"));
+        any_keyver_error = true;
+      } else {
+        for (int k = 0; k < 5; k++) {
+          uint8_t kv = 0xFF;
+          const bool ok = bolt.nfc->ntag424_GetKeyVersion(k, &kv);
+          Serial.print(F("[inspect] Key "));
+          Serial.print(k);
+          Serial.print(F(" version: "));
+          if (!ok) {
+            Serial.println(F("READ ERROR"));
+            any_keyver_error = true;
+            continue;
+          }
+          Serial.print(F("0x"));
+          print_hex_byte_prefixed(kv);
+          if (kv == 0x00) Serial.println(F(" (factory default)"));
+          else Serial.println(F(" (changed)"));
+          if (kv != 0x00) all_zero = false;
+        }
+      }
+
+      Serial.println(F("[inspect] --- NDEF File Settings ---"));
+      uint8_t fs[32] = {0};
+      const uint8_t fs_len = bolt.nfc->ntag424_GetFileSettings(2, fs, NTAG424_COMM_MODE_PLAIN);
+      if (fs_len >= 2) {
+        Serial.print(F("[inspect] GetFileSettings len: "));
+        Serial.println(fs_len);
+        Serial.print(F("[inspect] Raw file settings: "));
+        bolt.nfc->PrintHex(fs, fs_len);
+        if (fs_len >= 7) {
+          Serial.print(F("[inspect] FileType: 0x"));
+          print_hex_byte_prefixed(fs[0]);
+          Serial.println();
+          Serial.print(F("[inspect] FileOption: 0x"));
+          print_hex_byte_prefixed(fs[1]);
+          Serial.println();
+          Serial.print(F("[inspect] AccessRights: 0x"));
+          print_hex_byte_prefixed(fs[2]);
+          print_hex_byte_prefixed(fs[3]);
+          Serial.println();
+          Serial.print(F("[inspect] FileSize bytes: "));
+          Serial.println(((uint32_t)fs[4] << 16) | ((uint32_t)fs[5] << 8) | fs[6]);
+          Serial.print(F("[inspect] SDM enabled: "));
+          Serial.println((fs[1] & 0x40) ? F("YES") : F("NO"));
+          if ((fs[1] & 0x40) && fs_len >= 21) {
+            Serial.print(F("[inspect] SDM options: 0x"));
+            print_hex_byte_prefixed(fs[7]);
+            Serial.println();
+            Serial.print(F("[inspect] SDM access rights: 0x"));
+            print_hex_byte_prefixed(fs[8]);
+            print_hex_byte_prefixed(fs[9]);
+            Serial.println();
+            Serial.print(F("[inspect] UID offset: "));
+            Serial.println(decode_u24_le(fs + 10));
+            Serial.print(F("[inspect] SDM MAC input offset: "));
+            Serial.println(decode_u24_le(fs + 13));
+            Serial.print(F("[inspect] SDM MAC offset: "));
+            Serial.println(decode_u24_le(fs + 16));
+          }
+        }
+      } else {
+        Serial.println(F("[inspect] GetFileSettings failed"));
+      }
+
+      Serial.println(F("[inspect] --- NDEF Read ---"));
+      uint8_t ndef[256] = {0};
+      const int ndef_len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
+      if (ndef_len < 0) {
+        Serial.println(F("[inspect] NDEF read failed"));
+      } else if (ndef_len == 0) {
+        Serial.println(F("[inspect] No NDEF data (NLEN=0)"));
+      } else {
+        Serial.print(F("[inspect] NDEF bytes: "));
+        Serial.println(ndef_len);
+        Serial.print(F("[inspect] NDEF hex: "));
+        bolt.nfc->PrintHex(ndef, ndef_len > 128 ? 128 : ndef_len);
+        Serial.print(F("[inspect] NDEF ASCII: "));
+        print_ndef_ascii(ndef, ndef_len);
+
+        String uri;
+        if (ndef_extract_uri(ndef, ndef_len, uri)) {
+          Serial.print(F("[inspect] URI: "));
+          Serial.println(uri);
+        } else {
+          Serial.println(F("[inspect] URI: not found / non-URI NDEF"));
+        }
+        print_boltcard_heuristics(uri);
+        print_deterministic_boltcard_check(bolt.nfc, uid, uid_len, uri);
+      }
+
+      Serial.println(F("[inspect] --- Safe Summary ---"));
+      if (!version_ok) {
+        Serial.println(F("[inspect] Could not confirm NTAG424 via GetVersion."));
+      } else if (any_keyver_error) {
+        Serial.println(F("[inspect] Card responded, but some read-only NTAG424 reads failed."));
+      } else if (all_zero) {
+        Serial.println(F("[inspect] Card looks blank or unprovisioned from key versions alone."));
+      } else {
+        Serial.println(F("[inspect] Card has non-default key versions; likely provisioned or previously modified."));
+      }
+      Serial.println(F("[inspect] No authentication attempts were made."));
+      Serial.println(F("[inspect] No writes or key changes were performed."));
+      led_blink(3, 100);
+      serial_cmd_active = false;
+    }
+  else if (cmd == "derivekeys") {
+    if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
+    Serial.println(F("[derivekeys] Tap card now..."));
+    Serial.println(F("[derivekeys] Read-only flow: inspect NDEF, verify p=/c=, and only then load keys into config."));
+    serial_cmd_active = true;
+    led_on();
+
+    uint8_t uid[7] = {0};
+    uint8_t uid_len = 0;
+    unsigned long t0_derive = millis();
+    bool found = false;
+    do {
+      found = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uid_len, 100);
+      if (millis() - t0_derive > 15000) {
+        Serial.println(F("[derivekeys] TIMEOUT"));
+        serial_cmd_active = false;
+        return;
+      }
+    } while (!found);
+
+    Serial.print(F("[derivekeys] UID: "));
+    bolt.nfc->PrintHex(uid, uid_len);
+
+    uint8_t ndef[256] = {0};
+    const int ndef_len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
+    if (ndef_len <= 0) {
+      Serial.println(F("[derivekeys] FAIL — could not read NDEF."));
+      Serial.println(F("[derivekeys] No keys were changed in config."));
+      led_blink(5, 100);
+      serial_cmd_active = false;
+      return;
+    }
+
+    String uri;
+    if (!ndef_extract_uri(ndef, ndef_len, uri)) {
+      Serial.println(F("[derivekeys] FAIL — NDEF does not contain a URI record."));
+      Serial.println(F("[derivekeys] No keys were changed in config."));
+      led_blink(5, 100);
+      serial_cmd_active = false;
+      return;
+    }
+
+    DeterministicBoltcardMatch match;
+    const bool full_match = deterministic_try_known_matches(bolt.nfc, uid, uid_len, uri, match);
+
+    if (!match.saw_k1_match) {
+      Serial.println(F("[derivekeys] FAIL — no known deterministic issuer key produced valid PICCData for this card."));
+      Serial.println(F("[derivekeys] No keys were changed in config."));
+      led_blink(5, 100);
+      serial_cmd_active = false;
+      return;
+    }
+
+    Serial.print(F("[derivekeys] Deterministic K1 matched issuer key "));
+    print_hex_bytes_inline(match.issuer_key, sizeof(match.issuer_key));
+    Serial.println();
+    Serial.print(F("[derivekeys] Read counter from p=: "));
+    Serial.println(match.counter);
+
+    if (!full_match) {
+      Serial.println(F("[derivekeys] PARTIAL — K1 matched, but no full K2/c= match was found for tested versions."));
+      Serial.println(F("[derivekeys] Config keys were left unchanged on purpose."));
+      Serial.println(F("[derivekeys] You likely know the issuer key, but auth/wipe confidence is not high enough to auto-load keys."));
+      led_blink(5, 100);
+      serial_cmd_active = false;
+      return;
+    }
+
+    store_bolt_config_keys_from_bytes(mBoltConfig, match.keys);
+    Serial.print(F("[derivekeys] FULL MATCH — issuer key "));
+    print_hex_bytes_inline(match.issuer_key, sizeof(match.issuer_key));
+    Serial.print(F(", version "));
+    Serial.println(match.version);
+    Serial.println(F("[derivekeys] Loaded deterministic K0-K4 into active config."));
+    Serial.println(F("[derivekeys] K1 and K2 were verified read-only from the card's current NDEF data."));
+    Serial.println(F("[derivekeys] K0, K3, and K4 cannot be directly verified read-only, but this is the strongest safe pre-auth signal."));
+    Serial.print(F("[derivekeys] k0: "));
+    Serial.println(mBoltConfig.k0);
+    Serial.print(F("[derivekeys] k1: "));
+    Serial.println(mBoltConfig.k1);
+    Serial.print(F("[derivekeys] k2: "));
+    Serial.println(mBoltConfig.k2);
+    Serial.print(F("[derivekeys] k3: "));
+    Serial.println(mBoltConfig.k3);
+    Serial.print(F("[derivekeys] k4: "));
+    Serial.println(mBoltConfig.k4);
+    Serial.println(F("[derivekeys] Next steps: 'auth' gives a single K0 confirmation attempt; 'wipe' performs the actual reset."));
+    led_blink(3, 100);
+    serial_cmd_active = false;
+  }
   else if (cmd == "ver") {
     if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
     serial_cmd_active = true;
