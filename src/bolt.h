@@ -423,7 +423,6 @@ public: // Access specifier
     set_job_status_id(JOBSTATUS_WAITING);
     success = nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, 100);
     if (!success) {
-      set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
 
