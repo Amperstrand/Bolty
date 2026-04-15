@@ -416,6 +416,7 @@ public: // Access specifier
   }
 
   uint8_t resetNdefOnly() {
+    uint8_t success;
     uint8_t uid[] = {0, 0, 0, 0, 0, 0, 0};
     uint8_t uidLength;
 
