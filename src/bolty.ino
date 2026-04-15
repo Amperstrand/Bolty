@@ -116,11 +116,18 @@ static void ota_check_and_update() {
     return;
   }
 
-  unsigned long remote_version = doc["version_code"] | 0UL;
-  const char* firmware_url    = doc["url"]          | "";
-  int         firmware_size   = doc["size"]         | 0;
+  unsigned long remote_version = doc["version_code"].as<unsigned long>();
+  String        fw_url         = doc["url"].as<String>();
+  int           fw_size        = doc["size"].as<int>();
 
   Serial.print(F("[ota] Remote version: ")); Serial.println(remote_version);
+
+  if (remote_version == 0 || fw_url.length() == 0) {
+    Serial.println(F("[ota] Manifest missing version_code or url — skipping"));
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    return;
+  }
 
   if (remote_version <= (unsigned long)FW_VERSION_CODE) {
     Serial.println(F("[ota] Firmware is up to date — no update needed"));
@@ -129,11 +136,11 @@ static void ota_check_and_update() {
     return;
   }
 
-  Serial.print(F("[ota] Update available! Downloading ")); Serial.println(firmware_url);
+  Serial.print(F("[ota] Update available! Downloading ")); Serial.println(fw_url);
 
   HTTPClient http2;
   WiFiClient client2;
-  http2.begin(client2, firmware_url);
+  http2.begin(client2, fw_url);
   http2.useHTTP10(true);
   int fw_code = http2.GET();
 
@@ -146,8 +153,8 @@ static void ota_check_and_update() {
   }
 
   int content_len = http2.getSize();
-  if (content_len <= 0 && firmware_size > 0) {
-    content_len = firmware_size;
+  if (content_len <= 0 && fw_size > 0) {
+    content_len = fw_size;
   }
 
   Serial.print(F("[ota] Firmware size: ")); Serial.println(content_len);
