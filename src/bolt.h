@@ -459,7 +459,7 @@ public: // Access specifier
       Serial.println(F("Authentication successful (factory zero key)."));
 
       Serial.println(F("Disabling SDM and resetting file settings..."));
-      uint8_t fileSettings[] = {0x00, 0xE0, 0xEE, 0x01, 0xFF, 0xFF};
+      uint8_t fileSettings[] = {0x00, 0x00, 0xE0};
       nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
                                       (uint8_t)sizeof(fileSettings),
                                       (uint8_t)NTAG424_COMM_MODE_FULL);
