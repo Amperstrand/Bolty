@@ -1228,11 +1228,12 @@ void serial_print_help() {
   Serial.println(F("  auth              Test k0 authentication (tap card)"));
   Serial.println(F("  ver               GetVersion + NTAG424 check (tap card)"));
   Serial.println(F("  keyver            Read key versions (blank/provisioned check, tap card)"));
+  Serial.println(F("  diagnose          Full card state detection (key versions + auth test)"));
   Serial.println(F("  --- Safety / Testing ---"));
   Serial.println(F("  check             Auth with factory zero keys (confirm card is blank)"));
   Serial.println(F("  dummyburn         Burn with zero keys + dummy URL (test write path)"));
-  Serial.println(F("  reset             LEGACY zero-key reset path (unsafe for provisioned cards)"));
-  Serial.println(F("  recover4 <hex>    Try recovering key 4 using candidate old key"));
+  Serial.println(F("  recoverkey <n> <hex>  Recover key slot n (0-4) with candidate old key"));
+  Serial.println(F("  reset             DISABLED — use 'wipe' with explicit keys"));
   Serial.println(F("  testck            ChangeKey A/B test on key 1 (verify implementation)"));
   Serial.println();
 }
@@ -1769,16 +1770,112 @@ ndef_fail:
     if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
     Serial.println(F("[reset] DISABLED — unsafe for provisioned cards."));
     Serial.println(F("[reset] Use 'wipe' with explicit keys for real wipes."));
-    Serial.println(F("[reset] Use 'recover4 <32-hex-old-key>' for targeted key 4 recovery attempts."));
+    Serial.println(F("[reset] Use 'recoverkey <slot> <32-hex-old-key>' for targeted recovery."));
     led_blink(5, 100);
     return;
   }
-  else if (cmd.startsWith("recover4 ")) {
+  else if (cmd == "diagnose") {
     if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
-    String old_key_hex = cmd.substring(9);
+    Serial.println(F("[diagnose] Tap card now..."));
+    serial_cmd_active = true;
+    led_on();
+
+    uint8_t uid_d[7] = {0};
+    uint8_t uidLen_d;
+    unsigned long t0_d = millis();
+    bool found_d = false;
+    do {
+      found_d = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid_d, &uidLen_d, 100);
+      if (found_d) {
+        Serial.print(F("[diagnose] UID: "));
+        bolt.nfc->PrintHex(uid_d, uidLen_d);
+      }
+      if (millis() - t0_d > 15000) {
+        Serial.println(F("[diagnose] TIMEOUT"));
+        serial_cmd_active = false;
+        return;
+      }
+    } while (!found_d);
+
+    delay(50);
+
+    // Read all 5 key versions (PLAIN mode — no auth needed)
+    Serial.println(F("[diagnose] --- Key Versions ---"));
+    uint8_t kv[5];
+    bool all_zero = true;
+    bool any_error = false;
+    for (int k = 0; k < 5; k++) {
+      kv[k] = ntag424_getKeyVersion(bolt.nfc, k);
+      Serial.print(F("[diagnose]   Key "));
+      Serial.print(k);
+      Serial.print(F(" version: 0x"));
+      if (kv[k] < 0x10) Serial.print(F("0"));
+      Serial.print(kv[k], HEX);
+      if (kv[k] == 0x00) Serial.println(F(" (default)"));
+      else if (kv[k] == 0xFF) { Serial.println(F(" (READ ERROR)")); any_error = true; }
+      else Serial.println(F(" (changed)"));
+      if (kv[k] != 0x00) all_zero = false;
+    }
+
+    // Test zero-key authentication on key 0 (master)
+    bolt.selectNtagApplicationFiles();
+    uint8_t zero_key[16] = {0};
+    uint8_t auth_d = bolt.nfc->ntag424_Authenticate(zero_key, 0, 0x71);
+    Serial.print(F("[diagnose] Zero-key auth (key 0): "));
+    Serial.println(auth_d == 1 ? "OK" : "FAILED");
+
+    // Classify card state
+    Serial.println(F("[diagnose] --- Card State ---"));
+    if (any_error) {
+      Serial.println(F("[diagnose] COMM ERROR — card may not be NTAG424 or reader issue"));
+      Serial.println(F("[diagnose] Try: 'ver' to confirm card type"));
+    } else if (all_zero && auth_d == 1) {
+      Serial.println(F("[diagnose] State: BLANK"));
+      Serial.println(F("[diagnose] All keys factory default, zero-key auth OK."));
+      Serial.println(F("[diagnose] Ready for burn or dummyburn."));
+    } else if (!all_zero && auth_d == 1) {
+      Serial.println(F("[diagnose] State: HALF-WIPED"));
+      Serial.println(F("[diagnose] Key 0 (master) is zero but some non-master keys remain."));
+      Serial.println(F("[diagnose] Recovery: 'recoverkey <slot> <old-key-hex>' per stuck key"));
+      Serial.println(F("[diagnose]   or 'keys ...' + 'wipe' if you know all current key values"));
+    } else if (!all_zero && auth_d != 1) {
+      Serial.println(F("[diagnose] State: PROVISIONED"));
+      Serial.println(F("[diagnose] Key 0 (master) is non-zero. Card is locked."));
+      Serial.println(F("[diagnose] To wipe: set known keys with 'keys ...' then 'wipe'"));
+      Serial.println(F("[diagnose] If key 0 value is unknown, card is NOT recoverable."));
+    } else {
+      Serial.println(F("[diagnose] State: INCONSISTENT"));
+      Serial.println(F("[diagnose] Key versions all 0x00 but zero-key auth FAILED."));
+      Serial.println(F("[diagnose] Possible: auth counter lockout, card corruption, or hw issue."));
+      Serial.println(F("[diagnose] Try: 'ver' to confirm card type, wait 10s and retry."));
+    }
+
+    led_blink(3, 100);
+    serial_cmd_active = false;
+  }
+  else if (cmd.startsWith("recoverkey ")) {
+    // Usage: recoverkey <slot 0-4> <32-hex-old-key>
+    // Authenticates with zero key on key 0, then attempts ChangeKey
+    // to restore the target key slot to zero with version 0x00.
+    if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
+
+    String args = cmd.substring(11);
+    args.trim();
+    int spaceIdx = args.indexOf(' ');
+    if (spaceIdx < 0) {
+      Serial.println(F("[recoverkey] Usage: recoverkey <slot 0-4> <32-hex-old-key>"));
+      return;
+    }
+    int slot = args.substring(0, spaceIdx).toInt();
+    String old_key_hex = args.substring(spaceIdx + 1);
     old_key_hex.trim();
+
+    if (slot < 0 || slot > 4) {
+      Serial.println(F("[recoverkey] Slot must be 0-4"));
+      return;
+    }
     if (old_key_hex.length() != 32) {
-      Serial.println(F("[recover4] Usage: recover4 <32-hex-old-key>"));
+      Serial.println(F("[recoverkey] Key must be 32 hex chars (16 bytes)"));
       return;
     }
 
@@ -1786,61 +1883,69 @@ ndef_fail:
     uint8_t old_key[16] = {0};
     bolt.setKey(old_key, old_key_hex);
 
-    Serial.println(F("[recover4] Attempting targeted recovery of key 4 -> zero, ver=0x00"));
-    Serial.print(F("[recover4] Candidate old key: "));
+    Serial.print(F("[recoverkey] Target: key "));
+    Serial.print(slot);
+    Serial.println(F(" -> zero, ver=0x00"));
+    Serial.print(F("[recoverkey] Candidate old key: "));
     Serial.println(old_key_hex);
     serial_cmd_active = true;
     led_on();
 
-    uint8_t uid_r4[7] = {0};
-    uint8_t uidLen_r4;
-    unsigned long t0_r4 = millis();
-    bool found_r4 = false;
+    uint8_t uid_rk[7] = {0};
+    uint8_t uidLen_rk;
+    unsigned long t0_rk = millis();
+    bool found_rk = false;
     do {
-      found_r4 = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid_r4, &uidLen_r4, 100);
-      if (found_r4) {
-        Serial.print(F("[recover4] UID: "));
-        bolt.nfc->PrintHex(uid_r4, uidLen_r4);
+      found_rk = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid_rk, &uidLen_rk, 100);
+      if (found_rk) {
+        Serial.print(F("[recoverkey] UID: "));
+        bolt.nfc->PrintHex(uid_rk, uidLen_rk);
       }
-      if (millis() - t0_r4 > 15000) {
-        Serial.println(F("[recover4] TIMEOUT"));
+      if (millis() - t0_rk > 15000) {
+        Serial.println(F("[recoverkey] TIMEOUT"));
         serial_cmd_active = false;
         return;
       }
-    } while (!found_r4);
+    } while (!found_rk);
 
     delay(50);
     bolt.selectNtagApplicationFiles();
-    uint8_t kv_before_r4 = ntag424_getKeyVersion(bolt.nfc, 4);
-    Serial.print(F("[recover4] Key 4 version BEFORE: 0x"));
-    if (kv_before_r4 < 0x10) Serial.print(F("0"));
-    Serial.println(kv_before_r4, HEX);
+    uint8_t kv_before = ntag424_getKeyVersion(bolt.nfc, slot);
+    Serial.print(F("[recoverkey] Key "));
+    Serial.print(slot);
+    Serial.print(F(" version BEFORE: 0x"));
+    if (kv_before < 0x10) Serial.print(F("0"));
+    Serial.println(kv_before, HEX);
 
-    uint8_t auth_r4 = bolt.nfc->ntag424_Authenticate(zero_key, 0, 0x71);
-    Serial.print(F("[recover4] Auth key 0 (zeros): "));
-    Serial.println(auth_r4 == 1 ? "OK" : "FAILED");
-    if (auth_r4 != 1) {
-      Serial.println(F("[recover4] ABORT — key 0 auth failed"));
+    // Auth with key 0 (zeros) — master key required for ChangeKey
+    uint8_t auth_rk = bolt.nfc->ntag424_Authenticate(zero_key, 0, 0x71);
+    Serial.print(F("[recoverkey] Auth key 0 (zeros): "));
+    Serial.println(auth_rk == 1 ? "OK" : "FAILED");
+    if (auth_rk != 1) {
+      Serial.println(F("[recoverkey] ABORT — key 0 auth failed (master key is non-zero)"));
       led_blink(5, 100);
       serial_cmd_active = false;
       return;
     }
 
-    bool recovered4 = bolt.nfc->ntag424_ChangeKey(old_key, zero_key, 4, 0x00);
-    Serial.print(F("[recover4] ChangeKey result: "));
-    Serial.println(recovered4 ? "OK" : "FAILED");
+    bool ok = bolt.nfc->ntag424_ChangeKey(old_key, zero_key, slot, 0x00);
+    Serial.print(F("[recoverkey] ChangeKey result: "));
+    Serial.println(ok ? "OK" : "FAILED");
 
+    // Re-select and verify
     bolt.nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID);
-    uint8_t kv_after_r4 = ntag424_getKeyVersion(bolt.nfc, 4);
-    Serial.print(F("[recover4] Key 4 version AFTER: 0x"));
-    if (kv_after_r4 < 0x10) Serial.print(F("0"));
-    Serial.println(kv_after_r4, HEX);
+    uint8_t kv_after = ntag424_getKeyVersion(bolt.nfc, slot);
+    Serial.print(F("[recoverkey] Key "));
+    Serial.print(slot);
+    Serial.print(F(" version AFTER: 0x"));
+    if (kv_after < 0x10) Serial.print(F("0"));
+    Serial.println(kv_after, HEX);
 
-    const bool pass_r4 = recovered4 && (kv_after_r4 == 0x00);
-    Serial.println(pass_r4 ?
-                       F("[recover4] PASS — key 4 restored to factory zero") :
-                       F("[recover4] FAIL — candidate old key was incorrect or card state differs"));
-    led_blink(pass_r4 ? 3 : 5, 100);
+    const bool pass = ok && (kv_after == 0x00);
+    Serial.println(pass ?
+                       F("[recoverkey] PASS — key restored to factory zero") :
+                       F("[recoverkey] FAIL — candidate old key was incorrect or card state differs"));
+    led_blink(pass ? 3 : 5, 100);
     serial_cmd_active = false;
   }
   else if (cmd == "testck") {
