@@ -5,6 +5,7 @@
 #include <HTTPClient.h>
 #include <Update.h>
 #include <ArduinoJson.h>
+#include <esp_wifi.h>
 #include "build_metadata.h"
 
 #ifndef OTA_SSID
@@ -32,11 +33,42 @@ static void ota_check_and_update() {
   Serial.print(F("[ota] Current version: ")); Serial.println((unsigned long)FW_VERSION_CODE);
 
   WiFi.mode(WIFI_STA);
+  esp_wifi_set_country_code("EU", true);
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);
+
+  wifi_scan_config_t scan_cfg;
+  memset(&scan_cfg, 0, sizeof(scan_cfg));
+  scan_cfg.channel_bitmap.ghz_2_channels = 0x3FFE;  // channels 1-13
+  esp_wifi_scan_start(&scan_cfg, true);
+
+  uint16_t ap_count = 0;
+  esp_wifi_scan_get_ap_num(&ap_count);
+
+  bool ssid_found = false;
+  if (ap_count > 0) {
+    wifi_ap_record_t *ap_list = (wifi_ap_record_t *)malloc(ap_count * sizeof(wifi_ap_record_t));
+    if (ap_list && esp_wifi_scan_get_ap_records(&ap_count, ap_list) == ESP_OK) {
+      for (int i = 0; i < (int)ap_count; i++) {
+        if (strcmp((char *)ap_list[i].ssid, OTA_SSID) == 0) {
+          Serial.print(F("[ota] Found AP, RSSI: ")); Serial.println(ap_list[i].rssi);
+          ssid_found = true;
+        }
+      }
+    }
+    free(ap_list);
+  }
+
+  if (!ssid_found) {
+    Serial.println(F("[ota] AP not in range - skipping OTA, continuing normal boot"));
+    WiFi.mode(WIFI_OFF);
+    return;
+  }
+
   WiFi.begin(OTA_SSID, OTA_PASSWORD);
 
   Serial.print(F("[ota] Connecting to WiFi"));
   uint8_t tries = 0;
-  while (WiFi.status() != WL_CONNECTED && tries < 20) {
+  while (WiFi.status() != WL_CONNECTED && tries < 40) {
     delay(500);
     Serial.print(F("."));
     tries++;
