@@ -3,3 +3,5 @@ include/build_metadata.h
 .sisyphus/
 scripts/__pycache__/
 test_auth/
+scripts/ota/firmware-*.bin
+scripts/ota/manifest.json

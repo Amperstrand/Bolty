@@ -42,6 +42,161 @@
 #include "tardata.h"
 #endif
 
+#if BOLTY_OTA_ENABLED
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <Update.h>
+#include <ArduinoJson.h>
+
+#ifndef OTA_SSID
+#error "OTA_SSID must be defined. Set it in platformio.ini build_flags."
+#endif
+#ifndef OTA_PASSWORD
+#error "OTA_PASSWORD must be defined. Set it in platformio.ini build_flags."
+#endif
+#ifndef OTA_HOST
+#error "OTA_HOST must be defined. Set it in platformio.ini build_flags."
+#endif
+#ifndef OTA_PORT
+#define OTA_PORT 8765
+#endif
+
+#define OTA_MANIFEST_URL "http://" OTA_HOST ":" STRINGIFY(OTA_PORT) "/manifest.json"
+#define STRINGIFY_(x) #x
+#define STRINGIFY(x)  STRINGIFY_(x)
+
+static void ota_check_and_update() {
+  Serial.println(F("[ota] Checking for firmware update..."));
+  Serial.print(F("[ota] Manifest: ")); Serial.println(OTA_MANIFEST_URL);
+  Serial.print(F("[ota] Current version: ")); Serial.println((unsigned long)FW_VERSION_CODE);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(OTA_SSID, OTA_PASSWORD);
+
+  Serial.print(F("[ota] Connecting to WiFi"));
+  uint8_t tries = 0;
+  while (WiFi.status() != WL_CONNECTED && tries < 20) {
+    delay(500);
+    Serial.print(F("."));
+    tries++;
+  }
+  Serial.println();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println(F("[ota] WiFi connect failed — skipping OTA, continuing normal boot"));
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    return;
+  }
+
+  Serial.print(F("[ota] Connected, IP: ")); Serial.println(WiFi.localIP());
+
+  HTTPClient http;
+  WiFiClient client;
+  http.begin(client, OTA_MANIFEST_URL);
+  http.useHTTP10(true);
+  int code = http.GET();
+
+  if (code != 200) {
+    Serial.print(F("[ota] Manifest fetch failed, HTTP ")); Serial.println(code);
+    http.end();
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    return;
+  }
+
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, http.getStream());
+  http.end();
+
+  if (err) {
+    Serial.print(F("[ota] Manifest JSON parse error: ")); Serial.println(err.c_str());
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    return;
+  }
+
+  unsigned long remote_version = doc["version_code"] | 0UL;
+  const char* firmware_url    = doc["url"]          | "";
+  int         firmware_size   = doc["size"]         | 0;
+
+  Serial.print(F("[ota] Remote version: ")); Serial.println(remote_version);
+
+  if (remote_version <= (unsigned long)FW_VERSION_CODE) {
+    Serial.println(F("[ota] Firmware is up to date — no update needed"));
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    return;
+  }
+
+  Serial.print(F("[ota] Update available! Downloading ")); Serial.println(firmware_url);
+
+  HTTPClient http2;
+  WiFiClient client2;
+  http2.begin(client2, firmware_url);
+  http2.useHTTP10(true);
+  int fw_code = http2.GET();
+
+  if (fw_code != 200) {
+    Serial.print(F("[ota] Firmware fetch failed, HTTP ")); Serial.println(fw_code);
+    http2.end();
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    return;
+  }
+
+  int content_len = http2.getSize();
+  if (content_len <= 0 && firmware_size > 0) {
+    content_len = firmware_size;
+  }
+
+  Serial.print(F("[ota] Firmware size: ")); Serial.println(content_len);
+
+  if (!Update.begin(content_len > 0 ? content_len : UPDATE_SIZE_UNKNOWN, U_FLASH)) {
+    Serial.print(F("[ota] Update.begin failed: ")); Serial.println(Update.errorString());
+    http2.end();
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    return;
+  }
+
+  Update.onProgress([](size_t written, size_t total) {
+    if (total > 0) {
+      Serial.print(F("[ota] Progress: "));
+      Serial.print((written * 100) / total);
+      Serial.println(F("%"));
+    }
+  });
+
+  size_t written = Update.writeStream(*http2.getStreamPtr());
+  http2.end();
+
+  if (written != (size_t)(content_len > 0 ? content_len : written)) {
+    Serial.print(F("[ota] Write incomplete: ")); Serial.print(written); Serial.print(F(" / ")); Serial.println(content_len);
+  }
+
+  if (!Update.end()) {
+    Serial.print(F("[ota] Update.end failed: ")); Serial.println(Update.errorString());
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    return;
+  }
+
+  if (!Update.isFinished()) {
+    Serial.println(F("[ota] Update not finished unexpectedly"));
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    return;
+  }
+
+  Serial.println(F("[ota] Update complete! Rebooting..."));
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  delay(200);
+  ESP.restart();
+}
+#endif
+
 #if HAS_WIFI
 #define WIFIMODE_AP 0
 #define WIFIMODE_STA 1
@@ -904,6 +1059,10 @@ void setup(void) {
   Serial.println(PN532_LIB_GIT_COMMIT);
   Serial.println("========================");
 
+#if BOLTY_OTA_ENABLED
+  ota_check_and_update();
+#endif
+
   setup_display();
 
 #if !HAS_DISPLAY
@@ -1237,6 +1396,10 @@ void serial_print_help() {
   Serial.println(F("  recoverkey <n> <hex>  Recover key slot n (0-4) with candidate old key"));
   Serial.println(F("  reset             Reset NDEF+SDM on factory-key card (keys unchanged)"));
   Serial.println(F("  testck            ChangeKey A/B test on key 1 (verify implementation)"));
+#if BOLTY_OTA_ENABLED
+  Serial.println(F("  --- OTA ---"));
+  Serial.println(F("  ota               Check manifest and apply firmware update if newer"));
+#endif
   Serial.println();
 }
 
@@ -2731,6 +2894,11 @@ ndef_fail:
     led_blink(all_pass ? 3 : 5, 100);
     serial_cmd_active = false;
   }
+#if BOLTY_OTA_ENABLED
+  else if (cmd == "ota") {
+    ota_check_and_update();
+  }
+#endif
   else {
     Serial.print(F("[error] Unknown: ")); Serial.println(cmd);
   }
