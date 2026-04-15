@@ -415,6 +415,81 @@ public: // Access specifier
     return job_status;
   }
 
+  uint8_t resetNdefOnly() {
+    uint8_t uid[] = {0, 0, 0, 0, 0, 0, 0};
+    uint8_t uidLength;
+
+    set_job_status_id(JOBSTATUS_WAITING);
+    success = nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, 100);
+    if (!success) {
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
+    }
+
+    set_job_status_id(JOBSTATUS_WIPING);
+    Serial.println(F("Found an ISO14443A tag"));
+    Serial.print(F("  UID Length: "));
+    Serial.print(uidLength, DEC);
+    Serial.println(F(" bytes"));
+    Serial.print(F("  UID Value: "));
+    nfc->PrintHex(uid, uidLength);
+    Serial.println();
+
+    if (((uidLength == 7) || (uidLength == 4)) && (nfc->ntag424_isNTAG424())) {
+      uint8_t kv = ntag424_getKeyVersion(nfc, 0);
+      if (kv != 0x00) {
+        Serial.print(F("ABORT: Key 0 version is 0x"));
+        if (kv < 0x10) Serial.print(F("0"));
+        Serial.print(kv, HEX);
+        Serial.println(F(" — resetNdefOnly requires factory keys. Use 'wipe' instead."));
+        set_job_status_id(JOBSTATUS_GUARD_REJECT);
+        return job_status;
+      }
+      Serial.println(F("Pre-reset check OK — key 0 is factory default"));
+
+      selectNtagApplicationFiles();
+
+      uint8_t zero_key[16] = {0};
+      uint8_t authenticated = nfc->ntag424_Authenticate(zero_key, 0, 0x71);
+      if (authenticated != 1) {
+        Serial.println(F("Authentication with zero key FAILED."));
+        set_job_status_id(JOBSTATUS_ERROR);
+        return job_status;
+      }
+      Serial.println(F("Authentication successful (factory zero key)."));
+
+      Serial.println(F("Disabling SDM and resetting file settings..."));
+      uint8_t fileSettings[] = {0x40, 0xE0, 0xEE, 0x01, 0xFF, 0xFF};
+      nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
+                                      (uint8_t)sizeof(fileSettings),
+                                      (uint8_t)NTAG424_COMM_MODE_FULL);
+
+      selectNtagApplicationFiles();
+      if (nfc->ntag424_FormatNDEF()) {
+        Serial.println(F("NDEF formatted OK."));
+        job_perc = 100;
+      } else {
+        Serial.println(F("NDEF format FAILED."));
+        set_job_status_id(JOBSTATUS_ERROR);
+        return job_status;
+      }
+
+      selectNtagApplicationFiles();
+      uint8_t verify_auth = nfc->ntag424_Authenticate(zero_key, 0, 0x71);
+      if (verify_auth == 1) {
+        Serial.println(F("Verify auth OK — keys unchanged."));
+      } else {
+        Serial.println(F("WARNING: Verify auth failed (unexpected)."));
+      }
+
+      set_job_status_id(JOBSTATUS_DONE);
+    } else {
+      Serial.println(F("This doesn't seem to be an NTAG424 tag."));
+      set_job_status_id(JOBSTATUS_ERROR);
+    }
+    return job_status;
+  }
+
   uint8_t wipe() {
     uint8_t success = true;
     uint8_t uid[] = {0, 0, 0, 0, 0, 0, 0}; // Buffer to store the returned UID

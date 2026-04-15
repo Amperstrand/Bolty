@@ -1235,7 +1235,7 @@ void serial_print_help() {
   Serial.println(F("  check             Auth with factory zero keys (confirm card is blank)"));
   Serial.println(F("  dummyburn         Burn with zero keys + dummy URL (test write path)"));
   Serial.println(F("  recoverkey <n> <hex>  Recover key slot n (0-4) with candidate old key"));
-  Serial.println(F("  reset             DISABLED — use 'wipe' with explicit keys"));
+  Serial.println(F("  reset             Reset NDEF+SDM on factory-key card (keys unchanged)"));
   Serial.println(F("  testck            ChangeKey A/B test on key 1 (verify implementation)"));
   Serial.println();
 }
@@ -2376,11 +2376,31 @@ ndef_fail:
   }
   else if (cmd == "reset") {
     if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
-    Serial.println(F("[reset] DISABLED — unsafe for provisioned cards."));
-    Serial.println(F("[reset] Use 'wipe' with explicit keys for real wipes."));
-    Serial.println(F("[reset] Use 'recoverkey <slot> <32-hex-old-key>' for targeted recovery."));
-    led_blink(5, 100);
-    return;
+    Serial.println(F("[reset] Tap card now..."));
+    Serial.println(F("[reset] Factory-key NDEF+SDM reset (keys unchanged)."));
+    serial_cmd_active = true;
+    led_on();
+    uint8_t result;
+    unsigned long t0 = millis();
+    do {
+      while (Serial.available()) Serial.read();
+      result = bolt.resetNdefOnly();
+      if (millis() - t0 > 30000) {
+        Serial.println(F("[reset] TIMEOUT — no card detected in 30s"));
+        serial_cmd_active = false;
+        return;
+      }
+    } while (result == JOBSTATUS_WAITING);
+    if (result == JOBSTATUS_GUARD_REJECT) {
+      Serial.println(F("[reset] ABORTED — card has non-factory keys. Use 'wipe' with explicit keys."));
+      led_blink(5, 100);
+      serial_cmd_active = false;
+      return;
+    }
+    Serial.print(F("[reset] ")); Serial.println(bolt.get_job_status());
+    Serial.println(result == JOBSTATUS_DONE ? F("[reset] SUCCESS — NDEF and SDM reset, keys unchanged") : F("[reset] FAILED"));
+    led_blink(result == JOBSTATUS_DONE ? 3 : 5, 100);
+    serial_cmd_active = false;
   }
   else if (cmd == "diagnose") {
     if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
