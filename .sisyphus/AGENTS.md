@@ -496,11 +496,63 @@ Python/FastAPI. Open source.
 
 | UID | State | Notes |
 |-----|-------|-------|
-| `04:06:60:FA:96:73:80` | Blank (wiped, zero keys, ver=0x01) | Full cycle test card. Phone test PASSED — NFC URL with SDM parameters readable on phone. Used for all automated testing. |
-| `04:25:60:7A:8F:69:80` | Provisioned | Provisioned with unknown keys via LNbits boltcardpoc |
+| `04:9F:70:FA:96:73:80` | **Blank (E2E verified)** | Blank card used for full E2E burn→wipe test (2026-04-15). All 5 keys including key 4 burned and wiped successfully. Card is back to factory zeros. |
+| `04:06:60:FA:96:73:80` | **Recovered to blank** | Old test card. Final recovery succeeded on 2026-04-15: key 4 was restored using old key `33333333333333333333333333333333` (the expected static K4/K2 test key). Card now has keys 0-4 at version 0x00 and zero-key auth succeeds. Root cause was a half-wiped state, not an unknown random key. |
+| `04:25:60:7A:8F:69:80` | Provisioned (unknown keys) | Provisioned with unknown keys via LNbits boltcardpoc |
 | `04:33:65:FA:96:73:80` | Bricked (permanently) | Corrupted keys from library bug #3 (setkey_enc vs setkey_dec). No recovery path — confirmed from NXP AN12196: no factory reset, AppMasterKey=key0 not key14, 91 40 on key 14 attempt confirms key 14 doesn't exist as valid slot |
 
-### Zero-Key Cycle Test (PASS)
+### E2E Burn→Wipe Test on Blank Card (2026-04-15) — PASS
+
+**Card:** `04:9F:70:FA:96:73:80` (factory blank)
+**Firmware:** Bolty commit `c789d20`, PN532 lib commit `4c03141` (build-pinned)
+**Commands:** `dummyburn` → `keyver` → `reset` → `keyver` → `check`
+
+| Step | Command | Result | Detail |
+|------|---------|--------|--------|
+| 1 | Pre-burn `keyver` | All keys version 0x00 | Factory blank confirmed |
+| 2 | Pre-burn `check` | SUCCESS | Zero-key auth passed |
+| 3 | `dummyburn` | SUCCESS | NDEF written, SDM mirroring enabled, all 5 keys rotated (4→0), all CMAC verified, post-burn re-auth succeeded |
+| 4 | Post-burn `keyver` | All keys version 0x01 | Keys 0-4 all changed |
+| 5 | `reset` (wipe) | SUCCESS | All 5 keys rotated back to zero (4→0), all CMAC verified |
+| 6 | Post-wipe `keyver` | All keys version 0x00 | Factory state restored |
+| 7 | Post-wipe `check` | SUCCESS | Zero-key auth passed — card is factory blank again |
+
+**What this proves:**
+- Full burn→wipe cycle works end-to-end on clean hardware with all 5 key slots
+- **Key 4 rotates correctly in both directions** (burn: 0x00→0x01, wipe: 0x01→0x00)
+- ChangeKey implementation is correct for all 5 key slots (including master key 0 with 17-byte payload and keys 1-4 with 21-byte payload)
+- FULL-mode response parsing (SW1/SW2 at tail) works correctly
+- The library refactoring, DRY helpers, and build pinning are solid
+- **The key 4 corruption on card `04:06:60:FA:96:73:80` is a card-state problem, not a current ChangeKey/library bug**
+
+### Key 4 Corruption on Card `04:06:60:FA:96:73:80` — Root Cause and Recovery
+
+**Evidence that this is a card-state problem and not the current implementation:**
+1. Blank card E2E test rotates key 4 successfully in both directions
+2. Old card key 4 returns `91 1E` (INTEGRITY_ERROR) regardless of old-key value — means the XOR(XOR(old,new),old) check fails, which means we're sending the wrong current key
+3. Brute-force tested 7 candidate values on the old card (zeros, 3333..., 1111..., 2221..., all-FF, all-AA, all-55) — ALL FAILED
+4. Keys 0-3 on the old card were confirmed zeros (zero-key auth succeeds, recovery worked for key 1)
+
+**Most likely causes (ordered):**
+- A previous interrupted/failed burn changed key 4 first (ChangeKey order is 4→3→2→1→0), then later steps never completed
+- The legacy `reset` command was used outside its intended zero-key-only dummyburn flow. `reset` hardcoded both `key_cur[]` and `key_new[]` to zero before calling `wipe()`, so it could only safely revert cards whose current keys were already zero. This path is now considered unsafe for provisioned cards.
+- Earlier pre-pinning / stale-cache / pre-refactor testing may have used older code paths that changed key 4 without leaving reliable provenance
+- Bug #3 may have been involved in older sessions, but the currently observed state is fully explained by "unknown current key 4" and `91 1E` on recovery attempts
+
+**Recovery status (updated 2026-04-15):** Recovered successfully. The correct current key 4 value was `33333333333333333333333333333333` (the expected static K4/K2 test key from the historical full-cycle test). After authenticating with key 0 = zero, targeted `ChangeKey(old=3333..., new=zero, keyNo=4, keyVersion=0x00)` succeeded, `keyver` returned key 4 = `0x00`, and zero-key auth succeeded for the whole card.
+
+**What `91 1E` meant here:** `INTEGRITY_ERROR` — the supplied old key was wrong, so the NTAG424 XOR/CRC integrity check for ChangeKey failed. This did **not** mean the card was permanently bricked; it only meant we had not yet supplied the correct old key for slot 4.
+
+**Practical recovery rule:** if key 0 is still known and authentication still works, an apparently "stuck" non-master key may still be recoverable if its real current value can be reconstructed from prior provisioning history. If key 0 is lost, the card is effectively unrecoverable.
+
+### `wipe` vs `reset` — critical distinction
+
+- `wipe` (serial command) is the **real** wipe path for provisioned cards. It loads the configured current keys from `mBoltConfig` via `loadKeysForWipe()` and then rotates all 5 keys 4→3→2→1→0 back to zero.
+- `reset` (legacy test helper) was only safe for the zero-key dummyburn flow. It hardcoded both `key_cur[]` and `key_new[]` to zero before calling `wipe()`.
+- That means `reset` could only safely operate on cards whose current keys were already zeros. Using it on a card with a non-zero key 4 could leave a half-wiped state if key 4 had already been changed in a previous session.
+- **Mitigation (2026-04-15):** `reset` has been disabled in firmware and replaced with guidance to use `wipe` with explicit keys. A targeted `recover4 <32-hex-old-key>` command was added for safe single-key recovery attempts.
+
+### Zero-Key Cycle Test (PASS — historical)
 
 Full cycle on card `04:06:60:FA:96:73:80`:
 
@@ -530,7 +582,7 @@ The 500ms pre-flight window in `burn` and `wipe` was too short. The guard ran on
 
 **Fix (commit `34f6f14`):** Moved the guard logic inside the main do-while loop so it runs against the card that is actually about to be operated on. See Section 4 (Pre-Burn / Pre-Wipe Guard Behavior) for implementation details.
 
-### Full Provisioning Cycle Test (PASS)
+### Full Provisioning Cycle Test (PASS — historical)
 
 Test script: `test_full_cycle.py` — fully automated, no human interaction needed (card stays on reader).
 
@@ -565,11 +617,12 @@ URL = "https://example.com/bolt"
 
 - **Local path**: `/home/ubuntu/src/pn532/Adafruit-PN532-NTAG424/`
 - **Remote**: `git@github.com:Amperstrand/Adafruit-PN532-NTAG424.git`
-- **Branch**: `fix/3-setkey-enc-spi` (active hardware branch)
-- **HEAD**: `273f0ba` (`feat: add keyVersion parameter to ntag424_ChangeKey (default 0x01)`)
+- **Branch**: `master` (merged fix/3-setkey-enc-spi)
+- **HEAD**: `4c03141` (refactored: ChangeKey helpers + response parsing fix + DRY + debug gating)
 - **NTAG424DEBUG**: disabled in source (line 75 of .cpp, also commented out in bolt.h)
 - **Constructor**: `Adafruit_PN532(clk, miso, mosi, ss)` — 4 args, no RST pin
 - **No patches needed** — stock upstream libraries work on ESP32 with software SPI
+- **Build pinning**: Bolty `scripts/pin_committed_build.py` exports this repo's committed HEAD into `.pio/libdeps/` before every build, preventing stale PlatformIO cache
 
 #### `ntag424_ChangeKey` API Change (commit `273f0ba`)
 
@@ -699,9 +752,15 @@ All fix branches pushed to remote Amperstrand fork. Each has proof output posted
 
 ## 11. Branch History
 
-Branch: `feat/headless-esp32-devkitc`
+Branch: `main` (was `feat/headless-esp32-devkitc`, merged)
 
 ```
+c789d20  chore: update .gitignore for sisyphus, test_auth, and pycache
+f0b1720  test: log flashed SHAs and recover key1 in ChangeKey test
+20de190  build: pin PN532 dependency to committed snapshot
+a40df18  feat: add PN532 hardware reset on boot and auto-recovery from RF field stuck state (refs #7)
+1c2d9c2  test: update hardware tests for 0x00 wipe keyversion and no false ChangeKey errors
+471c9ae  refactor: extract BoltDevice helpers, centralize NTAG424 constants, fix burn/wipe safety
 34f6f14  feat: add pre-burn/pre-wipe guards inside card detection loop
 b884c83  fix: add missing NTAG424 error codes to error mapping
 ba21c78  fix: correct wipe file settings and pass explicit keyVersion
@@ -712,21 +771,17 @@ ba21c78  fix: correct wipe file settings and pass explicit keyVersion
 25800a6  feat: add check/dummyburn/reset safety commands for zero-key testing
 ```
 
-Library branch `fix/3-setkey-enc-spi`:
+Library branch `master` (was `fix/3-setkey-enc-spi`, merged):
 
 ```
+4c03141  test: add host-side regression test for ChangeKey helpers
+5349624  fix: extract ChangeKey payload helpers, fix FULL-mode response parsing (closes #23, #22)
 273f0ba  feat: add keyVersion parameter to ntag424_ChangeKey (default 0x01)
 c8550f4  fix: add ISOReadBinary, fix GetVersion multi-frame, fix apdu_send SPI read
 a4b1db7  fix: use write_and_read for ESP32 SPI full-duplex (issue #19)
 ```
 
-Working tree: **CLEAN** — All changes committed. Commits `ba21c78`, `b884c83`, `34f6f14` were added by a follow-up session on 2026-04-14 and are **not yet flashed to ESP32**. Rebuild and reflash before testing guard or wipe-keyversion behavior:
-
-```bash
-cd /home/ubuntu/src/pn532/Bolty
-rm -rf .pio/libdeps   # pick up library changes
-pio run -t upload
-```
+Working tree: **CLEAN** — All changes committed and pushed. Both repos at latest.
 
 ---
 
@@ -764,6 +819,15 @@ pio run -t upload
 - Library fixes: ISOReadBinary, GetVersion rewrite, apdu_send SPI read, uint16_t bufsize, read_len cap, keyVersion parameter
 - Firmware fixes: ndef retry loop, paginated reads, post-burn verify SELECT AID, wipe file settings, pre-burn/pre-wipe guards
 - Card state detection: key version + zero-key auth tiebreaker (with new firmware: wipe returns versions to 0x00 so version alone is sufficient)
+
+**Phase 2.5 (Refactoring + Reliability + Build Pinning)**: COMPLETE — **E2E test PASSED on blank card 2026-04-15.**
+- Library refactored: ChangeKey helpers, FULL-mode response parsing fix (issue #23), DRY refactor, debug gating
+- Bolty refactored: BoltDevice helpers, NTAG424 constants, convertCharToHex simplification, burn/wipe safety fixes
+- PN532 reliability: boot hardware reset, reinitPN532() with error counting, auto-recovery from RF stuck state (issue #7)
+- Build pinning: pre-build script pins PN532 lib to committed snapshot, generates build_metadata.h with both SHAs, boot prints provenance
+- Key 1 recovery: testck command restored key 1 from stale-library-induced corruption
+- Key 4 investigation: proven card-specific (blank card E2E rotates key 4 correctly in both directions)
+- **E2E test on blank card `04:9F:70:FA:96:73:80`**: burn (all 5 keys 0x00→0x01) → wipe (all 5 keys 0x01→0x00) → zero-key auth verified
 
 ---
 
@@ -828,11 +892,12 @@ Stress testing showed ~50% `readPassiveTargetID` failure rate with 2.2-second po
 2. ~~Phone test~~ — DONE. NFC URL with SDM parameters readable on phone. Card wiped back to blank after test.
 3. ~~Feature parity with Android app~~ — DONE (2026-04-14). 5 tasks completed: keyVersion param (T1), wipe fileSettings + keyVersion args (T2), pre-burn/pre-wipe guards (T3), 4 missing error codes (T4), 6 GitHub issues filed (T5). Commits: library `273f0ba`, firmware `ba21c78` + `b884c83` + `34f6f14`. **Not yet hardware-tested** — flash and test before using guards or wipe keyVersion in production.
 4. ~~Refactor both repos~~ — DONE (2026-04-14). Library: extracted ChangeKey helpers, fixed FULL-mode response parsing (issue #23), DRY refactor for GetCardUID/GetTTStatus/ISOSelect/FormatNDEF, gated debug prints. Bolty: extracted BoltDevice helpers, centralized NTAG424 constants, simplified convertCharToHex, fixed uninitialized success accumulator, fixed post-auth key index, static boltstatustext. Commits: library `5349624` + `4c03141`, Bolty `471c9ae` + `1c2d9c2`. All pushed. Issues #22 and #23 closed with detailed comments.
-5. **PN532 reliability** (issue #7) — Implement boot reset, health check, and error counting with auto-recovery. See Section 13 for details.
-6. **Phase 3: LNbits integration** — import card credentials JSON, SUN verification
-7. **Phase 4: WiFi mode** — ESPAsyncWebServer, remote provisioning
-8. **Phase 5: Advanced features** — random UID, SUN verification (AES-CBC decrypt with k1, AES-CMAC verify with k2, counter replay protection)
-9. **Upstream library fixes** — merge proven fixes into master. Address remaining issues (#1 MAC counter, #11 cla/ins API, #18 ReadData bypass)
+5. ~~PN532 reliability~~ (issue #7) — DONE (2026-04-15). Boot reset (RSTPD_N 100ms), reinitPN532() with error counting, auto-recovery after 5 consecutive scan failures with 30s cooldown. Commit: `a40df18`. Pushed.
+6. ~~Build pinning and E2E test~~ — DONE (2026-04-15). Pre-build script pins PN532 lib to committed snapshot, boot logs both SHAs. Full E2E burn→wipe on blank card `04:9F:70:FA:96:73:80` PASSED. All 5 key slots including key 4 rotated correctly in both directions. Commits: `20de190` + `f0b1720` + `c789d20`. Pushed.
+7. **Phase 3: LNbits integration** — import card credentials JSON, SUN verification
+8. **Phase 4: WiFi mode** — ESPAsyncWebServer, remote provisioning
+9. **Phase 5: Advanced features** — random UID, SUN verification (AES-CBC decrypt with k1, AES-CMAC verify with k2, counter replay protection)
+10. **Upstream library fixes** — merge proven fixes into master. Address remaining issues (#1 MAC counter, #11 cla/ins API, #18 ReadData bypass)
 
 ---
 
@@ -877,9 +942,12 @@ Stress testing showed ~50% `readPassiveTargetID` failure rate with 2.2-second po
 - Software SPI constructor is 4 args (no RST pin): `Adafruit_PN532(clk, miso, mosi, ss)`
 - NTAG424 NDEF reading does NOT require authentication — `ntag424_ISOReadFile()` handles it
 - NTAG424 writing/provisioning DOES require k0 authentication
+- Card UID `04 9F 70 FA 96 73 80` is blank (E2E verified 2026-04-15) — available for testing
+- Card UID `04 06 60 FA 96 73 80` has key 4 corrupted (unknown value, version 0x01) — card-specific issue, not software bug. Keys 0-3 are zeros.
 - Card UID `04 25 60 7A 8F 69 80` is provisioned with unknown keys (LNbits boltcardpoc)
 - Card UID `04 33 65 FA 96 73 80` is bricked (corrupted keys from bug #3) — confirmed permanently bricked from NXP AN12196 analysis
 - ⛔ NEVER loop AUTH commands without a hard attempt limit (max 5 per key per session) — SeqFailCtr triggers at 50 consecutive failures, TotFailCtr permanently locks at 1000 total
-- ⛔ NEVER call `ChangeKey`/`WriteData` with unfixed library (bug #3 corrupts keys)
+- Build always uses pinned library — `scripts/pin_committed_build.py` exports committed PN532 lib into `.pio/libdeps/` before every PlatformIO build. Both SHAs printed at boot.
+- After library source changes, always `rm -rf .pio` for full clean rebuild (PlatformIO caches aggressively)
 - "i would rather you use z.ai web search and zread mcp to read and understand how it works as manufacturer documentation"
 - AppMasterKey = key 0x00 per NXP AN12196 — do NOT assume key 14 exists as a recovery mechanism
