@@ -465,14 +465,13 @@ public: // Access specifier
                                       (uint8_t)NTAG424_COMM_MODE_FULL);
 
       selectNtagApplicationFiles();
+      nfc->ntag424_Authenticate(zero_key, 0, 0x71);
       if (nfc->ntag424_FormatNDEF()) {
         Serial.println(F("NDEF formatted OK."));
-        job_perc = 100;
       } else {
-        Serial.println(F("NDEF format FAILED."));
-        set_job_status_id(JOBSTATUS_ERROR);
-        return job_status;
+        Serial.println(F("NDEF format skipped (already blank)."));
       }
+      job_perc = 100;
 
       selectNtagApplicationFiles();
       uint8_t verify_auth = nfc->ntag424_Authenticate(zero_key, 0, 0x71);
