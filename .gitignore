@@ -1,2 +1,5 @@
 .pio/
 include/build_metadata.h
+.sisyphus/
+scripts/__pycache__/
+test_auth/
