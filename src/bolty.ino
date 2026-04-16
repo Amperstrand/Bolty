@@ -22,6 +22,7 @@
 #include "bolt.h"
 #include "build_metadata.h"
 #include "gui.h"
+#include "led.h"
 #include <SPI.h>
 
 #if HAS_WIFI
@@ -90,7 +91,11 @@ const char *PARAM_CONFIG = "config";
 #define APP_STATUS_LOOP (1)
 #define APP_STATUS_END (2)
 
+#if BOLTY_NFC_BACKEND_MFRC522
+BoltDevice bolt(MFRC522_I2C_ADDRESS);
+#else
 BoltDevice bolt(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS);
+#endif
 
 // Forward declarations (needed for PlatformIO — Arduino IDE auto-generates these)
 void dumpconfig();
@@ -323,9 +328,9 @@ void led_blink(int count, int ms) {
   }
 }
 #else
-void led_on() {}
-void led_off() {}
-void led_blink(int, int) {}
+void led_on() { led_notify_activity(); }
+void led_off() { led_set_busy(false); }
+void led_blink(int count, int) { led_signal_result(count <= 3); }
 #endif
 
 // Keysetup
@@ -848,12 +853,16 @@ void wifi_toogle() {}
 
 void nfc_start() {
   Serial.println("switching nfc on");
-  digitalWrite(PN532_RSTPD_N, HIGH);
+#if NFC_RESET_PIN >= 0
+  digitalWrite(NFC_RESET_PIN, HIGH);
+#endif
 }
 
 void nfc_stop() {
   Serial.println("switching nfc off");
-  digitalWrite(PN532_RSTPD_N, LOW);
+#if NFC_RESET_PIN >= 0
+  digitalWrite(NFC_RESET_PIN, LOW);
+#endif
 }
 
 // handles uploads
@@ -898,13 +907,22 @@ void setup(void) {
     delay(10); // for Leonardo/Micro/Zero
 
   Serial.println("=== Bolty Build Info ===");
+  Serial.print("Board: ");
+  Serial.println(BOLTY_BOARD_NAME);
+  Serial.print("NFC backend: ");
+#if BOLTY_NFC_BACKEND_MFRC522
+  Serial.println("MFRC522");
+#else
+  Serial.println("PN532");
+#endif
   Serial.print("Bolty commit: ");
   Serial.println(BOLTY_GIT_COMMIT);
-  Serial.print("PN532 lib commit: ");
+  Serial.print("NFC lib commit: ");
   Serial.println(PN532_LIB_GIT_COMMIT);
   Serial.println("========================");
 
   setup_display();
+  led_setup();
 
 #if !HAS_DISPLAY
   Serial.println("=== Bolty Headless Mode ===");
@@ -941,20 +959,24 @@ void setup(void) {
 #endif
 
   displayMessage("setup nfc", 0);
-  pinMode(PN532_RSTPD_N, OUTPUT);
+#if NFC_RESET_PIN >= 0
+  pinMode(NFC_RESET_PIN, OUTPUT);
+#endif
 #if LED_PIN >= 0
   pinMode(LED_PIN, OUTPUT);
   led_off();
 #endif
-  // Issue #7: force a real PN532 hardware reset before startup. RIOT-OS keeps
-  // RSTPD_N low for 400 ms, and ESPEasy also relies on reinit when the reader
-  // stops responding after repeated errors.
-  digitalWrite(PN532_RSTPD_N, LOW);
+  // Backends with a reset pin benefit from a hard reset before startup.
+  // This is especially important for PN532 recovery after transport errors.
+#if NFC_RESET_PIN >= 0
+  digitalWrite(NFC_RESET_PIN, LOW);
   delay(100);
-  digitalWrite(PN532_RSTPD_N, HIGH);
+  digitalWrite(NFC_RESET_PIN, HIGH);
   delay(10);
+#endif
   nfc_start();
   bolty_hw_ready = bolt.begin();
+  led_set_hardware_ready(bolty_hw_ready);
   Serial.println("Setup done!");
   app_active = APP_KEYSETUP;
 #if HAS_WIFI
@@ -963,6 +985,8 @@ void setup(void) {
   app_next = APP_KEYSETUP;
 #endif
   app_status = APP_STATUS_START;
+  led_set_app_mode(app_active);
+  led_set_job_status(bolt.get_job_status_id());
   mAppHandler[APP_KEYSETUP].app_title = "Key-Setup";
   mAppHandler[APP_KEYSETUP].app_desc = "Use a webbrowser";
   mAppHandler[APP_KEYSETUP].app_start = app_keysetup_start;
@@ -1423,6 +1447,14 @@ static void print_hex_bytes_inline(const uint8_t *data, size_t len) {
   }
 }
 
+static void print_hex_bytes_spaced(const uint8_t *data, size_t len) {
+  for (size_t i = 0; i < len; i++) {
+    if (i > 0) Serial.print(F(" "));
+    if (data[i] < 0x10) Serial.print(F("0"));
+    Serial.print(data[i], HEX);
+  }
+}
+
 static void store_hex_string(char *out, size_t out_size, const uint8_t *data, uint8_t len) {
   if (out == nullptr || out_size == 0 || data == nullptr) return;
   String hex = convertIntToHex((uint8_t *)data, len);
@@ -1470,7 +1502,7 @@ struct DeterministicBoltcardMatch {
   uint8_t keys[5][16];
 };
 
-static void derive_deterministic_card_key(Adafruit_PN532 *nfc,
+static void derive_deterministic_card_key(BoltyNfcReader *nfc,
                                           const uint8_t issuer_key[16],
                                           const uint8_t uid[7],
                                           uint32_t version,
@@ -1483,7 +1515,7 @@ static void derive_deterministic_card_key(Adafruit_PN532 *nfc,
   AES128_CMAC(issuer_key, msg, sizeof(msg), out_card_key);
 }
 
-static void derive_deterministic_boltcard_keys(Adafruit_PN532 *nfc,
+static void derive_deterministic_boltcard_keys(BoltyNfcReader *nfc,
                                                const uint8_t issuer_key[16],
                                                const uint8_t uid[7],
                                                uint32_t version,
@@ -1498,7 +1530,7 @@ static void derive_deterministic_boltcard_keys(Adafruit_PN532 *nfc,
   AES128_CMAC(card_key, BOLTCARD_DET_TAG_K4, sizeof(BOLTCARD_DET_TAG_K4), out_keys[4]);
 }
 
-static bool deterministic_decrypt_p(Adafruit_PN532 *nfc,
+static bool deterministic_decrypt_p(BoltyNfcReader *nfc,
                                     const uint8_t k1[16],
                                     const uint8_t p[16],
                                     const uint8_t uid[7],
@@ -1513,7 +1545,7 @@ static bool deterministic_decrypt_p(Adafruit_PN532 *nfc,
   return true;
 }
 
-static bool deterministic_verify_cmac(Adafruit_PN532 *nfc,
+static bool deterministic_verify_cmac(BoltyNfcReader *nfc,
                                       const uint8_t k2[16],
                                       const uint8_t uid[7],
                                       uint32_t counter,
@@ -1538,7 +1570,7 @@ static bool deterministic_verify_cmac(Adafruit_PN532 *nfc,
   return memcmp(computed_c, expected_c, sizeof(computed_c)) == 0;
 }
 
-static bool deterministic_try_known_matches(Adafruit_PN532 *nfc,
+static bool deterministic_try_known_matches(BoltyNfcReader *nfc,
                                             const uint8_t *uid,
                                             uint8_t uid_len,
                                             const String &uri,
@@ -1595,7 +1627,7 @@ static bool deterministic_try_known_matches(Adafruit_PN532 *nfc,
   return false;
 }
 
-static void print_deterministic_boltcard_check(Adafruit_PN532 *nfc,
+static void print_deterministic_boltcard_check(BoltyNfcReader *nfc,
                                                const uint8_t *uid,
                                                uint8_t uid_len,
                                                const String &uri) {
@@ -1657,7 +1689,8 @@ static void print_deterministic_boltcard_check(Adafruit_PN532 *nfc,
     print_hex_byte_prefixed(decrypted[0]);
     Serial.println();
     Serial.print(F("[inspect]   Decrypted UID: "));
-    bolt.nfc->PrintHex(decrypted + 1, 7);
+    print_hex_bytes_spaced(decrypted + 1, 7);
+    Serial.println();
     Serial.print(F("[inspect]   Read counter: "));
     Serial.println(counter);
     Serial.println(F("[inspect]   This card was decrypted with a deterministic K1 derived from the UID using the Bolt Card spec."));
@@ -1768,12 +1801,12 @@ void handle_serial_command(String cmd) {
     unsigned long t0 = millis();
     bool found = false;
     do {
-      uint8_t uid[7] = {0};
+      uint8_t uid[12] = {0};
       uint8_t uidLen;
-      found = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, 100);
+      found = bolty_read_passive_target(bolt.nfc, uid, &uidLen);
       if (found) {
         Serial.print(F("[auth] UID: "));
-        bolt.nfc->PrintHex(uid, uidLen);
+        bolty_print_hex(bolt.nfc, uid, uidLen);
       }
       if (millis() - t0 > 15000) { Serial.println(F("[auth] TIMEOUT")); serial_cmd_active = false; return; }
     } while (!found);
@@ -1817,14 +1850,14 @@ void handle_serial_command(String cmd) {
      Serial.println(F("[ndef] Tap card now..."));
      serial_cmd_active = true;
      led_on();
-     uint8_t uid[7] = {0};
-     uint8_t uid_len = 0;
-     unsigned long t0_ndef = millis();
-     bool found_ndef = false;
-     do {
-       found_ndef = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uid_len, 100);
-       if (millis() - t0_ndef > 15000) break;
-      } while (!found_ndef);
+      uint8_t uid[12] = {0};
+      uint8_t uid_len = 0;
+      unsigned long t0_ndef = millis();
+      bool found_ndef = false;
+      do {
+        found_ndef = bolty_read_passive_target(bolt.nfc, uid, &uid_len);
+        if (millis() - t0_ndef > 15000) break;
+       } while (!found_ndef);
       if (found_ndef) {
         uint8_t ndef[256] = {0};
         int len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
@@ -1837,7 +1870,7 @@ void handle_serial_command(String cmd) {
 
         Serial.print(F("[ndef] OK (")); Serial.print(len); Serial.println(F(" bytes)"));
         Serial.print(F("[ndef] hex: "));
-        bolt.nfc->PrintHex(ndef, len > 128 ? 128 : len);
+        bolty_print_hex(bolt.nfc, ndef, len > 128 ? 128 : len);
         Serial.print(F("[ndef] ASCII: "));
         print_ndef_ascii(ndef, len);
         led_blink(3, 100);
@@ -1855,12 +1888,12 @@ ndef_fail:
       serial_cmd_active = true;
       led_on();
 
-      uint8_t uid[7] = {0};
+      uint8_t uid[12] = {0};
       uint8_t uid_len = 0;
       unsigned long t0_inspect = millis();
       bool found = false;
       do {
-        found = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uid_len, 100);
+        found = bolty_read_passive_target(bolt.nfc, uid, &uid_len);
         if (millis() - t0_inspect > 15000) {
           Serial.println(F("[inspect] TIMEOUT"));
           serial_cmd_active = false;
@@ -1872,7 +1905,7 @@ ndef_fail:
       Serial.print(F("[inspect] UID length: "));
       Serial.println(uid_len);
       Serial.print(F("[inspect] UID: "));
-      bolt.nfc->PrintHex(uid, uid_len);
+      bolty_print_hex(bolt.nfc, uid, uid_len);
       Serial.print(F("[inspect] UID compact: "));
       Serial.println(convertIntToHex(uid, uid_len));
       delay(50);
@@ -1931,7 +1964,7 @@ ndef_fail:
         Serial.print(F("[inspect] GetFileSettings len: "));
         Serial.println(fs_len);
         Serial.print(F("[inspect] Raw file settings: "));
-        bolt.nfc->PrintHex(fs, fs_len);
+        bolty_print_hex(bolt.nfc, fs, fs_len);
         if (fs_len >= 7) {
           Serial.print(F("[inspect] FileType: 0x"));
           print_hex_byte_prefixed(fs[0]);
@@ -1978,7 +2011,7 @@ ndef_fail:
         Serial.print(F("[inspect] NDEF bytes: "));
         Serial.println(ndef_len);
         Serial.print(F("[inspect] NDEF hex: "));
-        bolt.nfc->PrintHex(ndef, ndef_len > 128 ? 128 : ndef_len);
+        bolty_print_hex(bolt.nfc, ndef, ndef_len > 128 ? 128 : ndef_len);
         Serial.print(F("[inspect] NDEF ASCII: "));
         print_ndef_ascii(ndef, ndef_len);
 
@@ -2015,12 +2048,12 @@ ndef_fail:
     serial_cmd_active = true;
     led_on();
 
-    uint8_t uid[7] = {0};
+    uint8_t uid[12] = {0};
     uint8_t uid_len = 0;
     unsigned long t0_derive = millis();
     bool found = false;
     do {
-      found = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uid_len, 100);
+      found = bolty_read_passive_target(bolt.nfc, uid, &uid_len);
       if (millis() - t0_derive > 15000) {
         Serial.println(F("[derivekeys] TIMEOUT"));
         serial_cmd_active = false;
@@ -2029,7 +2062,7 @@ ndef_fail:
     } while (!found);
 
     Serial.print(F("[derivekeys] UID: "));
-    bolt.nfc->PrintHex(uid, uid_len);
+    bolty_print_hex(bolt.nfc, uid, uid_len);
 
     uint8_t ndef[256] = {0};
     const int ndef_len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
@@ -2101,9 +2134,9 @@ ndef_fail:
   else if (cmd == "ver") {
     if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
     serial_cmd_active = true;
-    uint8_t uid[7] = {0};
+    uint8_t uid[12] = {0};
     uint8_t uidLen;
-    uint8_t ok = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, 100);
+    uint8_t ok = bolty_read_passive_target(bolt.nfc, uid, &uidLen);
     Serial.print(F("[ver] Card detected: "));
     Serial.println(ok ? "YES" : "NO");
     if (ok) {
@@ -2283,19 +2316,19 @@ ndef_fail:
     unsigned long t0 = millis();
     bool found = false;
     do {
-      uint8_t uid[7] = {0};
+      uint8_t uid[12] = {0};
       uint8_t uidLen;
-      found = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, 100);
+      found = bolty_read_passive_target(bolt.nfc, uid, &uidLen);
       if (found) {
         Serial.print(F("[keyver] UID: "));
-        bolt.nfc->PrintHex(uid, uidLen);
+        bolty_print_hex(bolt.nfc, uid, uidLen);
       }
       if (millis() - t0 > 15000) { Serial.println(F("[keyver] TIMEOUT")); serial_cmd_active = false; return; }
     } while (!found);
     delay(50);
     bool all_zero = true;
     for (int k = 0; k < 5; k++) {
-      uint8_t kv = ntag424_getKeyVersion(bolt.nfc, k);
+      uint8_t kv = bolty_get_key_version(bolt.nfc, k);
       Serial.print(F("[keyver] Key "));
       Serial.print(k);
       Serial.print(F(" version: 0x"));
@@ -2332,12 +2365,12 @@ ndef_fail:
     unsigned long t0 = millis();
     bool found = false;
     do {
-      uint8_t uid[7] = {0};
+      uint8_t uid[12] = {0};
       uint8_t uidLen;
-      found = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, 100);
+      found = bolty_read_passive_target(bolt.nfc, uid, &uidLen);
       if (found) {
         Serial.print(F("[check] UID: "));
-        bolt.nfc->PrintHex(uid, uidLen);
+        bolty_print_hex(bolt.nfc, uid, uidLen);
       }
       if (millis() - t0 > 15000) { Serial.println(F("[check] TIMEOUT")); serial_cmd_active = false; return; }
     } while (!found);
@@ -2408,15 +2441,15 @@ ndef_fail:
     serial_cmd_active = true;
     led_on();
 
-    uint8_t uid_d[7] = {0};
+    uint8_t uid_d[12] = {0};
     uint8_t uidLen_d;
     unsigned long t0_d = millis();
     bool found_d = false;
     do {
-      found_d = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid_d, &uidLen_d, 100);
+      found_d = bolty_read_passive_target(bolt.nfc, uid_d, &uidLen_d);
       if (found_d) {
         Serial.print(F("[diagnose] UID: "));
-        bolt.nfc->PrintHex(uid_d, uidLen_d);
+        bolty_print_hex(bolt.nfc, uid_d, uidLen_d);
       }
       if (millis() - t0_d > 15000) {
         Serial.println(F("[diagnose] TIMEOUT"));
@@ -2433,7 +2466,7 @@ ndef_fail:
     bool all_zero = true;
     bool any_error = false;
     for (int k = 0; k < 5; k++) {
-      kv[k] = ntag424_getKeyVersion(bolt.nfc, k);
+      kv[k] = bolty_get_key_version(bolt.nfc, k);
       Serial.print(F("[diagnose]   Key "));
       Serial.print(k);
       Serial.print(F(" version: 0x"));
@@ -2519,15 +2552,15 @@ ndef_fail:
     serial_cmd_active = true;
     led_on();
 
-    uint8_t uid_rk[7] = {0};
+    uint8_t uid_rk[12] = {0};
     uint8_t uidLen_rk;
     unsigned long t0_rk = millis();
     bool found_rk = false;
     do {
-      found_rk = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid_rk, &uidLen_rk, 100);
+      found_rk = bolty_read_passive_target(bolt.nfc, uid_rk, &uidLen_rk);
       if (found_rk) {
         Serial.print(F("[recoverkey] UID: "));
-        bolt.nfc->PrintHex(uid_rk, uidLen_rk);
+        bolty_print_hex(bolt.nfc, uid_rk, uidLen_rk);
       }
       if (millis() - t0_rk > 15000) {
         Serial.println(F("[recoverkey] TIMEOUT"));
@@ -2538,7 +2571,7 @@ ndef_fail:
 
     delay(50);
     bolt.selectNtagApplicationFiles();
-    uint8_t kv_before = ntag424_getKeyVersion(bolt.nfc, slot);
+    uint8_t kv_before = bolty_get_key_version(bolt.nfc, slot);
     Serial.print(F("[recoverkey] Key "));
     Serial.print(slot);
     Serial.print(F(" version BEFORE: 0x"));
@@ -2562,7 +2595,7 @@ ndef_fail:
 
     // Re-select and verify
     bolt.nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID);
-    uint8_t kv_after = ntag424_getKeyVersion(bolt.nfc, slot);
+    uint8_t kv_after = bolty_get_key_version(bolt.nfc, slot);
     Serial.print(F("[recoverkey] Key "));
     Serial.print(slot);
     Serial.print(F(" version AFTER: 0x"));
@@ -2589,15 +2622,15 @@ ndef_fail:
     led_on();
 
     // Detect card
-    uint8_t uid_ck[7] = {0};
+    uint8_t uid_ck[12] = {0};
     uint8_t uidLen_ck;
     unsigned long t0_ck = millis();
     bool found_ck = false;
     do {
-      found_ck = bolt.nfc->readPassiveTargetID(PN532_MIFARE_ISO14443A, uid_ck, &uidLen_ck, 100);
+      found_ck = bolty_read_passive_target(bolt.nfc, uid_ck, &uidLen_ck);
       if (found_ck) {
         Serial.print(F("[testck] UID: "));
-        bolt.nfc->PrintHex(uid_ck, uidLen_ck);
+        bolty_print_hex(bolt.nfc, uid_ck, uidLen_ck);
       }
       if (millis() - t0_ck > 15000) { Serial.println(F("[testck] TIMEOUT")); serial_cmd_active = false; return; }
     } while (!found_ck);
@@ -2612,7 +2645,7 @@ ndef_fail:
     // 0x00 = blank/default state.
     // 0x01 = our previous aborted test changed key 1 to test_key and needs
     // restore before we can do a clean round-trip again.
-    uint8_t kv_before = ntag424_getKeyVersion(bolt.nfc, 1);
+    uint8_t kv_before = bolty_get_key_version(bolt.nfc, 1);
     Serial.print(F("[testck] Key 1 version BEFORE: 0x"));
     if (kv_before < 0x10) Serial.print(F("0"));
     Serial.println(kv_before, HEX);
@@ -2636,7 +2669,7 @@ ndef_fail:
       Serial.println(recovered ? "OK" : "FAILED");
 
       bolt.nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID);
-      uint8_t kv_recovered = ntag424_getKeyVersion(bolt.nfc, 1);
+      uint8_t kv_recovered = bolty_get_key_version(bolt.nfc, 1);
       Serial.print(F("[testck]   Key 1 version: 0x"));
       if (kv_recovered < 0x10) Serial.print(F("0"));
       Serial.println(kv_recovered, HEX);
@@ -2665,7 +2698,7 @@ ndef_fail:
 
     // Re-select and read version (PLAIN, no auth needed for GetKeyVersion)
     bolt.nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID);
-    uint8_t kv_mid = ntag424_getKeyVersion(bolt.nfc, 1);
+    uint8_t kv_mid = bolty_get_key_version(bolt.nfc, 1);
     Serial.print(F("[testck]   Key 1 version: 0x"));
     if (kv_mid < 0x10) Serial.print(F("0"));
     Serial.println(kv_mid, HEX);
@@ -2704,7 +2737,7 @@ ndef_fail:
 
     // Read final version
     bolt.nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID);
-    uint8_t kv_final = ntag424_getKeyVersion(bolt.nfc, 1);
+    uint8_t kv_final = bolty_get_key_version(bolt.nfc, 1);
     Serial.print(F("[testck]   Key 1 version: 0x"));
     if (kv_final < 0x10) Serial.print(F("0"));
     Serial.println(kv_final, HEX);
@@ -2739,6 +2772,10 @@ ndef_fail:
 #endif
 
 void loop(void) {
+
+  led_set_busy(serial_cmd_active);
+  led_set_app_mode(app_active);
+  led_tick();
 
 #if !HAS_WIFI
   if (Serial.available()) {
