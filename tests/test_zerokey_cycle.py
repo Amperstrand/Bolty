@@ -8,8 +8,10 @@ Aborts immediately on any failure.
 
 import serial, time, sys, re
 
-PORT = '/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0'
-BAUD = 115200
+from serial_config import get_serial_baud, get_serial_port
+
+PORT = get_serial_port()
+BAUD = get_serial_baud()
 
 GREEN = '\033[92m'
 RED = '\033[91m'
