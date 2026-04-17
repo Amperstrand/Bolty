@@ -409,8 +409,15 @@ public:
     uint8_t *filedata = (uint8_t *)malloc(len + sizeof(ndefheader));
     memcpy(filedata, ndefheader, sizeof(ndefheader));
     memcpy(filedata + sizeof(ndefheader), lnurl.c_str(), lnurl.length());
-    nfc->ntag424_ISOUpdateBinary(filedata, len + sizeof(ndefheader));
+    const bool ndef_write_ok =
+        nfc->ntag424_ISOUpdateBinary(filedata, len + sizeof(ndefheader));
     free(filedata);
+
+    if (!ndef_write_ok) {
+      Serial.println(F("NDEF write failed before SDM/key changes."));
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
+    }
 
     const uint8_t authenticated = nfc->ntag424_Authenticate(key_cur[0], 0, 0x71);
     if (authenticated != 1) {
