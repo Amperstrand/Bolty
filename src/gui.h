@@ -4,6 +4,10 @@
 #include "hardware_config.h"
 #include <Arduino.h>
 
+#if HAS_LED_MATRIX
+  #include <M5Unified.h>
+#endif
+
 #if HAS_DISPLAY
   #include <TFT_eSPI.h>
 #endif
@@ -259,7 +263,30 @@ static inline bool displayQR(String input) {
 }
 #endif
 
-#if HAS_BUTTONS
+#if HAS_BUTTONS && HAS_LED_MATRIX
+
+static inline void button_loop() {
+  sharedvars.evbuttons[0] = 0;
+  sharedvars.evbuttons[1] = 0;
+
+  if (M5.BtnA.wasClicked()) {
+    Serial.println("[btn] wasClicked");
+    sharedvars.evbuttons[0] = 1;
+    sharedvars.appbuttons[0] = 1;
+  } else if (M5.BtnA.wasHold()) {
+    Serial.println("[btn] wasHold");
+    sharedvars.evbuttons[0] = 2;
+    sharedvars.appbuttons[0] = 2;
+  }
+}
+
+static inline bool button_is_held() {
+  return M5.BtnA.isPressed();
+}
+
+static inline void button_init() {}
+
+#elif HAS_BUTTONS
   #include "Button2.h"
 
 Button2 btn1(BUTTON_1);
@@ -332,6 +359,8 @@ static inline void button_loop() {
   sharedvars.evbuttons[0] = 0;
   sharedvars.evbuttons[1] = 0;
 }
+
+static inline bool button_is_held() { return false; }
 #endif
 
 #if HAS_DISPLAY

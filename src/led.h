@@ -12,228 +12,268 @@
 namespace bolty_led_internal {
 static bool initialized = false;
 static bool supported = false;
-static bool hardware_ready = false;
-static bool busy = false;
-static uint8_t app_mode = 0;
-static uint8_t job_status = 0;
-static unsigned long card_present_until = 0;
-static unsigned long activity_until = 0;
+static bool animating = false;
+static bool card_present = false;
+
 static unsigned long success_until = 0;
 static unsigned long error_until = 0;
-static uint32_t last_render_key = 0;
-static bool force_render = true;
+static unsigned long activity_until = 0;
 
-static const uint8_t kLedBrightness = 20;
-static const uint16_t kOverlayCardMs = 350;
-static const uint16_t kOverlayActivityMs = 120;
-static const uint16_t kOverlayResultMs = 900;
+static const uint8_t kLedCount = 25;
+static const uint16_t kResultMs = 600;
+static const uint16_t kActivityMs = 100;
 
-static inline void set_all(uint8_t r, uint8_t g, uint8_t b) {
-  M5.Led.setAllColor(r, g, b);
-}
-
-static inline void set_pixels(const uint8_t *indices, size_t count, uint8_t r,
-                              uint8_t g, uint8_t b) {
-  for (size_t i = 0; i < count; ++i) {
-    M5.Led.setColor(indices[i], r, g, b);
+static inline void hsv_to_rgb(uint16_t h, uint8_t s, uint8_t v,
+                               uint8_t &r, uint8_t &g, uint8_t &b) {
+  uint8_t region = (h / 60) % 6;
+  uint8_t rem = (uint8_t)((h % 60) * 255 / 60);
+  uint8_t p = (uint8_t)((v * (255 - s)) >> 8);
+  uint8_t q = (uint8_t)((v * (255 - ((s * rem) >> 8))) >> 8);
+  uint8_t t = (uint8_t)((v * (255 - ((s * (255 - rem)) >> 8))) >> 8);
+  switch (region) {
+    case 0: r = v; g = t; b = p; break;
+    case 1: r = q; g = v; b = p; break;
+    case 2: r = p; g = v; b = t; break;
+    case 3: r = p; g = q; b = v; break;
+    case 4: r = t; g = p; b = v; break;
+    default: r = v; g = p; b = q; break;
   }
 }
 
-static inline void base_color(uint8_t &r, uint8_t &g, uint8_t &b) {
-  if (!hardware_ready) {
-    r = 20;
-    g = 0;
-    b = 0;
-    return;
+static inline void rainbow_cycle(uint16_t per_led_ms) {
+  if (!initialized || !supported) return;
+  animating = true;
+  M5.Led.setBrightness(255);
+  M5.Led.setAllColor(0, 0, 0);
+  M5.Led.display();
+  for (int i = 0; i < kLedCount; i++) {
+    uint8_t r, g, b;
+    hsv_to_rgb((uint16_t)(i * 360 / kLedCount), 255, 255, r, g, b);
+    M5.Led.setColor(i, r, g, b);
+    M5.Led.display();
+    delay(per_led_ms);
   }
+  delay(400);
+  M5.Led.setAllColor(0, 0, 0);
+  M5.Led.display();
+  animating = false;
+}
 
-  switch (job_status) {
-    case 1:
-      r = 0;
-      g = 0;
-      b = 18;
-      return;
-    case 2:
-      r = 24;
-      g = 10;
-      b = 0;
-      return;
-    case 3:
-      r = 18;
-      g = 0;
-      b = 8;
-      return;
-    case 4:
-      r = 0;
-      g = 22;
-      b = 0;
-      return;
-    case 5:
-      r = 22;
-      g = 0;
-      b = 0;
-      return;
-    case 6:
-      r = 16;
-      g = 0;
-      b = 16;
-      return;
-    default:
-      break;
-  }
-
-  switch (app_mode) {
-    case 0:
-      r = 0;
-      g = 12;
-      b = 12;
-      break;
-    case 1:
-      r = 18;
-      g = 10;
-      b = 0;
-      break;
-    case 2:
-      r = 16;
-      g = 0;
-      b = 10;
-      break;
-    default:
-      r = 0;
-      g = 10;
-      b = 0;
-      break;
+static inline void row_set(int row, uint8_t r, uint8_t g, uint8_t b) {
+  for (int col = 0; col < 5; col++) {
+    M5.Led.setColor(row * 5 + col, r, g, b);
   }
 }
 
-static inline uint32_t render_key(bool show_success, bool show_error,
-                                  bool show_card, bool show_activity,
-                                  uint8_t r, uint8_t g, uint8_t b) {
-  return ((uint32_t)show_success << 31) | ((uint32_t)show_error << 30) |
-         ((uint32_t)show_card << 29) | ((uint32_t)show_activity << 28) |
-         ((uint32_t)busy << 27) | ((uint32_t)r << 16) | ((uint32_t)g << 8) |
-         (uint32_t)b;
+static inline void alternate_frame(bool frame_a) {
+  if (!initialized || !supported) return;
+  animating = true;
+  M5.Led.setBrightness(255);
+  M5.Led.setAllColor(0, 0, 0);
+  for (int row = 0; row < 5; row++) {
+    for (int col = 0; col < 5; col++) {
+      if (((row + col) % 2 == 0) == frame_a) {
+        M5.Led.setColor(row * 5 + col, 255, 255, 255);
+      }
+    }
+  }
+  M5.Led.display();
+  animating = false;
 }
 
 static inline void render() {
-  if (!initialized || !supported) {
-    return;
-  }
-
-  M5.update();
+  if (!initialized || !supported || animating) return;
 
   const unsigned long now = millis();
   const bool show_success = now < success_until;
   const bool show_error = now < error_until;
-  const bool show_card = now < card_present_until;
   const bool show_activity = now < activity_until;
 
-  uint8_t r = 0;
-  uint8_t g = 0;
-  uint8_t b = 0;
-  base_color(r, g, b);
-
-  const uint32_t key = render_key(show_success, show_error, show_card,
-                                  show_activity, r, g, b);
-  if (!force_render && key == last_render_key) {
+  if (!show_success && !show_error && !show_activity && !card_present) {
+    M5.Led.setBrightness(1);
+    M5.Led.setAllColor(0, 0, 0);
+    M5.Led.display();
     return;
   }
 
+  M5.Led.setBrightness(255);
+  M5.Led.setAllColor(0, 0, 0);
+
   if (show_error) {
-    set_all(48, 0, 0);
+    M5.Led.setAllColor(255, 0, 0);
   } else if (show_success) {
-    set_all(0, 36, 0);
-  } else {
-    set_all(r, g, b);
-
-    if (busy) {
-      static const uint8_t kBusyPixels[] = {2, 7, 10, 11, 12, 13, 14, 17, 22};
-      set_pixels(kBusyPixels, sizeof(kBusyPixels), 24, 24, 24);
-    } else if (show_activity) {
-      static const uint8_t kActivityPixels[] = {12};
-      set_pixels(kActivityPixels, sizeof(kActivityPixels), 18, 18, 18);
-    }
-
-    if (show_card) {
-      static const uint8_t kCardPixels[] = {0, 4, 20, 24};
-      set_pixels(kCardPixels, sizeof(kCardPixels), 0, 24, 0);
-    }
+    M5.Led.setAllColor(0, 255, 0);
+  } else if (card_present) {
+    static const uint8_t ring[] = {2, 7, 11, 13, 17, 22, 21, 20, 15, 10, 5, 3, 1, 0};
+    for (auto idx : ring) M5.Led.setColor(idx, 0, 80, 200);
+    M5.Led.setColor(12, 0, 180, 255);
+  } else if (show_activity) {
+    M5.Led.setColor(12, 200, 200, 200);
   }
 
   M5.Led.display();
-  last_render_key = key;
-  force_render = false;
 }
 }
 
 static inline void led_setup() {
-  if (bolty_led_internal::initialized) {
-    return;
-  }
+  if (bolty_led_internal::initialized) return;
 
-  M5.begin();
+  auto cfg = M5.config();
+  M5.begin(cfg);
   bolty_led_internal::initialized = true;
   bolty_led_internal::supported = M5.Led.isEnabled();
-  if (!bolty_led_internal::supported) {
-    return;
+  Serial.print("[led] Atom matrix enabled: ");
+  Serial.println(bolty_led_internal::supported ? "yes" : "no");
+  if (!bolty_led_internal::supported) return;
+
+  pinMode(39, INPUT_PULLUP);
+  M5.Led.setBrightness(1);
+  M5.Led.setAllColor(0, 0, 0);
+  M5.Led.display();
+}
+
+// Self-test: each row = one subsystem. Yellow while testing, green/red for pass/fail.
+// Row 0 = LED matrix, Row 1 = NFC, Row 2 = Button
+static inline void led_self_test(bool nfc_ok) {
+  if (!bolty_led_internal::initialized || !bolty_led_internal::supported) return;
+  bolty_led_internal::animating = true;
+  M5.Led.setBrightness(255);
+
+  M5.Led.setAllColor(0, 0, 0);
+  bolty_led_internal::row_set(0, 255, 255, 0);
+  M5.Led.display();
+  Serial.println("[test] LED matrix...");
+  delay(300);
+  M5.Led.setAllColor(0, 0, 0);
+  bolty_led_internal::row_set(0, 0, 255, 0);
+  M5.Led.display();
+  Serial.println("[test] LED matrix OK");
+  delay(300);
+
+  M5.Led.setAllColor(0, 0, 0);
+  bolty_led_internal::row_set(0, 0, 255, 0);
+  bolty_led_internal::row_set(1, 255, 255, 0);
+  M5.Led.display();
+  Serial.println("[test] NFC...");
+  delay(300);
+  M5.Led.setAllColor(0, 0, 0);
+  bolty_led_internal::row_set(0, 0, 255, 0);
+  bolty_led_internal::row_set(1, nfc_ok ? 0 : 255, nfc_ok ? 255 : 0, 0);
+  M5.Led.display();
+  Serial.print("[test] NFC "); Serial.println(nfc_ok ? "OK" : "FAIL");
+  delay(300);
+
+  M5.Led.setAllColor(0, 0, 0);
+  bolty_led_internal::row_set(0, 0, 255, 0);
+  bolty_led_internal::row_set(1, nfc_ok ? 0 : 255, nfc_ok ? 255 : 0, 0);
+  bolty_led_internal::row_set(2, 255, 255, 0);
+  M5.Led.display();
+  Serial.println("[test] Button (GPIO39)...");
+  delay(300);
+  M5.Led.setAllColor(0, 0, 0);
+  bolty_led_internal::row_set(0, 0, 255, 0);
+  bolty_led_internal::row_set(1, nfc_ok ? 0 : 255, nfc_ok ? 255 : 0, 0);
+  bolty_led_internal::row_set(2, 0, 255, 0);
+  M5.Led.display();
+  Serial.println("[test] Button present");
+  delay(300);
+
+  if (nfc_ok) {
+    bolty_led_internal::rainbow_cycle(20);
+  } else {
+    M5.Led.setAllColor(255, 0, 0);
+    M5.Led.display();
+    delay(500);
   }
 
-  M5.Led.setBrightness(bolty_led_internal::kLedBrightness);
-  bolty_led_internal::force_render = true;
-  bolty_led_internal::render();
+  M5.Led.setBrightness(1);
+  M5.Led.setAllColor(0, 0, 0);
+  M5.Led.display();
+  bolty_led_internal::animating = false;
+}
+
+static inline void led_boot_animation(bool hw_ready) {
+  led_self_test(hw_ready);
 }
 
 static inline void led_tick() {
   bolty_led_internal::render();
 }
 
-static inline void led_set_hardware_ready(bool ready) {
-  bolty_led_internal::hardware_ready = ready;
-  bolty_led_internal::force_render = true;
-}
-
-static inline void led_set_app_mode(uint8_t app_mode) {
-  bolty_led_internal::app_mode = app_mode;
-  bolty_led_internal::force_render = true;
-}
+static inline void led_set_hardware_ready(bool) {}
+static inline void led_set_app_mode(uint8_t) {}
 
 static inline void led_set_job_status(uint8_t job_status) {
-  bolty_led_internal::job_status = job_status;
   if (job_status == 4) {
-    bolty_led_internal::success_until = millis() + bolty_led_internal::kOverlayResultMs;
+    bolty_led_internal::success_until = millis() + bolty_led_internal::kResultMs;
   } else if (job_status == 5 || job_status == 6) {
-    bolty_led_internal::error_until = millis() + bolty_led_internal::kOverlayResultMs;
+    bolty_led_internal::error_until = millis() + bolty_led_internal::kResultMs;
   }
-  bolty_led_internal::force_render = true;
 }
 
-static inline void led_set_busy(bool busy) {
-  bolty_led_internal::busy = busy;
-  bolty_led_internal::force_render = true;
-}
-
-static inline void led_notify_card_present() {
-  bolty_led_internal::card_present_until = millis() + bolty_led_internal::kOverlayCardMs;
-  bolty_led_internal::force_render = true;
-}
-
+static inline void led_set_busy(bool) {}
+static inline void led_notify_card_present() {}
 static inline void led_notify_activity() {
-  bolty_led_internal::activity_until = millis() + bolty_led_internal::kOverlayActivityMs;
-  bolty_led_internal::force_render = true;
+  bolty_led_internal::activity_until = millis() + bolty_led_internal::kActivityMs;
+}
+static inline void led_notify_button_press() {}
+
+static inline void led_set_card_present(bool present) {
+  bolty_led_internal::card_present = present;
+}
+
+static inline void led_button_cycle() {
+  if (!bolty_led_internal::initialized || !bolty_led_internal::supported) return;
+  for (int f = 0; f < 6; f++) {
+    bolty_led_internal::alternate_frame(f % 2 == 0);
+    delay(80);
+  }
+  M5.Led.setBrightness(1);
+  M5.Led.setAllColor(0, 0, 0);
+  M5.Led.display();
+}
+
+static inline void led_set_held(bool held) {
+  if (!bolty_led_internal::initialized || !bolty_led_internal::supported) return;
+  if (bolty_led_internal::animating) return;
+  if (held) {
+    M5.Led.setBrightness(255);
+    M5.Led.setAllColor(255, 255, 255);
+    M5.Led.display();
+  } else {
+    M5.Led.setBrightness(1);
+    M5.Led.setAllColor(0, 0, 0);
+    M5.Led.display();
+  }
 }
 
 static inline void led_signal_result(bool success) {
   if (success) {
-    bolty_led_internal::success_until = millis() + bolty_led_internal::kOverlayResultMs;
+    bolty_led_internal::success_until = millis() + bolty_led_internal::kResultMs;
   } else {
-    bolty_led_internal::error_until = millis() + bolty_led_internal::kOverlayResultMs;
+    bolty_led_internal::error_until = millis() + bolty_led_internal::kResultMs;
   }
-  bolty_led_internal::force_render = true;
 }
 
 #else
 
 static inline void led_setup() {}
+static inline void led_boot_animation(bool hardware_ready) {
+#if LED_PIN >= 0
+  const int blink_count = hardware_ready ? 2 : 5;
+  const int blink_ms = 100;
+  for (int i = 0; i < blink_count; ++i) {
+    digitalWrite(LED_PIN, LOW);
+    delay(blink_ms);
+    digitalWrite(LED_PIN, HIGH);
+    if (i + 1 < blink_count) {
+      delay(blink_ms);
+    }
+  }
+#else
+  (void)hardware_ready;
+#endif
+}
 static inline void led_tick() {}
 static inline void led_set_hardware_ready(bool) {}
 static inline void led_set_app_mode(uint8_t) {}
@@ -241,7 +281,11 @@ static inline void led_set_job_status(uint8_t) {}
 static inline void led_set_busy(bool) {}
 static inline void led_notify_card_present() {}
 static inline void led_notify_activity() {}
+static inline void led_notify_button_press() {}
+static inline void led_button_cycle() {}
+static inline void led_set_held(bool) {}
 static inline void led_signal_result(bool) {}
+static inline void led_set_card_present(bool) {}
 
 #endif
 

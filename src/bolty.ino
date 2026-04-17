@@ -20,6 +20,7 @@
 /**************************************************************************/
 #include <Arduino.h>
 #include "bolt.h"
+#include "bolty_utils.h"
 #include "build_metadata.h"
 #include "gui.h"
 #include "led.h"
@@ -101,6 +102,20 @@ BoltDevice bolt(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS);
 void dumpconfig();
 void dumpsettings();
 
+#if HAS_WIFI
+bool SendQR(String input, AsyncResponseStream *response);
+void checkparams(AsyncWebServerRequest *request);
+void handleUpload(AsyncWebServerRequest *request, String filename, size_t index,
+                  uint8_t *data, size_t len, bool final);
+#endif
+
+struct DeterministicBoltcardMatch;
+static bool deterministic_try_known_matches(BoltyNfcReader *nfc,
+                                            const uint8_t *uid,
+                                            uint8_t uid_len,
+                                            const String &uri,
+                                            DeterministicBoltcardMatch &match);
+
 struct sSettings {
   char essid[33];
   char password[65];
@@ -127,6 +142,17 @@ volatile bool serial_cmd_active = false;
 int signal_restart_delayed = 0;
 
 bool bolty_hw_ready = false;
+
+static void handle_atom_button_feedback() {
+#if HAS_LED_MATRIX
+  if (sharedvars.appbuttons[0] == 1) {
+    Serial.println("[button] Atom BtnA click — LED cycle");
+    led_button_cycle();
+  } else if (sharedvars.appbuttons[0] == 2) {
+    Serial.println("[button] Atom BtnA hold");
+  }
+#endif
+}
 
 typedef void (*tAppHandler)();
 typedef void (*tEvtHandler)(uint8_t btn, uint8_t evt);
@@ -328,9 +354,19 @@ void led_blink(int count, int ms) {
   }
 }
 #else
-void led_on() { led_notify_activity(); }
-void led_off() { led_set_busy(false); }
-void led_blink(int count, int) { led_signal_result(count <= 3); }
+void led_on() {
+  led_set_busy(true);
+  led_notify_activity();
+  led_tick();
+}
+void led_off() {
+  led_set_busy(false);
+  led_tick();
+}
+void led_blink(int count, int) {
+  led_signal_result(count <= 3);
+  led_tick();
+}
 #endif
 
 // Keysetup
@@ -407,6 +443,7 @@ void APP_BOLTBURN_loop() {
     String lnurl = String(mBoltConfig.url);
     uint8_t burn_result = bolt.burn(lnurl);
     if (burn_result != JOBSTATUS_WAITING) {
+      led_set_job_status(bolt.get_job_status_id());
       previousMillis = millis();
       Interval = 3000;
       dumpconfig();
@@ -490,6 +527,7 @@ void APP_BOLTWIPE_loop() {
     bolt.loadKeysForWipe(mBoltConfig);
     uint8_t wipe_result = bolt.wipe();
     if (wipe_result != JOBSTATUS_WAITING) {
+      led_set_job_status(bolt.get_job_status_id());
       previousMillis = millis();
       Interval = 3000;
       dumpconfig();
@@ -596,6 +634,7 @@ void update_screen() {
 
 void handle_events() {
 #if HAS_BUTTONS
+  handle_atom_button_feedback();
   // Button 0 short clicky = next keyset
   if ((sharedvars.appbuttons[0] == 1) && (app_active != APP_KEYSETUP)) {
     // we dont want to interrupt anything done with keyysetup
@@ -977,6 +1016,7 @@ void setup(void) {
   nfc_start();
   bolty_hw_ready = bolt.begin();
   led_set_hardware_ready(bolty_hw_ready);
+  led_boot_animation(bolty_hw_ready);
   Serial.println("Setup done!");
   app_active = APP_KEYSETUP;
 #if HAS_WIFI
@@ -1231,7 +1271,6 @@ void setup(void) {
   Serial.println("Server started");
 #else
   Serial.println("Headless mode ready. Type 'help' for commands.");
-  led_blink(bolty_hw_ready ? 2 : 5, 100);
 #endif
 }
 
@@ -1280,202 +1319,6 @@ void serial_print_status() {
 }
 
 // ntag424_getKeyVersion moved to bolt.h for use by burn/wipe guards
-
-const char* ntag424_error_name(uint8_t sw1, uint8_t sw2) {
-  if (sw1 == 0x91) {
-    switch (sw2) {
-      case 0x00: return "OK";
-      case 0xAE: return "AUTHENTICATION_ERROR";
-      case 0xBE: return "BOUNDARY_ERROR";
-      case 0xEE: return "MEMORY_ERROR";
-      case 0x1E: return "INTEGRITY_ERROR";
-      case 0x7E: return "LENGTH_ERROR";
-      case 0x9D: return "PERMISSION_DENIED";
-      case 0xCA: return "COMMAND_ABORTED";
-      case 0x9E: return "PARAMETER_ERROR";
-      case 0x40: return "NO_SUCH_KEY";
-      case 0xAD: return "AUTHENTICATION_DELAY";
-      case 0xF0: return "FILE_NOT_FOUND";
-      default:   return "UNKNOWN_ERROR";
-    }
-  }
-  if (sw1 == 0x69) {
-    switch (sw2) {
-      case 0x82: return "SECURITY_STATUS_NOT_SATISFIED";
-      case 0x85: return "CONDITIONS_NOT_SATISFIED";
-      case 0x88: return "REF_DATA_INVALID";
-      default:   return "UNKNOWN_ERROR";
-    }
-  }
-  if (sw1 == 0x6A && sw2 == 0x82) return "FILE_NOT_FOUND";
-  if (sw1 == 0x6A && sw2 == 0x86) return "INCORRECT_P1_P2";
-  return "UNKNOWN_ERROR";
-}
-
-static void print_hex_byte_prefixed(uint8_t value) {
-  if (value < 0x10) Serial.print(F("0"));
-  Serial.print(value, HEX);
-}
-
-static uint8_t bcd_to_decimal(uint8_t value) {
-  return (uint8_t)(((value >> 4) & 0x0F) * 10 + (value & 0x0F));
-}
-
-static uint32_t decode_u24_le(const uint8_t *buf) {
-  return (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) | ((uint32_t)buf[2] << 16);
-}
-
-static bool ndef_extract_uri(const uint8_t *ndef, int len, String &uri) {
-  if (ndef == nullptr || len < 5) return false;
-
-  for (int i = 0; i <= len - 5; i++) {
-    if (ndef[i] == 0xD1 && ndef[i + 1] == 0x01 && ndef[i + 3] == 0x55) {
-      const int payload_len = ndef[i + 2];
-      if (payload_len < 1 || i + 4 + payload_len > len) return false;
-
-      const uint8_t prefix = ndef[i + 4];
-      switch (prefix) {
-        case 0x00: uri = ""; break;
-        case 0x01: uri = "http://www."; break;
-        case 0x02: uri = "https://www."; break;
-        case 0x03: uri = "http://"; break;
-        case 0x04: uri = "https://"; break;
-        default: uri = ""; break;
-      }
-
-      for (int j = 0; j < payload_len - 1; j++) {
-        const uint8_t ch = ndef[i + 5 + j];
-        uri += (ch >= 0x20 && ch < 0x7F) ? (char)ch : '.';
-      }
-      return true;
-    }
-  }
-
-  return false;
-}
-
-static void print_ndef_ascii(const uint8_t *ndef, int len) {
-  for (int i = 0; i < len; i++) {
-    Serial.write(ndef[i] >= 0x20 && ndef[i] < 0x7F ? ndef[i] : '.');
-  }
-  Serial.println();
-}
-
-static void print_boltcard_heuristics(const String &uri) {
-  Serial.println(F("[inspect] --- Boltcard Heuristics ---"));
-  if (uri.length() == 0) {
-    Serial.println(F("[inspect] No URI record found in NDEF."));
-    return;
-  }
-
-  const bool has_lnurlw = uri.startsWith("lnurlw://") || uri.indexOf("lnurlw://") >= 0;
-  const int p_idx = uri.indexOf("p=");
-  const int c_idx = uri.indexOf("c=");
-  const bool has_p = p_idx >= 0;
-  const bool has_c = c_idx >= 0;
-
-  Serial.print(F("[inspect] URI has lnurlw scheme: "));
-  Serial.println(has_lnurlw ? F("YES") : F("NO"));
-  Serial.print(F("[inspect] URI has p= param: "));
-  Serial.println(has_p ? F("YES") : F("NO"));
-  Serial.print(F("[inspect] URI has c= param: "));
-  Serial.println(has_c ? F("YES") : F("NO"));
-
-  if (has_p) {
-    Serial.print(F("[inspect] p= offset in URI: "));
-    Serial.println(p_idx);
-  }
-  if (has_c) {
-    Serial.print(F("[inspect] c= offset in URI: "));
-    Serial.println(c_idx);
-  }
-
-  const bool looks_boltcard = has_lnurlw || (has_p && has_c);
-  Serial.print(F("[inspect] Looks like Bolt Card: "));
-  Serial.println(looks_boltcard ? F("YES") : F("NO / UNKNOWN"));
-}
-
-static bool hex_nibble(char ch, uint8_t &value) {
-  if (ch >= '0' && ch <= '9') {
-    value = (uint8_t)(ch - '0');
-    return true;
-  }
-  if (ch >= 'a' && ch <= 'f') {
-    value = (uint8_t)(ch - 'a' + 10);
-    return true;
-  }
-  if (ch >= 'A' && ch <= 'F') {
-    value = (uint8_t)(ch - 'A' + 10);
-    return true;
-  }
-  return false;
-}
-
-static bool parse_hex_fixed(const String &hex, uint8_t *out, size_t out_len) {
-  if (hex.length() != (int)(out_len * 2)) return false;
-  for (size_t i = 0; i < out_len; i++) {
-    uint8_t upper = 0;
-    uint8_t lower = 0;
-    if (!hex_nibble(hex[(int)(i * 2)], upper) || !hex_nibble(hex[(int)(i * 2 + 1)], lower)) {
-      return false;
-    }
-    out[i] = (uint8_t)((upper << 4) | lower);
-  }
-  return true;
-}
-
-static bool uri_get_query_param(const String &uri, const char *name, String &value) {
-  value = "";
-  const int query_idx = uri.indexOf('?');
-  if (query_idx < 0) return false;
-
-  const String needle = String(name) + "=";
-  const int start = uri.indexOf(needle, query_idx + 1);
-  if (start < 0) return false;
-
-  const int value_start = start + needle.length();
-  int value_end = uri.indexOf('&', value_start);
-  if (value_end < 0) value_end = uri.length();
-  value = uri.substring(value_start, value_end);
-  return value.length() > 0;
-}
-
-static void print_hex_bytes_inline(const uint8_t *data, size_t len) {
-  for (size_t i = 0; i < len; i++) {
-    if (data[i] < 0x10) Serial.print(F("0"));
-    Serial.print(data[i], HEX);
-  }
-}
-
-static void print_hex_bytes_spaced(const uint8_t *data, size_t len) {
-  for (size_t i = 0; i < len; i++) {
-    if (i > 0) Serial.print(F(" "));
-    if (data[i] < 0x10) Serial.print(F("0"));
-    Serial.print(data[i], HEX);
-  }
-}
-
-static void store_hex_string(char *out, size_t out_size, const uint8_t *data, uint8_t len) {
-  if (out == nullptr || out_size == 0 || data == nullptr) return;
-  String hex = convertIntToHex((uint8_t *)data, len);
-  strncpy(out, hex.c_str(), out_size - 1);
-  out[out_size - 1] = '\0';
-}
-
-static void store_bolt_config_keys_from_bytes(sBoltConfig &config, const uint8_t keys[5][16]) {
-  store_hex_string(config.k0, sizeof(config.k0), keys[0], 16);
-  store_hex_string(config.k1, sizeof(config.k1), keys[1], 16);
-  store_hex_string(config.k2, sizeof(config.k2), keys[2], 16);
-  store_hex_string(config.k3, sizeof(config.k3), keys[3], 16);
-  store_hex_string(config.k4, sizeof(config.k4), keys[4], 16);
-}
-
-static void write_u32_le(uint32_t value, uint8_t out[4]) {
-  out[0] = (uint8_t)(value & 0xFF);
-  out[1] = (uint8_t)((value >> 8) & 0xFF);
-  out[2] = (uint8_t)((value >> 16) & 0xFF);
-  out[3] = (uint8_t)((value >> 24) & 0xFF);
-}
 
 static const uint8_t BOLTCARD_DET_TAG_CARDKEY[4] = {0x2D, 0x00, 0x3F, 0x75};
 static const uint8_t BOLTCARD_DET_TAG_K0[4] = {0x2D, 0x00, 0x3F, 0x76};
@@ -2772,6 +2615,53 @@ ndef_fail:
 #endif
 
 void loop(void) {
+
+#if HAS_LED_MATRIX
+  M5.update();
+#endif
+
+#if !HAS_WIFI
+  button_loop();
+  handle_events();
+#endif
+
+#if HAS_LED_MATRIX
+  {
+    static bool prev_held = false;
+    bool held = button_is_held();
+    if (held != prev_held) {
+      prev_held = held;
+    }
+    led_set_held(held);
+  }
+#endif
+
+#if HAS_LED_MATRIX && !HAS_WIFI
+  if (!serial_cmd_active && bolty_hw_ready && !bolty_led_internal::animating) {
+    static unsigned long last_card_poll = 0;
+    static bool prev_card = false;
+    if (millis() - last_card_poll > 200) {
+      last_card_poll = millis();
+      uint8_t poll_uid[12] = {0};
+      uint8_t poll_len = 0;
+      bool found = bolty_read_passive_target(bolt.nfc, poll_uid, &poll_len);
+      if (found != prev_card) {
+        led_set_card_present(found);
+        if (found) {
+          Serial.print("[nfc] card detected: ");
+          for (uint8_t i = 0; i < poll_len; i++) {
+            if (poll_uid[i] < 0x10) Serial.print("0");
+            Serial.print(poll_uid[i], HEX);
+          }
+          Serial.println();
+        } else {
+          Serial.println("[nfc] card removed");
+        }
+        prev_card = found;
+      }
+    }
+  }
+#endif
 
   led_set_busy(serial_cmd_active);
   led_set_app_mode(app_active);

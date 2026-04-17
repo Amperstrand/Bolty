@@ -75,7 +75,11 @@
 // Button Pin Configuration
 // ============================================================
 
-#if defined(BOARD_DEVKITC) || defined(BOARD_M5STACK_ATOM_MFRC522)
+#if defined(BOARD_M5STACK_ATOM_MFRC522)
+#define HAS_BUTTONS 1
+#define BUTTON_1 (-1)
+#define BUTTON_2 (-1)
+#elif defined(BOARD_DEVKITC)
 #define HAS_BUTTONS 0
 #define BUTTON_1 (-1)
 #define BUTTON_2 (-1)
