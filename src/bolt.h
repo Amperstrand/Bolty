@@ -391,7 +391,11 @@ public:
     }
 
     Serial.println(F("Pre-burn check OK - card has factory keys"));
-    selectNtagApplicationFiles();
+    if (!selectNtagApplicationFiles()) {
+      Serial.println(F("Failed to select NTAG application files before NDEF write."));
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
+    }
     const uint8_t uriIdentifier = 0;
     const int piccDataOffset = lnurl.length() + 10;
     const int sdmMacOffset = lnurl.length() + 45;
