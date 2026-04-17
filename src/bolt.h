@@ -424,15 +424,15 @@ public:
     memcpy(filedata + sizeof(ndefheader), lnurl.c_str(), len);
 
     // Native WriteData (CLA=0x90, INS=0x8D) to NDEF file (file 2).
-    // Max APDU is 80 bytes; header is 13 bytes → max payload 67 bytes.
-    // Write in chunks if needed.
+    // MFRC522 FIFO is 64 bytes; APDU header (13) + PCB/CID (2) + CRC (2) = 17
+    // bytes overhead → max 47 bytes per WriteData payload.
     const uint8_t total_len = len + sizeof(ndefheader);
-    const uint8_t kChunkSize = 64;
+    const uint8_t kChunkSize = 47;
     bool ndef_write_ok = true;
     for (uint8_t offset = 0; offset < total_len && ndef_write_ok; offset += kChunkSize) {
       uint8_t remaining = total_len - offset;
       uint8_t chunk_len = (remaining > kChunkSize) ? kChunkSize : remaining;
-      uint8_t chunk[64] = {0};
+      uint8_t chunk[47] = {0};
       memcpy(chunk, filedata + offset, chunk_len);
       ndef_write_ok = nfc->ntag424_WriteData(2, chunk, chunk_len);
       if (!ndef_write_ok) {
