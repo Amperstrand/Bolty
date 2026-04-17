@@ -40,7 +40,36 @@
 #define MFRC522_I2C_FREQUENCY (400000)
 #define NFC_RESET_PIN (-1)
 #elif defined(BOARD_DEVKITC)
-// ESP32-DevKitC V4 + Sunfounder PN532 V1.0
+// ESP32-DevKitC V4 + PN532 V1.0 (software SPI via 4-pin constructor)
+//
+// PN532 header pin order (left to right, silk-screen side up):
+//   VCC  GND  SCK  MISO  MOSI  NSS  RST  IRQ
+//
+// Wire color convention (sequential from VCC):
+//   Brown  Black  White  Gray  Purple  Blue  Green  Yellow
+//
+// Pin mapping (chosen for zero wire twist — all GPIOs adjacent):
+//
+//   PN532     Wire      ESP32 GPIO   Function
+//   ─────     ────      ──────────   ────────
+//   VCC       Brown     5V           Power (or 3V3)
+//   GND       Black     GND          Ground
+//   SCK       White     GPIO 19      SPI Clock (software)
+//   MISO      Gray      GPIO 18      SPI Data In
+//   MOSI      Purple    GPIO 17      SPI Data Out
+//   NSS/CS    Blue      GPIO 25      Chip Select
+//   RST       Green     GPIO 26      Reset (active low)
+//   IRQ       Yellow    GPIO 16      Interrupt (optional)
+//
+// Notes:
+//   - Uses software bit-bang SPI at 100 kHz (Adafruit 4-pin constructor).
+//   - GPIOs 17/18/19 are physically adjacent on DevKitC headers.
+//   - GPIO 25/26 are adjacent on the other side of the header.
+//   - For future hardware SPI upgrade (VSPI IOMUX, 500 kHz), use:
+//       SCK=GPIO18, MISO=GPIO19, MOSI=GPIO23, CS=GPIO5
+//     with Adafruit_PN532(ss, &SPI) constructor.
+//   - Avoid HSPI IOMUX (GPIO 12 is a strapping pin — boot risk).
+//
 #define PN532_SCK (19)
 #define PN532_MISO (18)
 #define PN532_MOSI (17)
