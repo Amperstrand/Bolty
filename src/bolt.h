@@ -396,10 +396,9 @@ public:
 
     Serial.println(F("Pre-burn check OK - card has factory keys"));
 
-    // NTAG424 DNA separates native and ISO security contexts. Native auth
-    // (CLA=0x90) does not authorize ISO writes (CLA=0x00, returns 69 82).
-    // Strategy: use native auth to ChangeFileSettings to free write access,
-    // then write NDEF via plain ISO, then re-configure file settings.
+    // NTAG424 DNA: native auth session blocks plain ISO writes.
+    // Strategy: auth natively → set free access → halt card (clear session)
+    // → re-activate → write NDEF via plain ISO → apply SDM settings.
     if (!selectNtagApplicationFiles()) {
       Serial.println(F("Failed to select NTAG application files."));
       set_job_status_id(JOBSTATUS_ERROR);
@@ -423,6 +422,21 @@ public:
       return job_status;
     }
     Serial.println(F("NDEF file write access set to free."));
+
+    // Halt and re-activate card to clear the native auth session,
+    // which blocks plain ISO writes even after setting free access.
+#if BOLTY_NFC_BACKEND_MFRC522
+    nfc->PICC_HaltA();
+#else
+    nfc->ntag424_halt();
+#endif
+    delay(100);
+    if (!bolty_read_passive_target(nfc, uid, &uidLength)) {
+      Serial.println(F("Failed to re-activate card after session clear."));
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
+    }
+    Serial.println(F("Card re-activated (session cleared)."));
 
     if (!nfc->ntag424_ISOSelectFileById(NTAG424_NDEF_FILE_ID)) {
       Serial.println(F("Failed to select NDEF file."));
