@@ -222,6 +222,8 @@ public:
     Serial.print("Found MFRC522 version 0x");
     Serial.println(version, HEX);
 #else
+    pinMode(PN532_SS, OUTPUT);
+    digitalWrite(PN532_SS, HIGH);
     nfc->begin();
     uint32_t versiondata = nfc->getFirmwareVersion();
     if (!versiondata) {
