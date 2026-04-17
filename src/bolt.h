@@ -445,6 +445,17 @@ public:
       return job_status;
     }
     Serial.println(F("NDEF written successfully."));
+
+    // ISO auth only covers ISO writes. Native commands (ChangeFileSettings,
+    // ChangeKey) need a separate native EV2 auth session (AN12196 §10).
+    selectNtagApplicationFiles();
+    if (nfc->ntag424_Authenticate(key_cur[0], 0, 0x71) != 1) {
+      Serial.println(F("Native auth for SDM/key change failed."));
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
+    }
+    Serial.println(F("Native auth OK."));
+
     uint8_t fileSettings[] = {0x40,
                               0x00,
                               0xE0,
