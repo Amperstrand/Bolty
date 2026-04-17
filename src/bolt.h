@@ -138,6 +138,10 @@ public:
   BoltDevice(uint8_t i2cAddress, TwoWire *wire = &Wire) {
     nfc = new MFRC522_NTAG424(i2cAddress, wire);
   }
+#elif BOLTY_NFC_BACKEND_PN532_UART
+  BoltDevice(uint8_t reset, HardwareSerial *ser) {
+    nfc = new Adafruit_PN532(reset, ser);
+  }
 #else
   BoltDevice(uint8_t SCK, uint8_t MISO, uint8_t MOSI, uint8_t SS) {
     nfc = new Adafruit_PN532(SCK, MISO, MOSI, SS);
@@ -225,6 +229,30 @@ public:
     const uint8_t version = nfc->PCD_ReadRegister(MFRC522_I2C::VersionReg);
     Serial.print("Found MFRC522 version 0x");
     Serial.println(version, HEX);
+#elif BOLTY_NFC_BACKEND_PN532_UART
+#if NFC_RESET_PIN >= 0
+    pinMode(NFC_RESET_PIN, OUTPUT);
+    digitalWrite(NFC_RESET_PIN, LOW);
+    delay(100);
+    digitalWrite(NFC_RESET_PIN, HIGH);
+    delay(10);
+#endif
+    Serial.println("PN532 UART mode");
+    Serial1.begin(115200, SERIAL_8N1, PN532_UART_RX, PN532_UART_TX);
+    while (Serial1.available()) Serial1.read();
+    nfc->begin();
+    uint32_t versiondata = nfc->getFirmwareVersion();
+    if (!versiondata) {
+      Serial.print("Didn't find PN53x board (UART)");
+      return false;
+    }
+    Serial.print("Found chip PN53x");
+    Serial.println((versiondata >> 24) & 0xFF, HEX);
+    Serial.print("Firmware ver. ");
+    Serial.print((versiondata >> 16) & 0xFF, DEC);
+    Serial.print('.');
+    Serial.println((versiondata >> 8) & 0xFF, DEC);
+    nfc->SAMConfig();
 #else
     pinMode(PN532_SS, OUTPUT);
     digitalWrite(PN532_SS, HIGH);

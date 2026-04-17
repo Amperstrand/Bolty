@@ -18,12 +18,19 @@
 #define BOLTY_NFC_BACKEND_MFRC522 1
 #define BOLTY_NFC_BACKEND_PN532 0
 #define BOLTY_BOARD_NAME "M5Stack Atom Matrix + Unit RFID"
+#elif defined(BOARD_DEVKITC_UART)
+#define BOLTY_NFC_BACKEND_MFRC522 0
+#define BOLTY_NFC_BACKEND_PN532_UART 1
+#define BOLTY_NFC_BACKEND_PN532 0
+#define BOLTY_BOARD_NAME "ESP32-DevKitC V4 + PN532 (UART)"
 #elif defined(BOARD_DEVKITC)
 #define BOLTY_NFC_BACKEND_MFRC522 0
+#define BOLTY_NFC_BACKEND_PN532_UART 0
 #define BOLTY_NFC_BACKEND_PN532 1
 #define BOLTY_BOARD_NAME "ESP32-DevKitC V4 + Sunfounder PN532"
 #else
 #define BOLTY_NFC_BACKEND_MFRC522 0
+#define BOLTY_NFC_BACKEND_PN532_UART 0
 #define BOLTY_NFC_BACKEND_PN532 1
 #define BOLTY_BOARD_NAME "LILYGO TTGO T-Display + PN532"
 #endif
@@ -39,6 +46,23 @@
 #define MFRC522_I2C_ADDRESS (0x28)
 #define MFRC522_I2C_FREQUENCY (400000)
 #define NFC_RESET_PIN (-1)
+#elif BOLTY_NFC_BACKEND_PN532_UART
+// ESP32-DevKitC V4 + PN532 via UART (HSU) — 4 wires only
+//
+//   PN532     Wire      ESP32 GPIO   Function
+//   ─────     ────      ──────────   ────────
+//   VCC       Brown     5V or 3V3    Power
+//   GND       Black     GND          Ground
+//   TX        Gray      GPIO 16      ESP32 RX1 (PN532 TX -> ESP32 RX)
+//   RX        Purple    GPIO 17      ESP32 TX1 (PN532 RX <- ESP32 TX)
+//   RST       Green     GPIO 26      Reset (optional)
+//
+// DIP switches: SW1=H SW2=L for UART mode (check your board silkscreen)
+//
+#define PN532_UART_RX (16)
+#define PN532_UART_TX (17)
+#define PN532_RSTPD_N (26)
+#define NFC_RESET_PIN PN532_RSTPD_N
 #elif defined(BOARD_DEVKITC)
 // ESP32-DevKitC V4 + PN532 V1.0 (software SPI via 4-pin constructor)
 //
@@ -92,7 +116,7 @@
 // Display Pin Configuration
 // ============================================================
 
-#if defined(BOARD_DEVKITC) || defined(BOARD_M5STACK_ATOM_MFRC522)
+#if defined(BOARD_DEVKITC) || defined(BOARD_DEVKITC_UART) || defined(BOARD_M5STACK_ATOM_MFRC522)
 #define HAS_DISPLAY 0
 #define TFT_BL (-1)
 #else
@@ -108,7 +132,7 @@
 #define HAS_BUTTONS 1
 #define BUTTON_1 (-1)
 #define BUTTON_2 (-1)
-#elif defined(BOARD_DEVKITC)
+#elif defined(BOARD_DEVKITC) || defined(BOARD_DEVKITC_UART)
 #define HAS_BUTTONS 0
 #define BUTTON_1 (-1)
 #define BUTTON_2 (-1)
@@ -134,7 +158,7 @@
 // ADC / Battery (TTGO only)
 // ============================================================
 
-#if defined(BOARD_DEVKITC) || defined(BOARD_M5STACK_ATOM_MFRC522)
+#if defined(BOARD_DEVKITC) || defined(BOARD_DEVKITC_UART) || defined(BOARD_M5STACK_ATOM_MFRC522)
 #define HAS_BATTERY 0
 #define ADC_EN (-1)
 #define ADC_PIN (-1)
