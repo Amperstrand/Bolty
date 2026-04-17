@@ -40,12 +40,16 @@ struct sBoltConfig {
   char wallet_name[256];
   char wallet_url[256];
   char url[256];
+  char reset_url[256];
   char uid[17];
   char k0[33];
   char k1[33];
   char k2[33];
   char k3[33];
   char k4[33];
+  char wifi_ssid[33];
+  char wifi_password[65];
+  bool wifi_probe_enabled;
 };
 
 inline String convertIntToHex(uint8_t *input, uint8_t len) {
@@ -391,6 +395,10 @@ public:
     }
 
     Serial.println(F("Pre-burn check OK - card has factory keys"));
+    // NTAG424 personalization flow writes NDEF only after selecting the NDEF
+    // application/file first (AN12196 Rev. 2.0, Sections 5.3 and 5.8.1). Keep
+    // this guard explicit so transport failures are not confused with select
+    // state mistakes on the MFRC522 path.
     if (!selectNtagApplicationFiles()) {
       Serial.println(F("Failed to select NTAG application files before NDEF write."));
       set_job_status_id(JOBSTATUS_ERROR);

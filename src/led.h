@@ -20,6 +20,10 @@ static unsigned long activity_until = 0;
 static unsigned long card_blank_until = 0;
 static unsigned long card_unknown_until = 0;
 static unsigned long card_programmed_until = 0;
+static unsigned long assessment_until = 0;
+static uint8_t assessment_rows[5] = {0};
+static unsigned long hold_countdown_until = 0;
+static uint8_t hold_countdown_rows = 0;
 
 static const uint8_t kLedCount = 25;
 static const uint16_t kResultMs = 600;
@@ -94,9 +98,12 @@ static inline void render() {
   const bool show_blank = now < card_blank_until;
   const bool show_unknown = now < card_unknown_until;
   const bool show_programmed = now < card_programmed_until;
+  const bool show_assessment = now < assessment_until;
+  const bool show_hold_countdown = now < hold_countdown_until;
 
   if (!show_success && !show_error && !show_activity && !show_blank &&
-      !show_unknown && !show_programmed) {
+      !show_unknown && !show_programmed && !show_assessment &&
+      !show_hold_countdown) {
     M5.Led.setBrightness(1);
     M5.Led.setAllColor(0, 0, 0);
     M5.Led.display();
@@ -119,6 +126,24 @@ static inline void render() {
   } else if (show_unknown) {
     static const uint8_t pulse[] = {0, 2, 4, 10, 12, 14, 20, 22, 24};
     for (auto idx : pulse) M5.Led.setColor(idx, 0, 80, 255);
+  } else if (show_hold_countdown) {
+    for (uint8_t row = 0; row < hold_countdown_rows && row < 5; row++) {
+      row_set(row, 255, 255, 255);
+    }
+  } else if (show_assessment) {
+    for (uint8_t row = 0; row < 5; row++) {
+      switch (assessment_rows[row]) {
+        case 2:
+          row_set(row, 0, 255, 0);
+          break;
+        case 1:
+          row_set(row, 255, 180, 0);
+          break;
+        default:
+          row_set(row, 60, 0, 0);
+          break;
+      }
+    }
   } else if (show_activity) {
     M5.Led.setColor(12, 200, 200, 200);
   }
@@ -239,6 +264,16 @@ static inline void led_signal_card_unknown() {
 
 static inline void led_signal_card_programmed() {
   bolty_led_internal::card_programmed_until = millis() + bolty_led_internal::kCardPulseMs;
+}
+
+static inline void led_show_key_assessment(const uint8_t rows[5], uint16_t duration_ms) {
+  memcpy(bolty_led_internal::assessment_rows, rows, 5);
+  bolty_led_internal::assessment_until = millis() + duration_ms;
+}
+
+static inline void led_show_hold_countdown(uint8_t rows, uint16_t duration_ms) {
+  bolty_led_internal::hold_countdown_rows = rows;
+  bolty_led_internal::hold_countdown_until = millis() + duration_ms;
 }
 
 static inline void led_button_cycle() {

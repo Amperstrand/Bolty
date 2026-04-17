@@ -284,7 +284,13 @@ static inline bool button_is_held() {
   return M5.BtnA.isPressed();
 }
 
-static inline void button_init() {}
+static inline bool button_pressed_for(uint32_t ms) {
+  return M5.BtnA.pressedFor(ms);
+}
+
+static inline void button_init() {
+  M5.BtnA.setHoldThresh(2000);
+}
 
 #elif HAS_BUTTONS
   #include "Button2.h"
@@ -361,6 +367,7 @@ static inline void button_loop() {
 }
 
 static inline bool button_is_held() { return false; }
+static inline bool button_pressed_for(uint32_t) { return false; }
 #endif
 
 #if HAS_DISPLAY

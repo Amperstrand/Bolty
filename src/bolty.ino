@@ -24,7 +24,10 @@
 #include "build_metadata.h"
 #include "gui.h"
 #include "led.h"
+#include "http_probe.h"
 #include <SPI.h>
+#include "FS.h"
+#include "SPIFFS.h"
 
 #if HAS_WIFI
 #include <WiFi.h>
@@ -35,8 +38,6 @@
 #include "ArduinoJson.h"
 #include "AsyncJson.h"
 #include "ESPAsyncWebSrv.h"
-#include "FS.h"
-#include "SPIFFS.h"
 #include <WiFiAP.h>
 #define DEST_FS_USES_SPIFFS
 #include <ESP32-targz.h>
@@ -142,6 +143,7 @@ volatile bool serial_cmd_active = false;
 int signal_restart_delayed = 0;
 
 bool bolty_hw_ready = false;
+static bool atom_hold_action_fired = false;
 
 enum class IdleCardKind : uint8_t {
   none = 0,
@@ -149,6 +151,46 @@ enum class IdleCardKind : uint8_t {
   unknown,
   programmed,
 };
+
+enum class KeyConfidence : uint8_t {
+  unknown = 0,
+  partial,
+  high,
+};
+
+struct CardAssessment {
+  bool present;
+  bool is_ntag424;
+  uint8_t uid[12];
+  uint8_t uid_len;
+  IdleCardKind kind;
+  uint8_t key_versions[5];
+  KeyConfidence key_confidence[5];
+  bool zero_key_auth_ok;
+  bool has_ndef;
+  bool has_uri;
+  bool looks_like_boltcard;
+  bool deterministic_k1_match;
+  bool deterministic_full_match;
+  String uri;
+  uint8_t derived_keys[5][16];
+  bool reset_eligible;
+};
+
+static CardAssessment g_last_assessment = {};
+
+static void reset_card_assessment(CardAssessment &assessment) {
+  memset(&assessment, 0, sizeof(assessment));
+  assessment.kind = IdleCardKind::none;
+  for (int i = 0; i < 5; i++) {
+    assessment.key_versions[i] = 0xFF;
+    assessment.key_confidence[i] = KeyConfidence::unknown;
+  }
+}
+
+static bool same_uid(const CardAssessment &assessment, const uint8_t *uid, uint8_t uid_len) {
+  return assessment.present && assessment.uid_len == uid_len && memcmp(assessment.uid, uid, uid_len) == 0;
+}
 
 static IdleCardKind classify_idle_card(const uint8_t *uid, uint8_t uid_len) {
   if (!(((uid_len == 7) || (uid_len == 4)) && bolt.nfc->ntag424_isNTAG424())) {
@@ -198,14 +240,168 @@ static void signal_idle_card_kind(IdleCardKind kind) {
   }
 }
 
+static void assessment_to_led_rows(const CardAssessment &assessment, uint8_t rows[5]) {
+  for (int i = 0; i < 5; i++) {
+    switch (assessment.key_confidence[i]) {
+      case KeyConfidence::high:
+        rows[i] = 2;
+        break;
+      case KeyConfidence::partial:
+        rows[i] = 1;
+        break;
+      default:
+        rows[i] = 0;
+        break;
+    }
+  }
+}
+
+static void print_card_assessment(const CardAssessment &assessment) {
+  Serial.println(F("[assess] --- Card Assessment ---"));
+  Serial.print(F("[assess] UID: "));
+  bolty_print_hex(bolt.nfc, assessment.uid, assessment.uid_len);
+  Serial.print(F("[assess] NTAG424: "));
+  Serial.println(assessment.is_ntag424 ? F("YES") : F("NO"));
+  Serial.print(F("[assess] Class: "));
+  switch (assessment.kind) {
+    case IdleCardKind::blank: Serial.println(F("blank")); break;
+    case IdleCardKind::programmed: Serial.println(F("programmed")); break;
+    case IdleCardKind::unknown: Serial.println(F("unknown")); break;
+    default: Serial.println(F("none")); break;
+  }
+  for (int i = 0; i < 5; i++) {
+    Serial.print(F("[assess] Key "));
+    Serial.print(i);
+    Serial.print(F(" ver=0x"));
+    if (assessment.key_versions[i] < 0x10) Serial.print(F("0"));
+    Serial.print(assessment.key_versions[i], HEX);
+    Serial.print(F(" confidence="));
+    switch (assessment.key_confidence[i]) {
+      case KeyConfidence::high: Serial.println(F("high")); break;
+      case KeyConfidence::partial: Serial.println(F("partial")); break;
+      default: Serial.println(F("unknown")); break;
+    }
+  }
+  Serial.print(F("[assess] Zero-key auth: "));
+  Serial.println(assessment.zero_key_auth_ok ? F("YES") : F("NO"));
+  Serial.print(F("[assess] Has NDEF: "));
+  Serial.println(assessment.has_ndef ? F("YES") : F("NO"));
+  Serial.print(F("[assess] Looks like Bolt Card: "));
+  Serial.println(assessment.looks_like_boltcard ? F("YES") : F("NO"));
+  if (assessment.uri.length() > 0) {
+    Serial.print(F("[assess] URI: "));
+    Serial.println(assessment.uri);
+  }
+  Serial.print(F("[assess] Reset eligible: "));
+  Serial.println(assessment.reset_eligible ? F("YES") : F("NO"));
+}
+
+static bool assess_current_card(CardAssessment &assessment);
+
 static void handle_atom_button_feedback() {
 #if HAS_LED_MATRIX
   if (sharedvars.appbuttons[0] == 1) {
-    Serial.println("[button] Atom BtnA click — LED cycle");
-    led_button_cycle();
+    Serial.println("[button] Atom BtnA click — assessing card");
+    CardAssessment assessment;
+    if (!assess_current_card(assessment)) {
+      Serial.println("[assess] No card detected for click assessment");
+      led_signal_card_unknown();
+      led_tick();
+      return;
+    }
+    g_last_assessment = assessment;
+    print_card_assessment(assessment);
+    uint8_t rows[5] = {0};
+    assessment_to_led_rows(assessment, rows);
+    switch (assessment.kind) {
+      case IdleCardKind::blank: led_signal_card_blank(); break;
+      case IdleCardKind::programmed: led_signal_card_programmed(); break;
+      default: led_signal_card_unknown(); break;
+    }
+    led_show_key_assessment(rows, 2500);
+    led_tick();
+#if HAS_HTTP_PROBE
+    if (mBoltConfig.wifi_probe_enabled && assessment.has_uri && assessment.uri.length() > 0) {
+      http_probe_url(assessment.uri);
+    }
+#endif
   } else if (sharedvars.appbuttons[0] == 2) {
-    Serial.println("[button] Atom BtnA hold");
+    Serial.println("[button] Atom BtnA hold event");
   }
+#endif
+}
+
+static void handle_atom_hold_reset() {
+#if HAS_LED_MATRIX
+  if (!button_is_held()) {
+    atom_hold_action_fired = false;
+    return;
+  }
+
+  if (atom_hold_action_fired) {
+    return;
+  }
+
+  uint8_t rows = 0;
+  if (button_pressed_for(400)) rows = 1;
+  if (button_pressed_for(800)) rows = 2;
+  if (button_pressed_for(1200)) rows = 3;
+  if (button_pressed_for(1600)) rows = 4;
+  if (button_pressed_for(2000)) rows = 5;
+  if (rows > 0) {
+    led_show_hold_countdown(rows, 120);
+  }
+
+  if (!button_pressed_for(2000)) {
+    return;
+  }
+
+  atom_hold_action_fired = true;
+  Serial.println("[button] Atom BtnA long hold — validating reset");
+
+  CardAssessment fresh;
+  if (!assess_current_card(fresh)) {
+    Serial.println("[button] Reset refused — no card present");
+    led_signal_result(false);
+    led_tick();
+    return;
+  }
+
+  g_last_assessment = fresh;
+  print_card_assessment(fresh);
+  if (!fresh.reset_eligible) {
+    Serial.println("[button] Reset refused — insufficient confidence");
+    led_signal_result(false);
+    led_tick();
+    return;
+  }
+
+  if (fresh.kind == IdleCardKind::blank) {
+    Serial.println("[button] Blank card detected — using factory reset path");
+    const uint8_t result = bolt.resetNdefOnly();
+    Serial.print("[button] resetNdefOnly -> ");
+    Serial.println(result == JOBSTATUS_DONE ? "SUCCESS" : "FAILED");
+    led_signal_result(result == JOBSTATUS_DONE);
+    led_tick();
+    return;
+  }
+
+  if (fresh.deterministic_full_match) {
+    store_bolt_config_keys_from_bytes(mBoltConfig, fresh.derived_keys);
+    saveBoltConfig(active_bolt_config);
+    bolt.loadKeysForWipe(mBoltConfig);
+    Serial.println("[button] Deterministic keys loaded for wipe");
+    const uint8_t result = bolt.wipe();
+    Serial.print("[button] wipe -> ");
+    Serial.println(result == JOBSTATUS_DONE ? "SUCCESS" : "FAILED");
+    led_signal_result(result == JOBSTATUS_DONE);
+    led_tick();
+    return;
+  }
+
+  Serial.println("[button] Reset refused — no safe reset path for this card");
+  led_signal_result(false);
+  led_tick();
 #endif
 }
 
@@ -306,10 +502,10 @@ void loadSettings() {
 }
 #endif
 
-#if HAS_WIFI
 void saveBoltConfig(uint8_t slot) {
   char path[20];
   sprintf(path, "/config%02x.dat", slot);
+  SPIFFS.begin(true);
   fs::File myFile = SPIFFS.open(path, FILE_WRITE);
   myFile.write((byte *)&mBoltConfig, sizeof(sBoltConfig));
   myFile.close();
@@ -328,6 +524,7 @@ testurl)); bolt.nfc->PrintHexChar(testurl, 56);
 void loadBoltConfig(uint8_t slot) {
   char path[20];
   sprintf(path, "/config%02x.dat", slot);
+  SPIFFS.begin(true);
   Serial.print(path);
   Serial.println(sizeof(((sBoltConfig *)0)->url));
   memset(&mBoltConfig, 0, sizeof(sBoltConfig));
@@ -351,6 +548,10 @@ void loadBoltConfig(uint8_t slot) {
     mBoltConfig.wallet_name[0] = 0;
     mBoltConfig.wallet_url[0] = 0;
     mBoltConfig.wallet_host[0] = 0;
+    mBoltConfig.reset_url[0] = 0;
+    strcpy(mBoltConfig.wifi_ssid, "Tollgate");
+    mBoltConfig.wifi_password[0] = 0;
+    mBoltConfig.wifi_probe_enabled = false;
   }
   dumpconfig();
 }
@@ -381,23 +582,6 @@ void importBoltConfig() {
   myFile.close();
   loadBoltConfig(active_bolt_config);
 }
-#else
-void saveBoltConfig(uint8_t slot) {
-  (void)slot;
-}
-
-void loadBoltConfig(uint8_t slot) {
-  (void)slot;
-  memset(&mBoltConfig, 0, sizeof(sBoltConfig));
-  strcpy(mBoltConfig.card_name, "*new*");
-}
-
-String exportBoltConfig() {
-  return String();
-}
-
-void importBoltConfig() {}
-#endif
 
 #if LED_PIN >= 0
 void led_on() { digitalWrite(LED_PIN, LOW); }
@@ -800,11 +984,15 @@ void dumpconfig() {
   Serial.println(mBoltConfig.uid);
   Serial.println(mBoltConfig.card_name);
   Serial.println(mBoltConfig.url);
+  Serial.println(mBoltConfig.reset_url);
   Serial.println(mBoltConfig.k0);
   Serial.println(mBoltConfig.k1);
   Serial.println(mBoltConfig.k2);
   Serial.println(mBoltConfig.k3);
   Serial.println(mBoltConfig.k4);
+  Serial.println(mBoltConfig.wifi_ssid);
+  Serial.println(mBoltConfig.wifi_password);
+  Serial.println(mBoltConfig.wifi_probe_enabled ? "probe=1" : "probe=0");
 }
 
 void dumpsettings() {
@@ -1349,6 +1537,8 @@ void serial_print_help() {
   Serial.println(F("  ver               GetVersion + NTAG424 check (tap card)"));
   Serial.println(F("  keyver            Read key versions (blank/provisioned check, tap card)"));
   Serial.println(F("  diagnose          Auth-based state detection (for recovery work)"));
+  Serial.println(F("  probe             Probe last assessed card URI once"));
+  Serial.println(F("  probe on|off      Enable/disable auto probe after assessment"));
   Serial.println(F("  --- Safety / Testing ---"));
   Serial.println(F("  check             Auth with factory zero keys (confirm card is blank)"));
   Serial.println(F("  dummyburn         Burn with zero keys + dummy URL (test write path)"));
@@ -1651,6 +1841,103 @@ static void print_deterministic_boltcard_check(BoltyNfcReader *nfc,
   } else if (!any_full_match) {
     Serial.println(F("[inspect] Deterministic read-only verification found a K1 match, but no full K2/c= match for the tested versions."));
   }
+}
+
+static bool assess_current_card(CardAssessment &assessment) {
+  reset_card_assessment(assessment);
+  if (!bolty_hw_ready) return false;
+
+  uint8_t uid[12] = {0};
+  uint8_t uid_len = 0;
+  unsigned long t0 = millis();
+  bool found = false;
+  do {
+    found = bolty_read_passive_target(bolt.nfc, uid, &uid_len);
+    if (millis() - t0 > 5000) {
+      return false;
+    }
+  } while (!found);
+
+  assessment.present = true;
+  assessment.uid_len = uid_len;
+  memcpy(assessment.uid, uid, uid_len);
+  assessment.is_ntag424 = (((uid_len == 7) || (uid_len == 4)) && bolt.nfc->ntag424_isNTAG424());
+  if (!assessment.is_ntag424) {
+    assessment.kind = IdleCardKind::unknown;
+    return true;
+  }
+
+  bool all_zero = true;
+  bool all_key_versions_read = true;
+  for (int k = 0; k < 5; k++) {
+    const uint8_t kv = bolty_get_key_version(bolt.nfc, k);
+    assessment.key_versions[k] = kv;
+    if (kv == 0xFF) {
+      all_key_versions_read = false;
+      assessment.key_confidence[k] = KeyConfidence::unknown;
+    } else if (kv == 0x00) {
+      assessment.key_confidence[k] = KeyConfidence::high;
+    } else {
+      assessment.key_confidence[k] = KeyConfidence::unknown;
+      all_zero = false;
+    }
+  }
+
+  if (all_key_versions_read && all_zero) {
+    bolt.selectNtagApplicationFiles();
+    uint8_t zero_key[16] = {0};
+    assessment.zero_key_auth_ok = (bolt.nfc->ntag424_Authenticate(zero_key, 0, 0x71) == 1);
+  }
+
+  uint8_t ndef[256] = {0};
+  const int ndef_len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
+  assessment.has_ndef = ndef_len > 0;
+  if (ndef_len > 0) {
+    Serial.print(F("[assess] NDEF ASCII: "));
+    print_ndef_ascii(ndef, ndef_len);
+    if (ndef_extract_uri(ndef, ndef_len, assessment.uri)) {
+      assessment.has_uri = true;
+      const bool has_lnurlw = assessment.uri.startsWith("lnurlw://") || assessment.uri.indexOf("lnurlw://") >= 0;
+      String p_hex;
+      String c_hex;
+      const bool has_p = uri_get_query_param(assessment.uri, "p", p_hex);
+      const bool has_c = uri_get_query_param(assessment.uri, "c", c_hex);
+      assessment.looks_like_boltcard = has_lnurlw || (has_p && has_c);
+
+      DeterministicBoltcardMatch match;
+      const bool full_match = deterministic_try_known_matches(bolt.nfc, uid, uid_len, assessment.uri, match);
+      assessment.deterministic_k1_match = match.saw_k1_match;
+      assessment.deterministic_full_match = full_match;
+      if (full_match) {
+        memcpy(assessment.derived_keys, match.keys, sizeof(assessment.derived_keys));
+      }
+      if (match.saw_k1_match) {
+        assessment.key_confidence[1] = KeyConfidence::high;
+      }
+      if (full_match) {
+        for (int i = 0; i < 5; i++) {
+          assessment.key_confidence[i] = KeyConfidence::high;
+        }
+      } else if (match.saw_k1_match) {
+        assessment.key_confidence[0] = KeyConfidence::partial;
+        assessment.key_confidence[2] = KeyConfidence::partial;
+        assessment.key_confidence[3] = KeyConfidence::partial;
+        assessment.key_confidence[4] = KeyConfidence::partial;
+      }
+    }
+  }
+
+  if (all_zero && assessment.zero_key_auth_ok) {
+    assessment.kind = IdleCardKind::blank;
+  } else if (assessment.looks_like_boltcard || assessment.deterministic_k1_match) {
+    assessment.kind = IdleCardKind::programmed;
+  } else {
+    assessment.kind = IdleCardKind::unknown;
+  }
+
+  assessment.reset_eligible = assessment.key_confidence[0] == KeyConfidence::high ||
+                              assessment.kind == IdleCardKind::blank;
+  return true;
 }
 
 void handle_serial_command(String cmd) {
@@ -2087,7 +2374,54 @@ ndef_fail:
       return;
     }
     strncpy(mBoltConfig.url, url.c_str(), sizeof(mBoltConfig.url));
+    saveBoltConfig(active_bolt_config);
     Serial.print(F("[url] Set to: ")); Serial.println(url);
+  }
+  else if (cmd.startsWith("reseturl ")) {
+    String url = cmd.substring(9);
+    url.trim();
+    if (url.length() == 0) {
+      Serial.println(F("[error] Usage: reseturl <plain-url>"));
+      return;
+    }
+    strncpy(mBoltConfig.reset_url, url.c_str(), sizeof(mBoltConfig.reset_url));
+    saveBoltConfig(active_bolt_config);
+    Serial.print(F("[reseturl] Set to: ")); Serial.println(url);
+  }
+  else if (cmd.startsWith("wifissid ")) {
+    String ssid = cmd.substring(9);
+    ssid.trim();
+    strncpy(mBoltConfig.wifi_ssid, ssid.c_str(), sizeof(mBoltConfig.wifi_ssid));
+    saveBoltConfig(active_bolt_config);
+    Serial.print(F("[wifissid] Set to: ")); Serial.println(mBoltConfig.wifi_ssid);
+  }
+  else if (cmd.startsWith("wifipass ")) {
+    String pass = cmd.substring(9);
+    pass.trim();
+    strncpy(mBoltConfig.wifi_password, pass.c_str(), sizeof(mBoltConfig.wifi_password));
+    saveBoltConfig(active_bolt_config);
+    Serial.println(F("[wifipass] Updated"));
+  }
+  else if (cmd == "probe on") {
+    mBoltConfig.wifi_probe_enabled = true;
+    saveBoltConfig(active_bolt_config);
+    Serial.println(F("[probe] enabled"));
+  }
+  else if (cmd == "probe off") {
+    mBoltConfig.wifi_probe_enabled = false;
+    saveBoltConfig(active_bolt_config);
+    Serial.println(F("[probe] disabled"));
+  }
+  else if (cmd == "probe") {
+    if (!mBoltConfig.wifi_probe_enabled) {
+      Serial.println(F("[probe] Probe disabled. Use: probe on"));
+      return;
+    }
+    if (!g_last_assessment.has_uri) {
+      Serial.println(F("[probe] No URI in last assessment. Click button with card first."));
+      return;
+    }
+    http_probe_url(g_last_assessment.uri);
   }
   else if (cmd == "burn") {
     if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
@@ -2685,10 +3019,14 @@ void loop(void) {
     static bool prev_held = false;
     bool held = button_is_held();
     if (held != prev_held) {
+      if (!held) {
+        atom_hold_action_fired = false;
+      }
       prev_held = held;
     }
     led_set_held(held);
   }
+  handle_atom_hold_reset();
 #endif
 
 #if HAS_LED_MATRIX && !HAS_WIFI
