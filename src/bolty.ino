@@ -96,7 +96,7 @@ const char *PARAM_CONFIG = "config";
 #if BOLTY_NFC_BACKEND_MFRC522
 BoltDevice bolt(MFRC522_I2C_ADDRESS);
 #elif BOLTY_NFC_BACKEND_PN532_UART
-HardwareSerial PN532Serial(1);
+HardwareSerial PN532Serial(2);
 BoltDevice bolt(PN532_RSTPD_N, &PN532Serial);
 #else
 BoltDevice bolt(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS);

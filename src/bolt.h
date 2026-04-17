@@ -237,9 +237,7 @@ public:
     digitalWrite(NFC_RESET_PIN, HIGH);
     delay(10);
 #endif
-    Serial.println("PN532 UART mode");
-    Serial1.begin(115200, SERIAL_8N1, PN532_UART_RX, PN532_UART_TX);
-    while (Serial1.available()) Serial1.read();
+    Serial.println("PN532 UART mode (Serial2)");
     nfc->begin();
     uint32_t versiondata = nfc->getFirmwareVersion();
     if (!versiondata) {
