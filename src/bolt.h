@@ -467,16 +467,16 @@ public:
                               0x12,
                               static_cast<uint8_t>(piccDataOffset & 0xff),
                               static_cast<uint8_t>((piccDataOffset >> 8) & 0xff),
-                              static_cast<uint8_t>((piccDataOffset >> 16) & 0xff),
-                              static_cast<uint8_t>(sdmMacOffset & 0xff),
-                              static_cast<uint8_t>((sdmMacOffset >> 8) & 0xff),
-                              static_cast<uint8_t>((sdmMacOffset >> 16) & 0xff),
-                              static_cast<uint8_t>(sdmMacOffset & 0xff),
-                              static_cast<uint8_t>((sdmMacOffset >> 8) & 0xff),
-                              static_cast<uint8_t>((sdmMacOffset >> 16) & 0xff)};
+                               static_cast<uint8_t>((piccDataOffset >> 16) & 0xff),
+                               static_cast<uint8_t>(sdmMacOffset & 0xff),
+                               static_cast<uint8_t>((sdmMacOffset >> 8) & 0xff),
+                               static_cast<uint8_t>((sdmMacOffset >> 16) & 0xff),
+                               static_cast<uint8_t>(sdmMacOffset & 0xff),
+                               static_cast<uint8_t>((sdmMacOffset >> 8) & 0xff),
+                               static_cast<uint8_t>((sdmMacOffset >> 16) & 0xff)};
     nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
                                     (uint8_t)sizeof(fileSettings),
-                                    (uint8_t)NTAG424_COMM_MODE_FULL);
+                                    (uint8_t)NTAG424_COMM_MODE_PLAIN);
 
     if (!changeAllKeys(0x01)) {
       set_job_status_id(JOBSTATUS_ERROR);
