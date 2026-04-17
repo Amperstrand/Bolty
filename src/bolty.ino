@@ -390,10 +390,17 @@ static void handle_atom_hold_reset() {
   }
 
   if (fresh.deterministic_full_match) {
+    Serial.println(F("[button] Deterministic full match — loading derived keys"));
+    Serial.print(F("[button] Derived K0: "));
+    for (int b = 0; b < 16; b++) { if (fresh.derived_keys[0][b] < 0x10) Serial.print('0'); Serial.print(fresh.derived_keys[0][b], HEX); }
+    Serial.println();
+    Serial.print(F("[button] Derived K1: "));
+    for (int b = 0; b < 16; b++) { if (fresh.derived_keys[1][b] < 0x10) Serial.print('0'); Serial.print(fresh.derived_keys[1][b], HEX); }
+    Serial.println();
     store_bolt_config_keys_from_bytes(mBoltConfig, fresh.derived_keys);
     saveBoltConfig(active_bolt_config);
     bolt.loadKeysForWipe(mBoltConfig);
-    Serial.println("[button] Deterministic keys loaded for wipe");
+    Serial.println(F("[button] Keys loaded for wipe, starting wipe()..."));
     const uint8_t result = bolt.wipe();
     Serial.print("[button] wipe -> ");
     Serial.println(result == JOBSTATUS_DONE ? "SUCCESS" : "FAILED");

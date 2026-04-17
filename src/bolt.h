@@ -184,15 +184,29 @@ public:
   bool selectNdefFileOnly() { return nfc->ntag424_ISOSelectNDEFFile(); }
 
   bool changeAllKeys(uint8_t target_key_version) {
+    Serial.print(F("[changeAllKeys] Changing keys 4→3→2→1→0, target version=0x"));
+    if (target_key_version < 0x10) Serial.print('0');
+    Serial.println(target_key_version, HEX);
     for (int i = 0; i < 5; i++) {
       const uint8_t key_index = 4 - i;
+      Serial.print(F("[changeAllKeys] Key "));
+      Serial.print(key_index);
+      Serial.print(F(": cur="));
+      for (int b = 0; b < 16; b++) { if (key_cur[key_index][b] < 0x10) Serial.print('0'); Serial.print(key_cur[key_index][b], HEX); }
+      Serial.print(F(" new="));
+      for (int b = 0; b < 16; b++) { if (key_new[key_index][b] < 0x10) Serial.print('0'); Serial.print(key_new[key_index][b], HEX); }
+      Serial.println();
       if (!nfc->ntag424_ChangeKey(key_cur[key_index], key_new[key_index],
-                                  key_index, target_key_version)) {
-        Serial.print("ChangeKey error! Key: ");
+                                   key_index, target_key_version)) {
+        Serial.print(F("[changeAllKeys] FAILED on key "));
         Serial.println(key_index);
         return false;
       }
+      Serial.print(F("[changeAllKeys] Key "));
+      Serial.print(key_index);
+      Serial.println(F(" -> OK"));
     }
+    Serial.println(F("[changeAllKeys] All 5 keys changed successfully"));
     return true;
   }
 
@@ -238,6 +252,11 @@ public:
     delay(10);
 #endif
     Serial.println("PN532 UART mode (Serial2)");
+    // Pre-initialize UART2 with explicit pins before library calls ser_dev->begin(115200)
+    // GPIO 17 (TX) -> PN532 RX, GPIO 16 (RX) <- PN532 TX
+    extern HardwareSerial PN532Serial;
+    PN532Serial.begin(115200, SERIAL_8N1, PN532_UART_RX, PN532_UART_TX);
+    while (PN532Serial.available()) PN532Serial.read();
     nfc->begin();
     uint32_t versiondata = nfc->getFirmwareVersion();
     if (!versiondata) {
@@ -502,7 +521,7 @@ public:
                                static_cast<uint8_t>((sdmMacOffset >> 16) & 0xff)};
     nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
                                     (uint8_t)sizeof(fileSettings),
-                                    (uint8_t)NTAG424_COMM_MODE_PLAIN);
+                                    (uint8_t)NTAG424_COMM_MODE_FULL);
 
     if (!changeAllKeys(0x01)) {
       set_job_status_id(JOBSTATUS_ERROR);
@@ -640,9 +659,11 @@ public:
     Serial.println("Authentication successful.");
     Serial.println("Disable Mirroring and SDM.");
     uint8_t fileSettings[] = {0x00, 0x00, 0xE0};
-    nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
+    const uint8_t cfs_result = nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
                                     (uint8_t)sizeof(fileSettings),
                                     (uint8_t)NTAG424_COMM_MODE_FULL);
+    Serial.print(F("[wipe] ChangeFileSettings result: "));
+    Serial.println(cfs_result);
 
     if (!changeAllKeys(0x00)) {
       set_job_status_id(JOBSTATUS_ERROR);
@@ -650,16 +671,21 @@ public:
     }
 
     selectNtagApplicationFiles();
+    Serial.println(F("[wipe] Formatting NDEF..."));
     if (nfc->ntag424_FormatNDEF()) {
+      Serial.println(F("[wipe] NDEF formatted OK"));
+      job_perc = 100;
+    } else {
+      Serial.println(F("[wipe] NDEF format failed (may be OK if already blank)"));
       job_perc = 100;
     }
 
     const uint8_t authenticated = nfc->ntag424_Authenticate(key_new[0], 0, 0x71);
     if (authenticated == 1) {
-      Serial.println("Authentication 2 Success.");
+      Serial.println(F("[wipe] Post-wipe verify: zero-key auth SUCCESS — card is factory"));
       set_job_status_id(JOBSTATUS_DONE);
     } else {
-      Serial.println("Authentication 2 failed.");
+      Serial.println(F("[wipe] Post-wipe verify: zero-key auth FAILED — wipe may not have succeeded"));
       set_job_status_id(JOBSTATUS_ERROR);
     }
     return job_status;
