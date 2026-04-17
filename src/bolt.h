@@ -224,6 +224,13 @@ public:
 #else
     pinMode(PN532_SS, OUTPUT);
     digitalWrite(PN532_SS, HIGH);
+#if NFC_RESET_PIN >= 0
+    pinMode(NFC_RESET_PIN, OUTPUT);
+    digitalWrite(NFC_RESET_PIN, LOW);
+    delay(100);
+    digitalWrite(NFC_RESET_PIN, HIGH);
+    delay(10);
+#endif
     nfc->begin();
     uint32_t versiondata = nfc->getFirmwareVersion();
     if (!versiondata) {
