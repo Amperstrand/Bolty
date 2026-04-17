@@ -13,15 +13,18 @@ namespace bolty_led_internal {
 static bool initialized = false;
 static bool supported = false;
 static bool animating = false;
-static bool card_present = false;
 
 static unsigned long success_until = 0;
 static unsigned long error_until = 0;
 static unsigned long activity_until = 0;
+static unsigned long card_blank_until = 0;
+static unsigned long card_unknown_until = 0;
+static unsigned long card_programmed_until = 0;
 
 static const uint8_t kLedCount = 25;
 static const uint16_t kResultMs = 600;
 static const uint16_t kActivityMs = 100;
+static const uint16_t kCardPulseMs = 500;
 
 static inline void hsv_to_rgb(uint16_t h, uint8_t s, uint8_t v,
                                uint8_t &r, uint8_t &g, uint8_t &b) {
@@ -88,8 +91,12 @@ static inline void render() {
   const bool show_success = now < success_until;
   const bool show_error = now < error_until;
   const bool show_activity = now < activity_until;
+  const bool show_blank = now < card_blank_until;
+  const bool show_unknown = now < card_unknown_until;
+  const bool show_programmed = now < card_programmed_until;
 
-  if (!show_success && !show_error && !show_activity && !card_present) {
+  if (!show_success && !show_error && !show_activity && !show_blank &&
+      !show_unknown && !show_programmed) {
     M5.Led.setBrightness(1);
     M5.Led.setAllColor(0, 0, 0);
     M5.Led.display();
@@ -103,10 +110,15 @@ static inline void render() {
     M5.Led.setAllColor(255, 0, 0);
   } else if (show_success) {
     M5.Led.setAllColor(0, 255, 0);
-  } else if (card_present) {
-    static const uint8_t ring[] = {2, 7, 11, 13, 17, 22, 21, 20, 15, 10, 5, 3, 1, 0};
-    for (auto idx : ring) M5.Led.setColor(idx, 0, 80, 200);
-    M5.Led.setColor(12, 0, 180, 255);
+  } else if (show_blank) {
+    static const uint8_t pulse[] = {0, 2, 4, 10, 12, 14, 20, 22, 24};
+    for (auto idx : pulse) M5.Led.setColor(idx, 0, 255, 0);
+  } else if (show_programmed) {
+    static const uint8_t pulse[] = {0, 2, 4, 10, 12, 14, 20, 22, 24};
+    for (auto idx : pulse) M5.Led.setColor(idx, 255, 0, 0);
+  } else if (show_unknown) {
+    static const uint8_t pulse[] = {0, 2, 4, 10, 12, 14, 20, 22, 24};
+    for (auto idx : pulse) M5.Led.setColor(idx, 0, 80, 255);
   } else if (show_activity) {
     M5.Led.setColor(12, 200, 200, 200);
   }
@@ -126,14 +138,13 @@ static inline void led_setup() {
   Serial.println(bolty_led_internal::supported ? "yes" : "no");
   if (!bolty_led_internal::supported) return;
 
-  pinMode(39, INPUT_PULLUP);
+  pinMode(39, INPUT);
   M5.Led.setBrightness(1);
   M5.Led.setAllColor(0, 0, 0);
   M5.Led.display();
 }
 
-// Self-test: each row = one subsystem. Yellow while testing, green/red for pass/fail.
-// Row 0 = LED matrix, Row 1 = NFC, Row 2 = Button
+// Self-test visual protocol: row 0 = LED matrix, row 1 = NFC, row 2 = button.
 static inline void led_self_test(bool nfc_ok) {
   if (!bolty_led_internal::initialized || !bolty_led_internal::supported) return;
   bolty_led_internal::animating = true;
@@ -218,8 +229,16 @@ static inline void led_notify_activity() {
 }
 static inline void led_notify_button_press() {}
 
-static inline void led_set_card_present(bool present) {
-  bolty_led_internal::card_present = present;
+static inline void led_signal_card_blank() {
+  bolty_led_internal::card_blank_until = millis() + bolty_led_internal::kCardPulseMs;
+}
+
+static inline void led_signal_card_unknown() {
+  bolty_led_internal::card_unknown_until = millis() + bolty_led_internal::kCardPulseMs;
+}
+
+static inline void led_signal_card_programmed() {
+  bolty_led_internal::card_programmed_until = millis() + bolty_led_internal::kCardPulseMs;
 }
 
 static inline void led_button_cycle() {
@@ -282,10 +301,12 @@ static inline void led_set_busy(bool) {}
 static inline void led_notify_card_present() {}
 static inline void led_notify_activity() {}
 static inline void led_notify_button_press() {}
+static inline void led_signal_card_blank() {}
+static inline void led_signal_card_unknown() {}
+static inline void led_signal_card_programmed() {}
 static inline void led_button_cycle() {}
 static inline void led_set_held(bool) {}
 static inline void led_signal_result(bool) {}
-static inline void led_set_card_present(bool) {}
 
 #endif
 

@@ -143,6 +143,61 @@ int signal_restart_delayed = 0;
 
 bool bolty_hw_ready = false;
 
+enum class IdleCardKind : uint8_t {
+  none = 0,
+  blank,
+  unknown,
+  programmed,
+};
+
+static IdleCardKind classify_idle_card(const uint8_t *uid, uint8_t uid_len) {
+  if (!(((uid_len == 7) || (uid_len == 4)) && bolt.nfc->ntag424_isNTAG424())) {
+    return IdleCardKind::unknown;
+  }
+
+  const uint8_t kv1 = bolty_get_key_version(bolt.nfc, 1);
+  if (kv1 == 0x00) {
+    return IdleCardKind::blank;
+  }
+
+  uint8_t ndef[256] = {0};
+  const int ndef_len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
+  if (ndef_len > 0) {
+    String uri;
+    if (ndef_extract_uri(ndef, ndef_len, uri)) {
+      const bool has_lnurlw = uri.startsWith("lnurlw://") || uri.indexOf("lnurlw://") >= 0;
+      String p_hex;
+      String c_hex;
+      const bool has_p = uri_get_query_param(uri, "p", p_hex);
+      const bool has_c = uri_get_query_param(uri, "c", c_hex);
+      if (has_lnurlw || (has_p && has_c)) {
+        return IdleCardKind::programmed;
+      }
+    }
+  }
+
+  return IdleCardKind::unknown;
+}
+
+static void signal_idle_card_kind(IdleCardKind kind) {
+  switch (kind) {
+    case IdleCardKind::blank:
+      Serial.println("[nfc] classified: blank/factory");
+      led_signal_card_blank();
+      break;
+    case IdleCardKind::programmed:
+      Serial.println("[nfc] classified: programmed bolt card");
+      led_signal_card_programmed();
+      break;
+    case IdleCardKind::unknown:
+      Serial.println("[nfc] classified: unknown");
+      led_signal_card_unknown();
+      break;
+    default:
+      break;
+  }
+}
+
 static void handle_atom_button_feedback() {
 #if HAS_LED_MATRIX
   if (sharedvars.appbuttons[0] == 1) {
@@ -2646,7 +2701,6 @@ void loop(void) {
       uint8_t poll_len = 0;
       bool found = bolty_read_passive_target(bolt.nfc, poll_uid, &poll_len);
       if (found != prev_card) {
-        led_set_card_present(found);
         if (found) {
           Serial.print("[nfc] card detected: ");
           for (uint8_t i = 0; i < poll_len; i++) {
@@ -2654,6 +2708,7 @@ void loop(void) {
             Serial.print(poll_uid[i], HEX);
           }
           Serial.println();
+          signal_idle_card_kind(classify_idle_card(poll_uid, poll_len));
         } else {
           Serial.println("[nfc] card removed");
         }
