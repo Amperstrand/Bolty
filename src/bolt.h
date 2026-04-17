@@ -449,6 +449,16 @@ public:
     }
     Serial.println(F("NDEF written successfully."));
 
+    // Re-authenticate after writes to refresh session for native management
+    // commands (ChangeFileSettings, ChangeKey).
+    selectNtagApplicationFiles();
+    if (nfc->ntag424_Authenticate(key_cur[0], 0, 0x71) != 1) {
+      Serial.println(F("Re-auth after write failed."));
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
+    }
+    Serial.println(F("Re-auth OK."));
+
     uint8_t fileSettings[] = {0x40,
                               0x00,
                               0xE0,
