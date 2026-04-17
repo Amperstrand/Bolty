@@ -395,15 +395,23 @@ public:
     }
 
     Serial.println(F("Pre-burn check OK - card has factory keys"));
-    // NTAG424 personalization flow writes NDEF only after selecting the NDEF
-    // application/file first (AN12196 Rev. 2.0, Sections 5.3 and 5.8.1). Keep
-    // this guard explicit so transport failures are not confused with select
-    // state mistakes on the MFRC522 path.
     if (!selectNtagApplicationFiles()) {
       Serial.println(F("Failed to select NTAG application files before NDEF write."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
+
+    // NTAG424 DNA default NDEF file settings require key 0 authentication
+    // before ISO UPDATE BINARY (write). The card returns 69 82 (security
+    // status not satisfied) without this auth step.
+    const uint8_t pre_auth = nfc->ntag424_Authenticate(key_cur[0], 0, 0x71);
+    if (pre_auth != 1) {
+      Serial.println(F("Pre-write authentication with factory key failed."));
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
+    }
+    Serial.println(F("Pre-write auth OK."));
+
     const uint8_t uriIdentifier = 0;
     const int piccDataOffset = lnurl.length() + 10;
     const int sdmMacOffset = lnurl.length() + 45;
@@ -420,26 +428,17 @@ public:
     };
     uint8_t *filedata = (uint8_t *)malloc(len + sizeof(ndefheader));
     memcpy(filedata, ndefheader, sizeof(ndefheader));
-    memcpy(filedata + sizeof(ndefheader), lnurl.c_str(), lnurl.length());
+    memcpy(filedata + sizeof(ndefheader), lnurl.c_str(), len);
     const bool ndef_write_ok =
         nfc->ntag424_ISOUpdateBinary(filedata, len + sizeof(ndefheader));
     free(filedata);
 
     if (!ndef_write_ok) {
-      Serial.println(F("NDEF write failed before SDM/key changes."));
+      Serial.println(F("NDEF write failed after authentication."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
-
-    const uint8_t authenticated = nfc->ntag424_Authenticate(key_cur[0], 0, 0x71);
-    if (authenticated != 1) {
-      Serial.println("Authentication 1 failed.");
-      set_job_status_id(JOBSTATUS_ERROR);
-      return job_status;
-    }
-
-    Serial.println("Authentication successful.");
-    Serial.println("Enable Mirroring and SDM.");
+    Serial.println(F("NDEF written successfully."));
     uint8_t fileSettings[] = {0x40,
                               0x00,
                               0xE0,
