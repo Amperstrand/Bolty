@@ -443,12 +443,25 @@ public:
 
     selectNtagApplicationFiles();
 
-    if (nfc->ntag424_Authenticate(key_cur[0], 0, 0x71) != 1) {
-      Serial.println(F("Authentication failed."));
+    uint8_t auth_result = nfc->ntag424_Authenticate(key_cur[0], 0, 0x71);
+    if (auth_result != 1) {
+      Serial.println(F("[burn] First auth attempt failed, retrying with re-activation..."));
+      delay(50);
+      if (!bolty_read_passive_target(nfc, uid, &uidLength)) {
+        Serial.println(F("[burn] Re-activation failed — card lost"));
+        set_job_status_id(JOBSTATUS_ERROR);
+        return job_status;
+      }
+      selectNtagApplicationFiles();
+      auth_result = nfc->ntag424_Authenticate(key_cur[0], 0, 0x71);
+    }
+
+    if (auth_result != 1) {
+      Serial.println(F("[burn] Authentication failed after retry."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
-    Serial.println(F("Authentication successful."));
+    Serial.println(F("[burn] Authentication successful."));
 
     const uint8_t uriIdentifier = 0;
     const int piccDataOffset = lnurl.length() + 10;
@@ -650,13 +663,26 @@ public:
     Serial.println(kv, HEX);
     selectNtagApplicationFiles();
 
-    if (nfc->ntag424_Authenticate(key_cur[0], 0, 0x71) != 1) {
-      Serial.println("Authentication failed.");
+    uint8_t auth_result = nfc->ntag424_Authenticate(key_cur[0], 0, 0x71);
+    if (auth_result != 1) {
+      Serial.println(F("[wipe] First auth attempt failed, retrying with re-activation..."));
+      delay(50);
+      if (!bolty_read_passive_target(nfc, uid, &uidLength)) {
+        Serial.println(F("[wipe] Re-activation failed — card lost"));
+        set_job_status_id(JOBSTATUS_ERROR);
+        return job_status;
+      }
+      selectNtagApplicationFiles();
+      auth_result = nfc->ntag424_Authenticate(key_cur[0], 0, 0x71);
+    }
+
+    if (auth_result != 1) {
+      Serial.println(F("[wipe] Authentication failed after retry."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
 
-    Serial.println("Authentication successful.");
+    Serial.println(F("[wipe] Authentication successful."));
     Serial.println("Disable Mirroring and SDM.");
     uint8_t fileSettings[] = {0x00, 0x00, 0xE0};
     const uint8_t cfs_result = nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
