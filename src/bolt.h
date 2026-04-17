@@ -396,47 +396,21 @@ public:
 
     Serial.println(F("Pre-burn check OK - card has factory keys"));
 
-    // NTAG424 DNA: native auth session blocks plain ISO writes.
-    // Strategy: auth natively → set free access → halt card (clear session)
-    // → re-activate → write NDEF via plain ISO → apply SDM settings.
+    // NTAG424 DNA: native auth (CLA=0x90) covers native commands but NOT
+    // ISO writes. Use ISO GENERAL AUTHENTICATE (CLA=0x00, INS=0x86) to
+    // establish a session that covers ISO UPDATE BINARY.
     if (!selectNtagApplicationFiles()) {
       Serial.println(F("Failed to select NTAG application files."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
 
-    const uint8_t pre_auth = nfc->ntag424_Authenticate(key_cur[0], 0, 0x71);
-    if (pre_auth != 1) {
-      Serial.println(F("Pre-write authentication with factory key failed."));
+    if (!nfc->ntag424_ISOAuthenticate(key_cur[0], 0)) {
+      Serial.println(F("ISO auth with factory key failed."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
-    Serial.println(F("Pre-write auth OK."));
-
-    uint8_t freeAccess[] = {0x00, 0xEE, 0xE0};
-    if (!nfc->ntag424_ChangeFileSettings((uint8_t)2, freeAccess,
-                                         (uint8_t)sizeof(freeAccess),
-                                         (uint8_t)NTAG424_COMM_MODE_FULL)) {
-      Serial.println(F("Failed to set free write access for NDEF write."));
-      set_job_status_id(JOBSTATUS_ERROR);
-      return job_status;
-    }
-    Serial.println(F("NDEF file write access set to free."));
-
-    // Halt and re-activate card to clear the native auth session,
-    // which blocks plain ISO writes even after setting free access.
-#if BOLTY_NFC_BACKEND_MFRC522
-    nfc->PICC_HaltA();
-#else
-    nfc->ntag424_halt();
-#endif
-    delay(100);
-    if (!bolty_read_passive_target(nfc, uid, &uidLength)) {
-      Serial.println(F("Failed to re-activate card after session clear."));
-      set_job_status_id(JOBSTATUS_ERROR);
-      return job_status;
-    }
-    Serial.println(F("Card re-activated (session cleared)."));
+    Serial.println(F("ISO auth OK."));
 
     if (!nfc->ntag424_ISOSelectFileById(NTAG424_NDEF_FILE_ID)) {
       Serial.println(F("Failed to select NDEF file."));
