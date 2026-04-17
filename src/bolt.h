@@ -395,15 +395,11 @@ public:
     }
 
     Serial.println(F("Pre-burn check OK - card has factory keys"));
-    if (!selectNtagApplicationFiles()) {
-      Serial.println(F("Failed to select NTAG application files before NDEF write."));
-      set_job_status_id(JOBSTATUS_ERROR);
-      return job_status;
-    }
 
-    // NTAG424 DNA default NDEF file settings require key 0 authentication
-    // before ISO UPDATE BINARY (write). The card returns 69 82 (security
-    // status not satisfied) without this auth step.
+    // NTAG424 DNA NDEF file requires key 0 authentication for write
+    // access. The Authenticate() function internally selects the AID,
+    // so we must re-select the NDEF file after auth to establish the
+    // correct EF context for ISO UPDATE BINARY.
     const uint8_t pre_auth = nfc->ntag424_Authenticate(key_cur[0], 0, 0x71);
     if (pre_auth != 1) {
       Serial.println(F("Pre-write authentication with factory key failed."));
@@ -411,6 +407,12 @@ public:
       return job_status;
     }
     Serial.println(F("Pre-write auth OK."));
+
+    if (!nfc->ntag424_ISOSelectFileById(NTAG424_NDEF_FILE_ID)) {
+      Serial.println(F("Failed to select NDEF file after auth."));
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
+    }
 
     const uint8_t uriIdentifier = 0;
     const int piccDataOffset = lnurl.length() + 10;
