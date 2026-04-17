@@ -396,27 +396,14 @@ public:
 
     Serial.println(F("Pre-burn check OK - card has factory keys"));
 
-    // NTAG424 DNA: native auth (CLA=0x90) covers native commands but NOT
-    // ISO writes. Use ISO GENERAL AUTHENTICATE (CLA=0x00, INS=0x86) to
-    // establish a session that covers ISO UPDATE BINARY.
-    if (!selectNtagApplicationFiles()) {
-      Serial.println(F("Failed to select NTAG application files."));
-      set_job_status_id(JOBSTATUS_ERROR);
-      return job_status;
-    }
+    selectNtagApplicationFiles();
 
-    if (!nfc->ntag424_ISOAuthenticate(key_cur[0], 0)) {
-      Serial.println(F("ISO auth with factory key failed."));
+    if (nfc->ntag424_Authenticate(key_cur[0], 0, 0x71) != 1) {
+      Serial.println(F("Authentication failed."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
-    Serial.println(F("ISO auth OK."));
-
-    if (!nfc->ntag424_ISOSelectFileById(NTAG424_NDEF_FILE_ID)) {
-      Serial.println(F("Failed to select NDEF file."));
-      set_job_status_id(JOBSTATUS_ERROR);
-      return job_status;
-    }
+    Serial.println(F("Authentication successful."));
 
     const uint8_t uriIdentifier = 0;
     const int piccDataOffset = lnurl.length() + 10;
@@ -435,26 +422,32 @@ public:
     uint8_t *filedata = (uint8_t *)malloc(len + sizeof(ndefheader));
     memcpy(filedata, ndefheader, sizeof(ndefheader));
     memcpy(filedata + sizeof(ndefheader), lnurl.c_str(), len);
-    const bool ndef_write_ok =
-        nfc->ntag424_ISOUpdateBinary(filedata, len + sizeof(ndefheader));
+
+    // Native WriteData (CLA=0x90, INS=0x8D) to NDEF file (file 2).
+    // Max APDU is 80 bytes; header is 13 bytes → max payload 67 bytes.
+    // Write in chunks if needed.
+    const uint8_t total_len = len + sizeof(ndefheader);
+    const uint8_t kChunkSize = 64;
+    bool ndef_write_ok = true;
+    for (uint8_t offset = 0; offset < total_len && ndef_write_ok; offset += kChunkSize) {
+      uint8_t remaining = total_len - offset;
+      uint8_t chunk_len = (remaining > kChunkSize) ? kChunkSize : remaining;
+      uint8_t chunk[64] = {0};
+      memcpy(chunk, filedata + offset, chunk_len);
+      ndef_write_ok = nfc->ntag424_WriteData(2, chunk, chunk_len);
+      if (!ndef_write_ok) {
+        Serial.print(F("WriteData failed at offset "));
+        Serial.println(offset);
+      }
+    }
     free(filedata);
 
     if (!ndef_write_ok) {
-      Serial.println(F("NDEF write failed with free access."));
+      Serial.println(F("NDEF write failed."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
     Serial.println(F("NDEF written successfully."));
-
-    // ISO auth only covers ISO writes. Native commands (ChangeFileSettings,
-    // ChangeKey) need a separate native EV2 auth session (AN12196 §10).
-    selectNtagApplicationFiles();
-    if (nfc->ntag424_Authenticate(key_cur[0], 0, 0x71) != 1) {
-      Serial.println(F("Native auth for SDM/key change failed."));
-      set_job_status_id(JOBSTATUS_ERROR);
-      return job_status;
-    }
-    Serial.println(F("Native auth OK."));
 
     uint8_t fileSettings[] = {0x40,
                               0x00,
