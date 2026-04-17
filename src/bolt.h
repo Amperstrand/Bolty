@@ -488,7 +488,7 @@ public:
     Serial.println(F("Re-auth OK."));
 
     uint8_t fileSettings[] = {0x40,
-                              0x00,
+                              0xE0,
                               0xE0,
                               0xC1,
                               0xFF,

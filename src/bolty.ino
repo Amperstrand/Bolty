@@ -2454,60 +2454,32 @@ ndef_fail:
     Serial.print(F("[burn] ")); Serial.println(bolt.get_job_status());
     Serial.println(result == JOBSTATUS_DONE ? F("[burn] SUCCESS") : F("[burn] FAILED"));
       if (result == JOBSTATUS_DONE) {
-        // Post-burn NDEF verification: confirm NLEN is valid and peek at first bytes.
-        // After burn, auth session changes card state — must re-select AID + file.
-        // Ref: Android bolt-nfc-android-app isoReadBinary always does
-        //      SELECT AID → SELECT FILE before ReadBinary.
-        //
-        // Note: PN532 pn532_packetbuffer is only 64 bytes, so max card data per
-        // read is ~54 bytes (64 - 8 header - 2 SW). Full NDEF readback needs
-        // pagination — use the 'ndef' command for that. Here we just sanity-check.
-        bool v_sel1 = bolt.selectNdefFileOnly();
-        bool v_sel2 = v_sel1;
-        Serial.print(F("[burn] VERIFY — SELECT AID: "));
-        Serial.println(v_sel1 ? F("OK") : F("FAIL"));
-        Serial.print(F("[burn] VERIFY — SELECT E104: "));
-        Serial.println(v_sel2 ? F("OK") : F("FAIL"));
-        if (v_sel1 && v_sel2) {
-          // Read NLEN (2 bytes) + 1 extra = 3 bytes at offset 0
-          uint8_t nlen_buf[8] = {0};
-          uint8_t nlen_rl = bolt.nfc->ntag424_ISOReadBinary(0, 3, nlen_buf, sizeof(nlen_buf));
-          if (nlen_rl >= 3 && nlen_buf[nlen_rl-2] == 0x90 && nlen_buf[nlen_rl-1] == 0x00) {
-            int nlen = (nlen_buf[0] << 8) | nlen_buf[1];
+        // Post-burn verify: auth with new key, then native ReadData to peek at NDEF.
+        bolt.selectNtagApplicationFiles();
+        const uint8_t v_auth = bolt.nfc->ntag424_Authenticate(bolt.key_new[0], 0, 0x71);
+        Serial.print(F("[burn] VERIFY — AUTH: "));
+        Serial.println(v_auth == 1 ? F("OK") : F("FAIL"));
+        if (v_auth == 1) {
+          // Read first 48 bytes of NDEF file (file 2) via native ReadData
+          uint8_t vbuf[48] = {0};
+          uint8_t vlen = bolt.nfc->ntag424_ReadData(vbuf, 2, 0, sizeof(vbuf));
+          if (vlen >= 3) {
+            int nlen = (vbuf[0] << 8) | vbuf[1];
             Serial.print(F("[burn] VERIFY — NLEN=")); Serial.println(nlen);
             if (nlen > 0 && nlen <= 252) {
-              // Read first chunk (max 48 bytes to stay within 64-byte SPI buffer)
-              uint8_t peek_len = (nlen + 3 > 48) ? 48 : (nlen + 3);
-              uint8_t body_buf[52] = {0};
-              uint8_t body_rl = bolt.nfc->ntag424_ISOReadBinary(2, peek_len, body_buf, sizeof(body_buf));
-              if (body_rl >= 4 && body_buf[body_rl-2] == 0x90 && body_buf[body_rl-1] == 0x00) {
-                int dlen = body_rl - 2;
-                Serial.print(F("[burn] VERIFY — NDEF peek OK ("));
-                Serial.print(dlen); Serial.print(F(" of ")); Serial.print(nlen);
-                Serial.println(F(" bytes)"));
-                Serial.print(F("[burn] VERIFY — ASCII: "));
-                for (int i = 0; i < dlen; i++) {
-                  Serial.write(body_buf[i] >= 0x20 && body_buf[i] < 0x7F ? body_buf[i] : '.');
-                }
-                Serial.println();
-              } else {
-                Serial.print(F("[burn] VERIFY — NDEF body read failed SW="));
-                if (body_rl >= 2) {
-                  Serial.print(body_buf[body_rl-2], HEX); Serial.print(F(" "));
-                  Serial.print(body_buf[body_rl-1], HEX);
-                }
-                Serial.println();
+              Serial.print(F("[burn] VERIFY — NDEF peek OK ("));
+              Serial.print(vlen - 2); Serial.print(F(" of ")); Serial.print(nlen);
+              Serial.println(F(" bytes)"));
+              Serial.print(F("[burn] VERIFY — ASCII: "));
+              for (int i = 2; i < vlen; i++) {
+                Serial.write(vbuf[i] >= 0x20 && vbuf[i] < 0x7F ? vbuf[i] : '.');
               }
+              Serial.println();
             } else {
               Serial.println(F("[burn] VERIFY — NLEN invalid or zero"));
             }
           } else {
-            Serial.print(F("[burn] VERIFY — NLEN read failed SW="));
-            if (nlen_rl >= 2) {
-              Serial.print(nlen_buf[nlen_rl-2], HEX); Serial.print(F(" "));
-              Serial.print(nlen_buf[nlen_rl-1], HEX);
-            }
-            Serial.println();
+            Serial.println(F("[burn] VERIFY — ReadData failed"));
           }
         }
       }
