@@ -29,6 +29,14 @@ function sd(d){
     dgEBI('u').innerHTML=h + " " + d;
 }
 
+function updateModeUi(){
+    const isPos = dgEBI('mode-pos') && dgEBI('mode-pos').checked;
+    const urlLabel = document.querySelector('label[for="lnurlw_base"]');
+    if (urlLabel){
+        urlLabel.innerHTML = isPos ? 'POS LNURL' : 'LNRUrl';
+    }
+}
+
 function updateform(url, data, rhandle){
     xhruf = new XMLHttpRequest();
     xhruf.open("POST", url, true);
@@ -131,6 +139,16 @@ function isValidHttpUrl(string) {
 
 
 window.onload = function() {
+    if (dgEBI('mode-pos') && dgEBI('mode-withdraw')) {
+        if ((dgEBI('lnurlw_base').value || '').startsWith('lnurlp://') || '%card_mode%' === 'pos') {
+            dgEBI('mode-pos').checked = true;
+        } else {
+            dgEBI('mode-withdraw').checked = true;
+        }
+        dgEBI('mode-pos').addEventListener('change', updateModeUi);
+        dgEBI('mode-withdraw').addEventListener('change', updateModeUi);
+        updateModeUi();
+    }
     if ((dgEBI('lnurlw_base').value.length < 6) && (dgEBI('k0').value.length!=32)){
         col = document.getElementsByClassName("onl");
         for (let i = 0; i < col.length; i++) {
@@ -213,6 +231,10 @@ window.onload = function() {
                     data[fe[i].id] = fe[i].value;
                 }
             }
+            if (data['card_mode'] === 'pos') {
+                data['lnurlp_base'] = data['lnurlw_base'];
+                delete data['lnurlw_base'];
+            }
             if (target.hasAttribute('data-loc') && (dgEBI('card_new').value != "") && (dgEBI('uid').value != "")){
                 loc = target.getAttribute('data-loc');
                 let dk = "00000000000000000000000000000000";
@@ -254,8 +276,9 @@ window.onload = function() {
                 wurl = par.origin;
                 lbnewwal(dgEBI('card_new').value, dgEBI('uid').value, 
                         function(usr, wal, uid, card){
+                            const scheme = (dgEBI('mode-pos') && dgEBI('mode-pos').checked) ? "lnurlp://" : "lnurlw://";
                             dgEBI('card_name').value=card['card_name'];
-                            dgEBI('lnurlw_base').value="lnurlw://" + par.host + "/boltcards/api/v1/scan/" + card['external_id'];
+                            dgEBI('lnurlw_base').value=scheme + par.host + "/boltcards/api/v1/scan/" + card['external_id'];
                             dgEBI('kesave').click();
                         });
                 return;

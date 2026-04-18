@@ -84,6 +84,10 @@ Key 4: %ks4%
       <input type="text" id="wallet_url" required  value="%wallet_url%"/><label for="wallet_url" class="pl">Wallet Url (optional)</label><br>
       </div>
       <div class="cf">
+      <input type="radio" name="card_mode" id="mode-withdraw" value="withdraw" checked /><label for="mode-withdraw" class="ra">Withdraw (lnurlw)</label><br>
+      <input type="radio" name="card_mode" id="mode-pos" value="pos" /><label for="mode-pos" class="plra">POS (lnurlp)</label><br>
+      </div>
+      <div class="cf">
       <input type="text" id="lnurlw_base" maxlength="255" value="%url%" required /><label for="lnurlw_base" class="pl">LNRUrl</label><br>
       </div>
       <div class="cf">

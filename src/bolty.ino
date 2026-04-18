@@ -539,6 +539,7 @@ void loadBoltConfig(uint8_t slot) {
     Serial.println(" not found");
     strcpy(mBoltConfig.card_name, "*new*");
     mBoltConfig.url[0] = 0;
+    strcpy(mBoltConfig.card_mode, "withdraw");
     mBoltConfig.uid[0] = 0;
     mBoltConfig.k0[0] = 0;
     mBoltConfig.k1[0] = 0;
@@ -552,6 +553,9 @@ void loadBoltConfig(uint8_t slot) {
     strcpy(mBoltConfig.wifi_ssid, "Tollgate");
     mBoltConfig.wifi_password[0] = 0;
     mBoltConfig.wifi_probe_enabled = false;
+  }
+  if (mBoltConfig.card_mode[0] == '\0') {
+    strcpy(mBoltConfig.card_mode, "withdraw");
   }
   dumpconfig();
 }
@@ -657,6 +661,8 @@ String web_keysetup_processor(const String &var) {
     return mBoltConfig.wallet_url;
   if (var == "uid")
     return mBoltConfig.uid;
+  if (var == "card_mode")
+    return strlen(mBoltConfig.card_mode) ? mBoltConfig.card_mode : "withdraw";
   return processor_default(var);
 }
 #endif
@@ -709,6 +715,8 @@ String processor_default(const String &var){
     return mBoltConfig.card_name;
   if (var == "url")
     return mBoltConfig.url;
+  if (var == "card_mode")
+    return strlen(mBoltConfig.card_mode) ? mBoltConfig.card_mode : "withdraw";
   if (var == "ks0")
     return shortenkeys(mBoltConfig.k0);
   if (var == "ks1")
@@ -1413,7 +1421,11 @@ void setup(void) {
         }
         if (data.containsKey("card_name"))
           strcpy(mBoltConfig.card_name, data["card_name"]);
-        if (data.containsKey("lnurlw_base"))
+        if (data.containsKey("card_mode"))
+          strncpy(mBoltConfig.card_mode, data["card_mode"], sizeof(mBoltConfig.card_mode));
+        if (data.containsKey("lnurlp_base"))
+          strcpy(mBoltConfig.url, data["lnurlp_base"]);
+        else if (data.containsKey("lnurlw_base"))
           strcpy(mBoltConfig.url, data["lnurlw_base"]);
         if (data.containsKey("wallet_name"))
           strcpy(mBoltConfig.wallet_name, data["wallet_name"]);
@@ -1898,11 +1910,12 @@ static bool assess_current_card(CardAssessment &assessment) {
     if (ndef_extract_uri(ndef, ndef_len, assessment.uri)) {
       assessment.has_uri = true;
       const bool has_lnurlw = assessment.uri.startsWith("lnurlw://") || assessment.uri.indexOf("lnurlw://") >= 0;
+      const bool has_lnurlp = assessment.uri.startsWith("lnurlp://") || assessment.uri.indexOf("lnurlp://") >= 0;
       String p_hex;
       String c_hex;
       const bool has_p = uri_get_query_param(assessment.uri, "p", p_hex);
       const bool has_c = uri_get_query_param(assessment.uri, "c", c_hex);
-      assessment.looks_like_boltcard = has_lnurlw || (has_p && has_c);
+      assessment.looks_like_boltcard = has_lnurlw || has_lnurlp || (has_p && has_c);
 
       DeterministicBoltcardMatch match;
       const bool full_match = deterministic_try_known_matches(bolt.nfc, uid, uid_len, assessment.uri, match);
@@ -2374,8 +2387,23 @@ ndef_fail:
       return;
     }
     strncpy(mBoltConfig.url, url.c_str(), sizeof(mBoltConfig.url));
+    if (url.startsWith("lnurlp://")) {
+      strncpy(mBoltConfig.card_mode, "pos", sizeof(mBoltConfig.card_mode));
+    } else {
+      strncpy(mBoltConfig.card_mode, "withdraw", sizeof(mBoltConfig.card_mode));
+    }
     saveBoltConfig(active_bolt_config);
     Serial.print(F("[url] Set to: ")); Serial.println(url);
+  }
+  else if (cmd == "mode pos") {
+    strncpy(mBoltConfig.card_mode, "pos", sizeof(mBoltConfig.card_mode));
+    saveBoltConfig(active_bolt_config);
+    Serial.println(F("[mode] Set to: pos"));
+  }
+  else if (cmd == "mode withdraw") {
+    strncpy(mBoltConfig.card_mode, "withdraw", sizeof(mBoltConfig.card_mode));
+    saveBoltConfig(active_bolt_config);
+    Serial.println(F("[mode] Set to: withdraw"));
   }
   else if (cmd.startsWith("reseturl ")) {
     String url = cmd.substring(9);

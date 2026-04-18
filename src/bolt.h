@@ -24,8 +24,10 @@ using BoltyNfcReader = Adafruit_PN532;
 #define JOBSTATUS_ERROR 5
 #define JOBSTATUS_GUARD_REJECT 6
 
+// NTAG424 DNA Application Identifier — AN12196 §3.1, NT4H2421Gx datasheet §6.4
 static const uint8_t NTAG424_AID[7] = {0xD2, 0x76, 0x00, 0x00,
                                        0x85, 0x01, 0x01};
+// NDEF File ID: 0xE104 — NT4H2421Gx datasheet §8.6.4
 static const uint16_t NTAG424_NDEF_FILE_ID = 0xE104;
 
 static String boltstatustext[7] = {
@@ -40,6 +42,7 @@ struct sBoltConfig {
   char wallet_name[256];
   char wallet_url[256];
   char url[256];
+  char card_mode[16];
   char reset_url[256];
   char uid[17];
   char k0[33];
@@ -116,6 +119,19 @@ inline uint8_t bolty_get_key_version(BoltyNfcReader *nfc, uint8_t keyno) {
     return version;
   }
   return 0xFF;
+}
+
+inline bool bolty_iso_authenticate(BoltyNfcReader *nfc, uint8_t *key,
+                                   uint8_t keyno) {
+  return nfc->ntag424_ISOAuthenticate(key, keyno) == 1;
+}
+
+inline bool bolty_iso_write_ndef_file(BoltyNfcReader *nfc, uint8_t *data,
+                                      size_t length) {
+  if (data == nullptr || length == 0 || length > 0xFF) {
+    return false;
+  }
+  return nfc->ntag424_ISOUpdateBinary(data, static_cast<uint8_t>(length));
 }
 
 class BoltDevice {
@@ -396,33 +412,50 @@ public:
 
     Serial.println(F("Pre-burn check OK - card has factory keys"));
 
-    // NTAG424 DNA: native auth (CLA=0x90) covers native commands but NOT
-    // ISO writes. Use ISO GENERAL AUTHENTICATE (CLA=0x00, INS=0x86) to
-    // establish a session that covers ISO UPDATE BINARY.
     if (!selectNtagApplicationFiles()) {
       Serial.println(F("Failed to select NTAG application files."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
 
-    if (!nfc->ntag424_ISOAuthenticate(key_cur[0], 0)) {
-      Serial.println(F("ISO auth with factory key failed."));
+    // Native AuthenticateEV2First: cmd=0x71 (NT4H2421Gx §7.3.1.1).
+    // Using key_cur[0] (factory zero key) with key number 0.
+    const uint8_t auth_result = nfc->ntag424_Authenticate(key_cur[0], 0, 0x71);
+    if (auth_result != 1) {
+      Serial.println(F("Native auth with factory key failed."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
-    Serial.println(F("ISO auth OK."));
-
-    if (!nfc->ntag424_ISOSelectFileById(NTAG424_NDEF_FILE_ID)) {
-      Serial.println(F("Failed to select NDEF file."));
-      set_job_status_id(JOBSTATUS_ERROR);
-      return job_status;
-    }
+    Serial.println(F("Auth OK."));
 
     const uint8_t uriIdentifier = 0;
+    // PICC data offset: 7 (NDEF header) + lnurl_length + "?p=" (2) + 16*2 hex digits
+    // This tells the tag where to inject the UID+read counter during SDM.
+    // Ref: NT4H2421Gx datasheet §8.7.2, SDM PICCDataOffset
     const int piccDataOffset = lnurl.length() + 10;
+    // SDM MAC offset: piccDataOffset + UID_hex(14) + read_ctr_hex(6)
+    // = lnurl_length + 10 + 14 + 6 + "&c="(3) = lnurl_length + 33
+    // But we account for the full "?p=..." + "&c=..." structure:
+    // lnurl + "?p=" (2) + 32 hex chars + "&c=" (3) + 16 hex chars
+    // The MAC is appended at the end of the 16 hex c= placeholder.
+    // Net: lnurl_length + 45
     const int sdmMacOffset = lnurl.length() + 45;
+    // Bolt card LNURL placeholder: p=32-hex-char PICC data placeholder,
+    // c=16-hex-char MAC placeholder. These get replaced by the tag's
+    // Secure Dynamic Messaging (SDM) during read.
+    // Ref: bolt-card specification, NT4H2421Gx §8.7
     lnurl += "?p=00000000000000000000000000000000&c=0000000000000000";
     const uint8_t len = lnurl.length();
+    // NDEF Record Header — NFC Forum NDEF specification §3.2
+    // Byte 0: 0x00 = MB=0, ME=0 (more records follow; actually this IS the
+    //         only record but we set MB/ME in byte 2's TNF)
+    // Byte 1: len + 5 = total payload after this byte (record payload size)
+    // Byte 2: 0xD1 = MB=1, ME=1, CF=0, SR=1, IL=0, TNF=0x01 (NFC Well-Known)
+    // Byte 3: 0x01 = type length = 1 byte ("U")
+    // Byte 4: len + 1 = payload length (type "U" + URL string)
+    // Byte 5: 0x55 = 'U' — NFC Well-Known Type "U" (URI record)
+    // Byte 6: 0x00 = URI Identifier Code = "No prepending" (raw URL)
+    // Ref: NFC Forum NDEF Technical Specification §3.2.1
     uint8_t ndefheader[7] = {
         0x0,
         static_cast<uint8_t>(len + 5),
@@ -433,18 +466,59 @@ public:
         uriIdentifier,
     };
     uint8_t *filedata = (uint8_t *)malloc(len + sizeof(ndefheader));
+    if (filedata == nullptr) {
+      Serial.println(F("Failed to allocate NDEF buffer."));
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
+    }
     memcpy(filedata, ndefheader, sizeof(ndefheader));
     memcpy(filedata + sizeof(ndefheader), lnurl.c_str(), len);
-    const bool ndef_write_ok =
-        nfc->ntag424_ISOUpdateBinary(filedata, len + sizeof(ndefheader));
+    const size_t ndef_file_length = len + sizeof(ndefheader);
+
+    bool ndef_write_ok = true;
+    // MFRC522 FIFO-safe chunk size: 47 bytes.
+    // MFRC522 has a 64-byte FIFO (MFRC522 datasheet §8.6.1).
+    // WriteData APDU: CLA(1)+INS(1)+P1(1)+P2(1)+Lc(1)+header(7)+data(N)+Le(1)
+    // = 12 + N. ISO-DEP adds PCB(1)+CID(1)+CRC(2)=4 bytes overhead.
+    // Total: 4 + 12 + N ≤ 64 → N ≤ 48. Use 47 for safety margin.
+    // Matches the chunk size used by ntag424_FormatNDEF() in ntag424_core.cpp.
+    // Confirmed by reference: Obsttube/MFRC522_NTAG424DNA line 1598.
+    const uint8_t kWriteChunkSize = 47;
+    size_t write_offset = 0;
+    while (write_offset < ndef_file_length) {
+      const uint8_t chunk_len =
+          (ndef_file_length - write_offset > kWriteChunkSize)
+              ? kWriteChunkSize
+              : static_cast<uint8_t>(ndef_file_length - write_offset);
+      if (!nfc->ntag424_WriteData(2, filedata + write_offset, chunk_len,
+                                   static_cast<int>(write_offset))) {
+        ndef_write_ok = false;
+        break;
+      }
+      write_offset += chunk_len;
+    }
     free(filedata);
 
     if (!ndef_write_ok) {
-      Serial.println(F("NDEF write failed with free access."));
+      Serial.println(F("NDEF write failed via native WriteData."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
     Serial.println(F("NDEF written successfully."));
+    // ChangeFileSettings for file 2 (NDEF) — NT4H2421Gx datasheet §7.6.2,
+    // Table 49, and §8.7.2 Table 71 for SDM configuration.
+    //
+    // Byte layout (after FileNo):
+    //   [0]  0x40 = FileOption: SDM enabled (bit 6), Plain read/write
+    //   [1]  0x00 = Access Rights: free read (0x0), free write (0x0)
+    //   [2]  0xE0 = Write access key=0xE (key 0 for write), Read=0x0 (free)
+    //   [3]  0xC1 = SDMOptions: UID mirror + ReadCnt mirror + MAC + encrypt
+    //   [4]  0xFF = SDMAccessRights: SDMReadRetr key=0xF (free)
+    //   [5]  0x12 = SDMCounterRetr: retrieve read counter
+    //   [6-8]   PICCDataOffset (3 bytes, LE) — where SDM injects UID+counter
+    //   [9-11]  SDMMACInputOffset (3 bytes, LE) — MAC input location
+    //   [12-14] SDMMACOffset (3 bytes, LE) — where SDM writes the CMAC
+    // Ref: NT4H2421Gx datasheet §8.7.2 Table 71, bolt-card specification
     uint8_t fileSettings[] = {0x40,
                               0x00,
                               0xE0,
@@ -462,13 +536,21 @@ public:
                               static_cast<uint8_t>((sdmMacOffset >> 16) & 0xff)};
     nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
                                     (uint8_t)sizeof(fileSettings),
+                                    // NTAG424_COMM_MODE_FULL: AES-128 encrypt +
+                                    // CMAC on command and response.
+                                    // Ref: NT4H2421Gx datasheet §7.6.2
                                     (uint8_t)NTAG424_COMM_MODE_FULL);
 
+    // Change all 5 application keys. Key version 0x01 marks the card as
+    // provisioned (factory = 0x00). Keys changed in reverse order (4→0)
+    // to avoid losing access mid-operation.
+    // Ref: NT4H2421Gx datasheet §7.3.2, AN12196 §6.3
     if (!changeAllKeys(0x01)) {
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
 
+    // Verify new keys work: AuthenticateEV2First with new key 0
     const uint8_t authenticated_after = nfc->ntag424_Authenticate(key_new[0], 0, 0x71);
     if (authenticated_after == 1) {
       Serial.println("Authentication 2 Success.");
@@ -528,6 +610,9 @@ public:
     Serial.println(F("Authentication successful (factory zero key)."));
 
     Serial.println(F("Disabling SDM and resetting file settings..."));
+    // Reset file 2 settings: disable SDM, keep Plain read/write access.
+    // {0x00, 0x00, 0xE0} = no SDM mirroring, free access, standard file.
+    // Ref: NT4H2421Gx datasheet §7.6.2 Table 49
     uint8_t fileSettings[] = {0x00, 0x00, 0xE0};
     nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
                                     (uint8_t)sizeof(fileSettings),
@@ -599,11 +684,16 @@ public:
 
     Serial.println("Authentication successful.");
     Serial.println("Disable Mirroring and SDM.");
+    // Reset file 2 settings: disable SDM, keep Plain read/write access.
+    // {0x00, 0x00, 0xE0} = no SDM mirroring, free access, standard file.
+    // Ref: NT4H2421Gx datasheet §7.6.2 Table 49
     uint8_t fileSettings[] = {0x00, 0x00, 0xE0};
     nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
                                     (uint8_t)sizeof(fileSettings),
                                     (uint8_t)NTAG424_COMM_MODE_FULL);
 
+    // Reset all keys to factory defaults (key version 0x00 = factory state).
+    // Ref: NT4H2421Gx datasheet §7.3.2
     if (!changeAllKeys(0x00)) {
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
