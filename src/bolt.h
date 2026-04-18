@@ -699,7 +699,19 @@ public:
       return job_status;
     }
 
+    // Re-authenticate with the new (factory zero) key. Changing key 0
+    // invalidates the old auth session, but FormatNDEF needs an active
+    // session because the NDEF file access rights require key 0 for write.
+    // Ref: NT4H2421Gx datasheet §7.3.2 — "If the key that was used for
+    //   the active authentication is changed, the PICC terminates the
+    //   transaction (SDM state is reset)."
     selectNtagApplicationFiles();
+    if (nfc->ntag424_Authenticate(key_new[0], 0, 0x71) != 1) {
+      Serial.println("Re-authentication after key change failed.");
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
+    }
+
     if (nfc->ntag424_FormatNDEF()) {
       job_perc = 100;
     }
