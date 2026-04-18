@@ -1590,7 +1590,31 @@ static const uint8_t BOLTCARD_ISSUER_KEY_DEV[16] = {
   0x00, 0x00, 0x00, 0x00,
   0x00, 0x00, 0x00, 0x01,
 };
+static const uint8_t BOLTCARD_ISSUER_KEY_BOLTPOC[16] = {
+  0xB0, 0x73, 0x39, 0x59,
+  0x68, 0x6C, 0x5D, 0xA2,
+  0x74, 0x12, 0x30, 0x84,
+  0xB5, 0xC0, 0x78, 0x20,
+};
+static const uint8_t BOLTCARD_ISSUER_KEY_BOLTPOC2[16] = {
+  0x0A, 0x27, 0x62, 0x06,
+  0xCC, 0xAE, 0x41, 0x73,
+  0x9B, 0x35, 0x41, 0xE2,
+  0x85, 0x22, 0x3E, 0xEE,
+};
 static const uint32_t BOLTCARD_VERSION_CANDIDATES[2] = {1, 0};
+static const uint8_t * const BOLTCARD_ISSUER_KEYS[4] = {
+  BOLTCARD_ISSUER_KEY_ZERO,
+  BOLTCARD_ISSUER_KEY_DEV,
+  BOLTCARD_ISSUER_KEY_BOLTPOC,
+  BOLTCARD_ISSUER_KEY_BOLTPOC2,
+};
+static const __FlashStringHelper * const BOLTCARD_ISSUER_KEY_LABELS[4] = {
+  F("00000000000000000000000000000000"),
+  F("00000000000000000000000000000001"),
+  F("b0733959686c5da274123084b5c07820"),
+  F("0a276206ccae41739b3541e285223eee"),
+};
 
 struct DeterministicBoltcardMatch {
   bool saw_k1_match;
@@ -1689,8 +1713,8 @@ static bool deterministic_try_known_matches(BoltyNfcReader *nfc,
   uint8_t c_bytes[8] = {0};
   const bool c_parse_ok = has_c && parse_hex_fixed(c_hex, c_bytes, sizeof(c_bytes));
 
-  for (int candidate = 0; candidate < 2; candidate++) {
-    const uint8_t *issuer_key = (candidate == 0) ? BOLTCARD_ISSUER_KEY_ZERO : BOLTCARD_ISSUER_KEY_DEV;
+  for (int candidate = 0; candidate < 4; candidate++) {
+    const uint8_t *issuer_key = BOLTCARD_ISSUER_KEYS[candidate];
 
     uint8_t keys_v1[5][16] = {{0}};
     derive_deterministic_boltcard_keys(nfc, issuer_key, uid, 1, keys_v1);
@@ -1762,11 +1786,9 @@ static void print_deterministic_boltcard_check(BoltyNfcReader *nfc,
   bool any_match = false;
   bool any_full_match = false;
 
-  for (int candidate = 0; candidate < 2; candidate++) {
-    const uint8_t *issuer_key = (candidate == 0) ? BOLTCARD_ISSUER_KEY_ZERO : BOLTCARD_ISSUER_KEY_DEV;
-    const __FlashStringHelper *issuer_label =
-        (candidate == 0) ? F("00000000000000000000000000000000")
-                         : F("00000000000000000000000000000001");
+  for (int candidate = 0; candidate < 4; candidate++) {
+    const uint8_t *issuer_key = BOLTCARD_ISSUER_KEYS[candidate];
+    const __FlashStringHelper *issuer_label = BOLTCARD_ISSUER_KEY_LABELS[candidate];
 
     uint8_t keys_v1[5][16] = {{0}};
     derive_deterministic_boltcard_keys(nfc, issuer_key, uid, 1, keys_v1);
