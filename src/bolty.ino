@@ -2389,6 +2389,8 @@ ndef_fail:
     strncpy(mBoltConfig.url, url.c_str(), sizeof(mBoltConfig.url));
     if (url.startsWith("lnurlp://")) {
       strncpy(mBoltConfig.card_mode, "pos", sizeof(mBoltConfig.card_mode));
+    } else if (url.startsWith("https://")) {
+      strncpy(mBoltConfig.card_mode, "2fa", sizeof(mBoltConfig.card_mode));
     } else {
       strncpy(mBoltConfig.card_mode, "withdraw", sizeof(mBoltConfig.card_mode));
     }
@@ -2399,6 +2401,11 @@ ndef_fail:
     strncpy(mBoltConfig.card_mode, "pos", sizeof(mBoltConfig.card_mode));
     saveBoltConfig(active_bolt_config);
     Serial.println(F("[mode] Set to: pos"));
+  }
+  else if (cmd == "mode 2fa") {
+    strncpy(mBoltConfig.card_mode, "2fa", sizeof(mBoltConfig.card_mode));
+    saveBoltConfig(active_bolt_config);
+    Serial.println(F("[mode] Set to: 2fa"));
   }
   else if (cmd == "mode withdraw") {
     strncpy(mBoltConfig.card_mode, "withdraw", sizeof(mBoltConfig.card_mode));

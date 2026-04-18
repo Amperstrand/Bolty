@@ -31,9 +31,10 @@ function sd(d){
 
 function updateModeUi(){
     const isPos = dgEBI('mode-pos') && dgEBI('mode-pos').checked;
+    const is2fa = dgEBI('mode-2fa') && dgEBI('mode-2fa').checked;
     const urlLabel = document.querySelector('label[for="lnurlw_base"]');
     if (urlLabel){
-        urlLabel.innerHTML = isPos ? 'POS LNURL' : 'LNRUrl';
+        urlLabel.innerHTML = isPos ? 'POS LNURL' : is2fa ? '2FA URL' : 'LNRUrl';
     }
 }
 
@@ -139,14 +140,17 @@ function isValidHttpUrl(string) {
 
 
 window.onload = function() {
-    if (dgEBI('mode-pos') && dgEBI('mode-withdraw')) {
+    if (dgEBI('mode-pos') && dgEBI('mode-withdraw') && dgEBI('mode-2fa')) {
         if ((dgEBI('lnurlw_base').value || '').startsWith('lnurlp://') || '%card_mode%' === 'pos') {
             dgEBI('mode-pos').checked = true;
+        } else if ((dgEBI('lnurlw_base').value || '').startsWith('https://') || '%card_mode%' === '2fa') {
+            dgEBI('mode-2fa').checked = true;
         } else {
             dgEBI('mode-withdraw').checked = true;
         }
         dgEBI('mode-pos').addEventListener('change', updateModeUi);
         dgEBI('mode-withdraw').addEventListener('change', updateModeUi);
+        dgEBI('mode-2fa').addEventListener('change', updateModeUi);
         updateModeUi();
     }
     if ((dgEBI('lnurlw_base').value.length < 6) && (dgEBI('k0').value.length!=32)){
@@ -276,7 +280,9 @@ window.onload = function() {
                 wurl = par.origin;
                 lbnewwal(dgEBI('card_new').value, dgEBI('uid').value, 
                         function(usr, wal, uid, card){
-                            const scheme = (dgEBI('mode-pos') && dgEBI('mode-pos').checked) ? "lnurlp://" : "lnurlw://";
+                            const mode2fa = dgEBI('mode-2fa') && dgEBI('mode-2fa').checked;
+                            const modePos = dgEBI('mode-pos') && dgEBI('mode-pos').checked;
+                            const scheme = mode2fa ? "https://" : modePos ? "lnurlp://" : "lnurlw://";
                             dgEBI('card_name').value=card['card_name'];
                             dgEBI('lnurlw_base').value=scheme + par.host + "/boltcards/api/v1/scan/" + card['external_id'];
                             dgEBI('kesave').click();

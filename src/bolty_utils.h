@@ -136,6 +136,8 @@ inline void print_boltcard_heuristics(const String &uri) {
       uri.startsWith("lnurlw://") || uri.indexOf("lnurlw://") >= 0;
   const bool has_lnurlp =
       uri.startsWith("lnurlp://") || uri.indexOf("lnurlp://") >= 0;
+  const bool has_https =
+      uri.startsWith("https://") || uri.indexOf("https://") >= 0;
   const int p_idx = uri.indexOf("p=");
   const int c_idx = uri.indexOf("c=");
   const bool has_p = p_idx >= 0;
@@ -145,6 +147,8 @@ inline void print_boltcard_heuristics(const String &uri) {
   Serial.println(has_lnurlw ? F("YES") : F("NO"));
   Serial.print(F("[inspect] URI has lnurlp scheme: "));
   Serial.println(has_lnurlp ? F("YES") : F("NO"));
+  Serial.print(F("[inspect] URI has https scheme: "));
+  Serial.println(has_https ? F("YES") : F("NO"));
   Serial.print(F("[inspect] URI has p= param: "));
   Serial.println(has_p ? F("YES") : F("NO"));
   Serial.print(F("[inspect] URI has c= param: "));
