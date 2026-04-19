@@ -733,8 +733,8 @@ public:
       memcpy(key_cur[3], key_cur[1], 16);
     }
     if (k4_is_zero && key_versions[4] != 0x00) {
-      Serial.println(F("[wipe] K4 is zeros but key is changed — trying K4=K1 fallback (LNBits pattern)"));
-      memcpy(key_cur[4], key_cur[1], 16);
+      Serial.println(F("[wipe] K4 is zeros but key is changed — trying K4=K2 fallback (LNBits pattern)"));
+      memcpy(key_cur[4], key_cur[2], 16);
     }
 
     selectNtagApplicationFiles();
