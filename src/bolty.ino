@@ -21,6 +21,7 @@
 #include <Arduino.h>
 #include "bolt.h"
 #include "bolty_utils.h"
+#include "PiccData.h"
 #include "build_metadata.h"
 #include "gui.h"
 #include "led.h"
@@ -1570,6 +1571,7 @@ void serial_print_help() {
   Serial.println(F("  burn              Burn card (tap card, uses keys+url)"));
   Serial.println(F("  wipe              Wipe card (tap card, uses keys)"));
   Serial.println(F("  ndef              Read NDEF message (no auth needed)"));
+  Serial.println(F("  picc              Read NDEF, decrypt p= and verify c= (uses k1/k2)"));
   Serial.println(F("  inspect           Full read-only card inspection (no auth, no writes)"));
   Serial.println(F("  derivekeys        Load deterministic keys from read-only p=/c= verification"));
   Serial.println(F("  auth              Test k0 authentication (tap card)"));
@@ -2395,6 +2397,82 @@ ndef_fail:
        led_blink(5, 100);
        serial_cmd_active = false;
      }
+    }
+    else if (cmd == "picc") {
+      if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
+      if (strlen(mBoltConfig.k1) != 32 || strlen(mBoltConfig.k2) != 32) {
+        Serial.println(F("[picc] Set k1 and k2 first (keys command)"));
+        return;
+      }
+      Serial.println(F("[picc] Tap card now..."));
+      serial_cmd_active = true;
+      led_on();
+
+      uint8_t uid[12] = {0};
+      uint8_t uid_len = 0;
+      unsigned long t0_picc = millis();
+      bool found_picc = false;
+      do {
+        found_picc = bolty_read_passive_target(bolt.nfc, uid, &uid_len);
+        if (millis() - t0_picc > 15000) break;
+      } while (!found_picc);
+
+      if (!found_picc) {
+        Serial.println(F("[picc] TIMEOUT — no card detected"));
+        led_blink(5, 100);
+        serial_cmd_active = false;
+        goto picc_done;
+      }
+
+      {
+        uint8_t ndef[256] = {0};
+        int len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
+        if (len <= 0) {
+          Serial.println(F("[picc] NDEF read failed"));
+          led_blink(5, 100);
+          serial_cmd_active = false;
+          goto picc_done;
+        }
+
+        String uri;
+        if (!ndef_extract_uri(ndef, len, uri)) {
+          Serial.println(F("[picc] No URI in NDEF"));
+          led_blink(5, 100);
+          serial_cmd_active = false;
+          goto picc_done;
+        }
+
+        Serial.print(F("[picc] URL: "));
+        Serial.println(uri);
+
+        // Parse k1 and k2 from config
+        uint8_t k1[16], k2[16];
+        if (picc_hex_to_bytes(mBoltConfig.k1, k1, 16) != 16 ||
+            picc_hex_to_bytes(mBoltConfig.k2, k2, 16) != 16) {
+          Serial.println(F("[picc] Invalid k1/k2 hex"));
+          led_blink(5, 100);
+          serial_cmd_active = false;
+          goto picc_done;
+        }
+
+        PiccData picc = picc_parse_url(k1, k2, uri.c_str());
+        picc_print(&picc);
+
+        if (picc.valid) {
+          // Verify UID matches
+          bool uid_match = (uid_len == 7);
+          for (int i = 0; uid_match && i < 7; i++) {
+            uid_match = (uid[i] == picc.uid[i]);
+          }
+          Serial.print(F("[picc] UID match: "));
+          Serial.println(uid_match ? F("YES") : F("NO"));
+          led_blink(3, 100);
+        } else {
+          led_blink(5, 100);
+        }
+        serial_cmd_active = false;
+      }
+      picc_done:;
     }
     else if (cmd == "inspect") {
       if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
