@@ -22,6 +22,7 @@
 #include "bolt.h"
 #include "bolty_utils.h"
 #include "PiccData.h"
+#include "Bolt11Decode.h"
 #include "build_metadata.h"
 #include "gui.h"
 #include "led.h"
@@ -1572,6 +1573,7 @@ void serial_print_help() {
   Serial.println(F("  wipe              Wipe card (tap card, uses keys)"));
   Serial.println(F("  ndef              Read NDEF message (no auth needed)"));
   Serial.println(F("  picc              Read NDEF, decrypt p= and verify c= (uses k1/k2)"));
+  Serial.println(F("  decodebolt11 <invoice>  Decode bolt11 invoice (amount, description, hash)"));
   Serial.println(F("  inspect           Full read-only card inspection (no auth, no writes)"));
   Serial.println(F("  derivekeys        Load deterministic keys from read-only p=/c= verification"));
   Serial.println(F("  auth              Test k0 authentication (tap card)"));
@@ -2473,6 +2475,16 @@ ndef_fail:
         serial_cmd_active = false;
       }
       picc_done:;
+    }
+    else if (cmd.startsWith("decodebolt11 ")) {
+      String invoice = cmd.substring(13);
+      invoice.trim();
+      if (invoice.length() < 10) {
+        Serial.println(F("[bolt11] Invoice too short"));
+      } else {
+        Bolt11Info info = bolt11_decode(invoice.c_str());
+        bolt11_print(&info);
+      }
     }
     else if (cmd == "inspect") {
       if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
