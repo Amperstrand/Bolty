@@ -501,7 +501,7 @@ public:
       uint8_t chunk_len = (remaining > kChunkSize) ? kChunkSize : remaining;
       uint8_t chunk[47] = {0};
       memcpy(chunk, filedata + offset, chunk_len);
-      ndef_write_ok = nfc->ntag424_WriteData(2, chunk, chunk_len);
+      ndef_write_ok = nfc->ntag424_WriteData(2, chunk, chunk_len, offset);
       if (!ndef_write_ok) {
         Serial.print(F("WriteData failed at offset "));
         Serial.println(offset);

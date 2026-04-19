@@ -92,12 +92,13 @@ def main():
         sys.exit(1)
     print(f"  Card state: {'FACTORY BLANK' if all_factory else 'POST-RESET (0x01)'}")
 
-    # If post-reset, do an extra reset first to reach known zero-key state
+    # If post-reset (0x01), wipe with zero keys to reach factory state
     if all_reset:
-        print(f"\n{BOLD}[0a] reset — return to zero-key state{RESET}")
-        resp = send_cmd(ser, "reset", 15.0)
+        print(f"\n{BOLD}[0a] wipe — return to factory state{RESET}")
+        send_cmd(ser, "keys 00000000000000000000000000000000 00000000000000000000000000000000 00000000000000000000000000000000 00000000000000000000000000000000 00000000000000000000000000000000", 3.0)
+        resp = send_cmd(ser, "wipe", 20.0)
         print(f"  {DIM}{resp.strip()}{RESET}")
-        if not step("reset SUCCESS", "SUCCESS" in resp):
+        if not step("wipe SUCCESS", "SUCCESS" in resp):
             ser.close()
             sys.exit(1)
         time.sleep(1)
@@ -137,30 +138,32 @@ def main():
 
     time.sleep(1)
 
-    # Step 4: reset
-    print(f"\n{BOLD}[4/6] reset{RESET}")
-    resp = send_cmd(ser, "reset", 15.0)
+    # Step 4: wipe — dummyburn sets key versions to 0x01 (keys are still zeros).
+    # resetNdefOnly rejects non-factory versions, so use wipe with zero keys.
+    print(f"\n{BOLD}[4/6] wipe (zero keys, to restore factory state){RESET}")
+    send_cmd(ser, "keys 00000000000000000000000000000000 00000000000000000000000000000000 00000000000000000000000000000000 00000000000000000000000000000000 00000000000000000000000000000000", 3.0)
+    resp = send_cmd(ser, "wipe", 20.0)
     print(f"  {DIM}{resp.strip()}{RESET}")
-    if not step("reset SUCCESS", "SUCCESS" in resp):
-        print(f"{RED}ABORT: reset failed{RESET}")
+    if not step("wipe SUCCESS", "SUCCESS" in resp):
+        print(f"{RED}ABORT: wipe failed{RESET}")
         ser.close()
         sys.exit(1)
 
     time.sleep(1)
 
-    # Step 5: keyver — expect 0x01 (reset sets version to 0x01)
-    print(f"\n{BOLD}[5/6] keyver (expect 0x01 after reset){RESET}")
+    # Step 5: keyver — expect 0x00 (factory after wipe)
+    print(f"\n{BOLD}[5/6] keyver (expect 0x00 after wipe){RESET}")
     resp = send_cmd(ser, "keyver", 10.0)
     print(f"  {DIM}{resp.strip()}{RESET}")
     versions = extract_key_versions(resp)
-    if not step("all keys 0x01", all(v == 0x01 for v in versions.values()) and len(versions) == 5, f"Got: {versions}"):
+    if not step("all keys 0x00", all(v == 0x00 for v in versions.values()) and len(versions) == 5, f"Got: {versions}"):
         ser.close()
         sys.exit(1)
 
     time.sleep(1)
 
-    # Step 6: check — auth with zero keys after reset
-    print(f"\n{BOLD}[6/6] check (auth after reset){RESET}")
+    # Step 6: check — auth with zero keys after wipe
+    print(f"\n{BOLD}[6/6] check (auth after wipe){RESET}")
     resp = send_cmd(ser, "check", 10.0)
     print(f"  {DIM}{resp.strip()}{RESET}")
     if not step("auth SUCCESS after reset", "SUCCESS" in resp):

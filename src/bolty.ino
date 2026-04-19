@@ -2054,22 +2054,49 @@ void handle_serial_command(String cmd) {
         if (millis() - t0_ndef > 15000) break;
        } while (!found_ndef);
       if (found_ndef) {
-        uint8_t ndef[256] = {0};
-        int len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
-        if (len <= 0) {
-          if (len == 0) {
-            Serial.println(F("[ndef] No NDEF data (NLEN=0)"));
+          uint8_t ndef[256] = {0};
+           int len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
+           if (len < 0 && strlen(mBoltConfig.k3) == 32) {
+            // PLAIN ISO read failed. SDM mirroring causes ISO ReadBinary to return
+            // unexpected data on provisioned cards. Re-detect card to reset ISO-DEP
+            // state, authenticate with key 3, then read via native DESFire ReadData.
+            Serial.println(F("[ndef] PLAIN read failed, re-detecting for k3 auth..."));
+            uint8_t redet_uid[12] = {0};
+            uint8_t redet_uid_len = 0;
+            if (bolty_read_passive_target(bolt.nfc, redet_uid, &redet_uid_len)) {
+              uint8_t k3_bytes[16] = {0};
+              bolt.setKey(k3_bytes, String(mBoltConfig.k3));
+              if (bolt.nfc->ntag424_Authenticate(k3_bytes, 3, 0x71) == 1) {
+                uint8_t raw[64] = {0};
+                uint8_t rlen = bolt.nfc->ntag424_ReadData(raw, 2, 0, sizeof(raw));
+                if (rlen >= 4) {
+                  uint16_t nlen = (static_cast<uint16_t>(raw[0]) << 8) | raw[1];
+                  if (nlen > 0 && nlen <= 252 && rlen >= 2 + nlen) {
+                    memcpy(ndef, raw + 2, nlen);
+                    len = nlen;
+                  } else if (nlen == 0) {
+                    len = 0;
+                  }
+                }
+              }
+            }
           }
-          goto ndef_fail;
-        }
+         if (len <= 0) {
+           if (len == 0) {
+             Serial.println(F("[ndef] No NDEF data (NLEN=0)"));
+           } else {
+             Serial.println(F("[ndef] FAILED — read error (file may require key 3 auth, set keys first)"));
+           }
+           goto ndef_fail;
+         }
 
-        Serial.print(F("[ndef] OK (")); Serial.print(len); Serial.println(F(" bytes)"));
-        Serial.print(F("[ndef] hex: "));
-        bolty_print_hex(bolt.nfc, ndef, len > 128 ? 128 : len);
-        Serial.print(F("[ndef] ASCII: "));
-        print_ndef_ascii(ndef, len);
-        led_blink(3, 100);
-        serial_cmd_active = false;
+         Serial.print(F("[ndef] OK (")); Serial.print(len); Serial.println(F(" bytes)"));
+         Serial.print(F("[ndef] hex: "));
+         bolty_print_hex(bolt.nfc, ndef, len > 128 ? 128 : len);
+         Serial.print(F("[ndef] ASCII: "));
+         print_ndef_ascii(ndef, len);
+         led_blink(3, 100);
+         serial_cmd_active = false;
       } else {
 ndef_fail:
        Serial.println(F("[ndef] FAILED — card not detected or read error"));
@@ -2197,7 +2224,30 @@ ndef_fail:
 
       Serial.println(F("[inspect] --- NDEF Read ---"));
       uint8_t ndef[256] = {0};
-      const int ndef_len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
+      int ndef_len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
+      if (ndef_len < 0 && strlen(mBoltConfig.k3) == 32) {
+         // PLAIN ISO read failed — re-detect card to reset ISO-DEP state,
+         // auth with key 3, then read NDEF via native DESFire ReadData.
+         uint8_t redet_uid[12] = {0};
+         uint8_t redet_uid_len = 0;
+         if (bolty_read_passive_target(bolt.nfc, redet_uid, &redet_uid_len)) {
+           uint8_t k3_bytes[16] = {0};
+           bolt.setKey(k3_bytes, String(mBoltConfig.k3));
+           if (bolt.nfc->ntag424_Authenticate(k3_bytes, 3, 0x71) == 1) {
+             uint8_t raw[64] = {0};
+             uint8_t rlen = bolt.nfc->ntag424_ReadData(raw, 2, 0, sizeof(raw));
+             if (rlen >= 4) {
+               uint16_t nlen = (static_cast<uint16_t>(raw[0]) << 8) | raw[1];
+               if (nlen > 0 && nlen <= 252 && rlen >= 2 + nlen) {
+                 memcpy(ndef, raw + 2, nlen);
+                 ndef_len = nlen;
+               } else if (nlen == 0) {
+                 ndef_len = 0;
+               }
+             }
+           }
+         }
+      }
       if (ndef_len < 0) {
         Serial.println(F("[inspect] NDEF read failed"));
       } else if (ndef_len == 0) {
@@ -2461,32 +2511,32 @@ ndef_fail:
     Serial.print(F("[burn] ")); Serial.println(bolt.get_job_status());
     Serial.println(result == JOBSTATUS_DONE ? F("[burn] SUCCESS") : F("[burn] FAILED"));
       if (result == JOBSTATUS_DONE) {
-        // Post-burn verify: auth with new key, then native ReadData to peek at NDEF.
-        bolt.selectNtagApplicationFiles();
-        const uint8_t v_auth = bolt.nfc->ntag424_Authenticate(bolt.key_new[0], 0, 0x71);
-        Serial.print(F("[burn] VERIFY — AUTH: "));
-        Serial.println(v_auth == 1 ? F("OK") : F("FAIL"));
-        if (v_auth == 1) {
-          // Read first 48 bytes of NDEF file (file 2) via native ReadData
-          uint8_t vbuf[48] = {0};
-          uint8_t vlen = bolt.nfc->ntag424_ReadData(vbuf, 2, 0, sizeof(vbuf));
-          if (vlen >= 3) {
-            int nlen = (vbuf[0] << 8) | vbuf[1];
-            Serial.print(F("[burn] VERIFY — NLEN=")); Serial.println(nlen);
-            if (nlen > 0 && nlen <= 252) {
-              Serial.print(F("[burn] VERIFY — NDEF peek OK ("));
-              Serial.print(vlen - 2); Serial.print(F(" of ")); Serial.print(nlen);
-              Serial.println(F(" bytes)"));
+        // Post-burn verify: auth with new key 0 to confirm key change worked,
+        // then read NDEF to verify the URL was written correctly.
+        const uint8_t v_auth0 = bolt.nfc->ntag424_Authenticate(bolt.key_new[0], 0, 0x71);
+        Serial.print(F("[burn] VERIFY — AUTH k0: "));
+        Serial.println(v_auth0 == 1 ? F("OK") : F("FAIL"));
+        if (v_auth0 == 1) {
+          // Re-detect card (auth may have left ISO-DEP in odd state),
+          // then try PLAIN ISO NDEF read (works now that WriteData offset bug is fixed).
+          uint8_t v_uid[12] = {0};
+          uint8_t v_uid_len = 0;
+          if (bolty_read_passive_target(bolt.nfc, v_uid, &v_uid_len)) {
+            uint8_t vbuf[256] = {0};
+            const int16_t vlen = bolt.nfc->ntag424_ReadNDEFMessage(vbuf, sizeof(vbuf));
+            if (vlen > 0) {
+              Serial.print(F("[burn] VERIFY — NDEF read OK ("));
+              Serial.print(vlen); Serial.println(F(" bytes)"));
               Serial.print(F("[burn] VERIFY — ASCII: "));
-              for (int i = 2; i < vlen; i++) {
+              for (int i = 0; i < vlen; i++) {
                 Serial.write(vbuf[i] >= 0x20 && vbuf[i] < 0x7F ? vbuf[i] : '.');
               }
               Serial.println();
+            } else if (vlen == 0) {
+              Serial.println(F("[burn] VERIFY — NDEF empty (NLEN=0)"));
             } else {
-              Serial.println(F("[burn] VERIFY — NLEN invalid or zero"));
+              Serial.println(F("[burn] VERIFY — NDEF read failed"));
             }
-          } else {
-            Serial.println(F("[burn] VERIFY — ReadData failed"));
           }
         }
       }
