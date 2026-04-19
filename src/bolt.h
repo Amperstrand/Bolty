@@ -134,6 +134,14 @@ inline bool bolty_iso_write_ndef_file(BoltyNfcReader *nfc, uint8_t *data,
   return nfc->ntag424_ISOUpdateBinary(data, static_cast<uint8_t>(length));
 }
 
+// Pre-wipe key verification result.
+struct KeyVerifyResult {
+  uint8_t key_versions[5]; // 0xFF=read fail, 0x00=factory, 0x01+=provisioned
+  bool verified[5];        // true = key ownership proven
+  bool all_verified;       // all 5 keys verified
+  bool all_factory;        // all 5 keys at version 0x00
+};
+
 class BoltDevice {
 public:
   BoltyNfcReader *nfc = nullptr;
@@ -639,6 +647,106 @@ public:
     return job_status;
   }
 
+  // Authenticate every key slot to prove we know all keys before wiping.
+  // For K3/K4, if the explicit key fails, probes K3=K1 (LNBits) and zeros.
+  // Updates key_cur[] if probing finds a working key.
+  KeyVerifyResult verify_all_keys() {
+    KeyVerifyResult vr = {};
+    memset(vr.key_versions, 0xFF, 5);
+    uint8_t zero_key[16] = {0};
+
+    Serial.println(F("[verify] Reading key versions..."));
+    for (int i = 0; i < 5; i++) {
+      vr.key_versions[i] = bolty_get_key_version(nfc, i);
+    }
+
+    vr.all_factory = true;
+    for (int i = 0; i < 5; i++) {
+      if (vr.key_versions[i] != 0x00) { vr.all_factory = false; break; }
+    }
+
+    if (vr.all_factory) {
+      Serial.println(F("[verify] All keys at factory (0x00) — card is blank."));
+      for (int i = 0; i < 5; i++) vr.verified[i] = true;
+      vr.all_verified = true;
+      return vr;
+    }
+
+    Serial.println(F("[verify] Authenticating all keys..."));
+    for (int i = 0; i < 5; i++) {
+      selectNtagApplicationFiles();
+      Serial.print(F("[verify]   K"));
+      Serial.print(i);
+      Serial.print(F(": ver=0x"));
+      if (vr.key_versions[i] < 0x10) Serial.print(F("0"));
+      Serial.print(vr.key_versions[i], HEX);
+
+      if (vr.key_versions[i] == 0x00) {
+        if (nfc->ntag424_Authenticate(zero_key, i, 0x71) == 1) {
+          vr.verified[i] = true;
+          Serial.println(F(" FACTORY-OK"));
+        } else {
+          vr.verified[i] = false;
+          Serial.println(F(" FACTORY-FAIL (desync!)"));
+        }
+        continue;
+      }
+
+      // Provisioned slot — try explicit key first.
+      if (nfc->ntag424_Authenticate(key_cur[i], i, 0x71) == 1) {
+        vr.verified[i] = true;
+        Serial.println(F(" AUTHENTICATED"));
+        continue;
+      }
+
+      // Explicit key failed. Probe K3=K1 or K4=K2 (LNBits), then zeros.
+      if (i == 3 || i == 4) {
+        const uint8_t lnbits_src = (i == 3) ? 1 : 2;
+        Serial.print(F(" probing..."));
+        selectNtagApplicationFiles();
+        if (nfc->ntag424_Authenticate(key_cur[lnbits_src], i, 0x71) == 1) {
+          Serial.print(F(" K"));
+          Serial.print(i);
+          Serial.print(F("=K"));
+          Serial.print(lnbits_src);
+          Serial.println(F(" (LNBits) OK"));
+          memcpy(key_cur[i], key_cur[lnbits_src], 16);
+          vr.verified[i] = true;
+          continue;
+        }
+        selectNtagApplicationFiles();
+        if (nfc->ntag424_Authenticate(zero_key, i, 0x71) == 1) {
+          Serial.println(F(" zeros OK"));
+          memset(key_cur[i], 0, 16);
+          vr.verified[i] = true;
+          continue;
+        }
+        Serial.println(F(" PROBE-FAIL"));
+        vr.verified[i] = false;
+      } else {
+        Serial.println(F(" FAILED (no probe for K0/K1/K2)"));
+        vr.verified[i] = false;
+      }
+    }
+
+    uint8_t ok_count = 0;
+    for (int i = 0; i < 5; i++) { if (vr.verified[i]) ok_count++; }
+    vr.all_verified = (ok_count == 5);
+
+    if (vr.all_verified) {
+      Serial.println(F("[verify] All 5 keys verified — safe to wipe."));
+    } else {
+      Serial.print(F("[verify] ABORT: "));
+      Serial.print(5 - ok_count);
+      Serial.print(F(" key(s) UNVERIFIED:"));
+      for (int i = 0; i < 5; i++) {
+        if (!vr.verified[i]) { Serial.print(F(" K")); Serial.print(i); }
+      }
+      Serial.println();
+    }
+    return vr;
+  }
+
   uint8_t wipe() {
     uint8_t uid[12] = {0};
     uint8_t uidLength = 0;
@@ -662,32 +770,25 @@ public:
       return job_status;
     }
 
-    uint8_t kv = bolty_get_key_version(nfc, 1);
-    if (kv == 0x00) {
-      uint8_t kv3 = bolty_get_key_version(nfc, 3);
-      uint8_t kv4 = bolty_get_key_version(nfc, 4);
-      if (kv3 == 0x00 && kv4 == 0x00) {
-        Serial.println(F("ABORT: All key versions are 0x00 — card already has factory keys."));
-        set_job_status_id(JOBSTATUS_GUARD_REJECT);
-        return job_status;
-      }
-      Serial.println(F("NOTE: Key 1 version is 0x00 (partial reset) — continuing with explicit keys."));
-    }
+    KeyVerifyResult vr = verify_all_keys();
 
-    Serial.print(F("Pre-wipe check OK - card key 1 version: 0x"));
-    if (kv < 0x10) {
-      Serial.print(F("0"));
-    }
-    Serial.println(kv, HEX);
-    selectNtagApplicationFiles();
-
-    if (nfc->ntag424_Authenticate(key_cur[0], 0, 0x71) != 1) {
-      Serial.println("Authentication failed.");
-      set_job_status_id(JOBSTATUS_ERROR);
+    if (vr.all_factory) {
+      set_job_status_id(JOBSTATUS_GUARD_REJECT);
       return job_status;
     }
 
-    Serial.println("Authentication successful.");
+    if (!vr.all_verified) {
+      set_job_status_id(JOBSTATUS_GUARD_REJECT);
+      return job_status;
+    }
+
+    // Re-auth K0 for wipe ops (verify cycle may have left non-K0 session active).
+    selectNtagApplicationFiles();
+    if (nfc->ntag424_Authenticate(key_cur[0], 0, 0x71) != 1) {
+      Serial.println(F("Post-verify K0 re-auth failed."));
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
+    }
     Serial.println("Disable Mirroring and SDM.");
     // Reset file 2 settings: disable SDM, keep Plain read/write access.
     // {0x00, 0x00, 0xE0} = no SDM mirroring, free access, standard file.
