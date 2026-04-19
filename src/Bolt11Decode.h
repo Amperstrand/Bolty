@@ -100,21 +100,14 @@ static inline void bolt11_parse_fields_5bit(const uint8_t* five_bit, uint16_t fi
   info->timestamp = ts;
 
   uint16_t pos = 7;
-  while (pos + 3 <= five_len) {
+  // CLN approach: stop when ≤104 values remain (105 = signature block)
+  while (five_len - pos > 104) {
     uint8_t type = five_bit[pos];
     // Length is 10 bits: next two 5-bit values
     uint16_t field_len = ((uint16_t)five_bit[pos + 1] << 5) | five_bit[pos + 2];
     pos += 3;
 
     if (pos + field_len > five_len) break;
-
-    // Signature is 104 values + 1 recovery flag = 105 values at the end
-    // Don't try to parse past it
-    if (pos + field_len + 105 > five_len && type != 1 && type != 13 && type != 6 && type != 23) {
-      // Likely hit signature territory
-      pos += field_len;
-      continue;
-    }
 
     switch (type) {
       case 1: { // 'p' = payment_hash (52 five-bit values → 32 bytes + padding)
@@ -136,11 +129,11 @@ static inline void bolt11_parse_fields_5bit(const uint8_t* five_bit, uint16_t fi
         break;
       }
       case 6: { // 'x' = expiry
-        uint8_t exp_bytes[4];
-        uint16_t exp_len = convert_5to8(five_bit + pos, field_len, exp_bytes, sizeof(exp_bytes));
+        // Direct 5-bit concatenation (per CLN pull_uint):
+        // 5-bit values ARE the integer, no byte conversion needed.
         uint32_t expiry = 0;
-        for (uint16_t i = 0; i < exp_len && i < 4; i++) {
-          expiry = (expiry << 8) | exp_bytes[i];
+        for (uint16_t i = 0; i < field_len && i < 8; i++) {
+          expiry = (expiry << 5) | five_bit[pos + i];
         }
         info->expiry = expiry;
         break;
@@ -172,31 +165,28 @@ static inline Bolt11Info bolt11_decode(const char* invoice) {
   if (p[0] != 'l' || p[1] != 'n') return info;
   p += 2;
 
-  // Skip network identifier (alpha only: bc, tb, bcrt)
-  while (*p && ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z'))) p++;
+  // Find bech32 separator: LAST '1' in the string (CLN approach).
+  // Everything before = HRP (ln + network + amount), after = data.
+  const char* sep = strrchr(p, '1');
+  if (!sep || sep - p < 2 || strlen(sep) < 7)
+    return info;
 
-  // Amount: decimal digits + optional multiplier char (m/u/n/p)
-  const char* amount_start = p;
-  while (*p && *p >= '0' && *p <= '9') p++;
-  if (*p) {
-    char lower = *p | 0x20;
-    if (lower == 'm' || lower == 'u' || lower == 'n' || lower == 'p') p++;
-  }
-
-  // Separator must be '1'
-  if (*p != '1' || !p[1]) return info;
-  const char* separator = p;
-
-  uint8_t amount_len = p - amount_start;
+  // Extract amount from HRP: skip network identifier (alpha only)
+  const char* hrp = p;
+  uint16_t hrp_len = sep - p;
+  uint16_t i = 0;
+  while (i < hrp_len && ((hrp[i] >= 'a' && hrp[i] <= 'z') || (hrp[i] >= 'A' && hrp[i] <= 'Z')))
+    i++;
+  uint8_t amount_len = hrp_len - i;
   if (amount_len > 0) {
-    info.amount_sat = bolt11_parse_amount(amount_start, amount_len);
+    info.amount_sat = bolt11_parse_amount(hrp + i, amount_len);
     info.has_amount = true;
   }
 
   // Decode bech32 data part (after separator, minus 6 checksum chars)
-  const char* data_start = separator + 1;
+  const char* data_start = sep + 1;
   uint16_t data_len = strlen(data_start);
-  if (data_len < 112) return info;
+  if (data_len < 7 + 6) return info;
   data_len -= 6;
 
   uint8_t five_bit[512];
