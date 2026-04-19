@@ -24,6 +24,8 @@ static unsigned long assessment_until = 0;
 static uint8_t assessment_rows[5] = {0};
 static unsigned long hold_countdown_until = 0;
 static uint8_t hold_countdown_rows = 0;
+static unsigned long key_local_until = 0;
+static unsigned long key_online_until = 0;
 
 static const uint8_t kLedCount = 25;
 static const uint16_t kResultMs = 600;
@@ -100,10 +102,12 @@ static inline void render() {
   const bool show_programmed = now < card_programmed_until;
   const bool show_assessment = now < assessment_until;
   const bool show_hold_countdown = now < hold_countdown_until;
+  const bool show_key_local = now < key_local_until;
+  const bool show_key_online = now < key_online_until;
 
   if (!show_success && !show_error && !show_activity && !show_blank &&
       !show_unknown && !show_programmed && !show_assessment &&
-      !show_hold_countdown) {
+      !show_hold_countdown && !show_key_local && !show_key_online) {
     M5.Led.setBrightness(1);
     M5.Led.setAllColor(0, 0, 0);
     M5.Led.display();
@@ -144,6 +148,10 @@ static inline void render() {
           break;
       }
     }
+  } else if (show_key_local) {
+    M5.Led.setAllColor(0, 255, 0);
+  } else if (show_key_online) {
+    M5.Led.setAllColor(255, 165, 0);
   } else if (show_activity) {
     M5.Led.setColor(12, 200, 200, 200);
   }
@@ -266,6 +274,14 @@ static inline void led_signal_card_programmed() {
   bolty_led_internal::card_programmed_until = millis() + bolty_led_internal::kCardPulseMs;
 }
 
+static inline void led_signal_key_local() {
+  bolty_led_internal::key_local_until = millis() + 3000;
+}
+
+static inline void led_signal_key_online() {
+  bolty_led_internal::key_online_until = millis() + 3000;
+}
+
 static inline void led_show_key_assessment(const uint8_t rows[5], uint16_t duration_ms) {
   memcpy(bolty_led_internal::assessment_rows, rows, 5);
   bolty_led_internal::assessment_until = millis() + duration_ms;
@@ -339,6 +355,8 @@ static inline void led_notify_button_press() {}
 static inline void led_signal_card_blank() {}
 static inline void led_signal_card_unknown() {}
 static inline void led_signal_card_programmed() {}
+static inline void led_signal_key_local() {}
+static inline void led_signal_key_online() {}
 static inline void led_button_cycle() {}
 static inline void led_set_held(bool) {}
 static inline void led_signal_result(bool) {}

@@ -24,8 +24,10 @@ using BoltyNfcReader = Adafruit_PN532;
 #define JOBSTATUS_ERROR 5
 #define JOBSTATUS_GUARD_REJECT 6
 
+// NTAG424 DNA Application Identifier — AN12196 §3.1, NT4H2421Gx datasheet §6.4
 static const uint8_t NTAG424_AID[7] = {0xD2, 0x76, 0x00, 0x00,
                                        0x85, 0x01, 0x01};
+// NDEF File ID: 0xE104 — NT4H2421Gx datasheet §8.6.4
 static const uint16_t NTAG424_NDEF_FILE_ID = 0xE104;
 
 static String boltstatustext[7] = {
@@ -40,6 +42,7 @@ struct sBoltConfig {
   char wallet_name[256];
   char wallet_url[256];
   char url[256];
+  char card_mode[16];
   char reset_url[256];
   char uid[17];
   char k0[33];
@@ -118,6 +121,27 @@ inline uint8_t bolty_get_key_version(BoltyNfcReader *nfc, uint8_t keyno) {
   return 0xFF;
 }
 
+inline bool bolty_iso_authenticate(BoltyNfcReader *nfc, uint8_t *key,
+                                   uint8_t keyno) {
+  return nfc->ntag424_ISOAuthenticate(key, keyno) == 1;
+}
+
+inline bool bolty_iso_write_ndef_file(BoltyNfcReader *nfc, uint8_t *data,
+                                      size_t length) {
+  if (data == nullptr || length == 0 || length > 0xFF) {
+    return false;
+  }
+  return nfc->ntag424_ISOUpdateBinary(data, static_cast<uint8_t>(length));
+}
+
+// Pre-wipe key verification result.
+struct KeyVerifyResult {
+  uint8_t key_versions[5]; // 0xFF=read fail, 0x00=factory, 0x01+=provisioned
+  bool verified[5];        // true = key ownership proven
+  bool all_verified;       // all 5 keys verified
+  bool all_factory;        // all 5 keys at version 0x00
+};
+
 class BoltDevice {
 public:
   BoltyNfcReader *nfc = nullptr;
@@ -183,6 +207,10 @@ public:
 
   bool selectNdefFileOnly() { return nfc->ntag424_ISOSelectNDEFFile(); }
 
+  // Change all 5 application keys in reverse order (4→0) so the auth key
+  // (K0) is changed last. Continues through individual failures to avoid
+  // leaving the card in a partial-wipe state.
+  // Ref: NT4H2421Gx datasheet §7.3.2, AN12196 §6.3
   bool changeAllKeys(uint8_t target_key_version) {
     Serial.print(F("[changeAllKeys] Changing keys 4→3→2→1→0, target version=0x"));
     if (target_key_version < 0x10) Serial.print('0');
@@ -198,7 +226,7 @@ public:
       for (int b = 0; b < 16; b++) { if (key_new[key_index][b] < 0x10) Serial.print('0'); Serial.print(key_new[key_index][b], HEX); }
       Serial.println();
       if (!nfc->ntag424_ChangeKey(key_cur[key_index], key_new[key_index],
-                                   key_index, target_key_version)) {
+                                  key_index, target_key_version)) {
         Serial.print(F("[changeAllKeys] FAILED on key "));
         Serial.print(key_index);
         Serial.println(F(" (continuing with remaining keys)"));
@@ -261,8 +289,6 @@ public:
     delay(10);
 #endif
     Serial.println("PN532 UART mode (Serial2)");
-    // Pre-initialize UART2 with explicit pins before library calls ser_dev->begin(115200)
-    // GPIO 17 (TX) -> PN532 RX, GPIO 16 (RX) <- PN532 TX
     extern HardwareSerial PN532Serial;
     PN532Serial.begin(115200, SERIAL_8N1, PN532_UART_RX, PN532_UART_TX);
     while (PN532Serial.available()) PN532Serial.read();
@@ -450,33 +476,50 @@ public:
 
     Serial.println(F("Pre-burn check OK - card has factory keys"));
 
-    selectNtagApplicationFiles();
-
-    uint8_t auth_result = nfc->ntag424_Authenticate(key_cur[0], 0, 0x71);
-    if (auth_result != 1) {
-      Serial.println(F("[burn] First auth attempt failed, retrying with re-activation..."));
-      delay(50);
-      if (!bolty_read_passive_target(nfc, uid, &uidLength)) {
-        Serial.println(F("[burn] Re-activation failed — card lost"));
-        set_job_status_id(JOBSTATUS_ERROR);
-        return job_status;
-      }
-      selectNtagApplicationFiles();
-      auth_result = nfc->ntag424_Authenticate(key_cur[0], 0, 0x71);
-    }
-
-    if (auth_result != 1) {
-      Serial.println(F("[burn] Authentication failed after retry."));
+    if (!selectNtagApplicationFiles()) {
+      Serial.println(F("Failed to select NTAG application files."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
-    Serial.println(F("[burn] Authentication successful."));
+
+    // Native AuthenticateEV2First: cmd=0x71 (NT4H2421Gx §7.3.1.1).
+    // Using key_cur[0] (factory zero key) with key number 0.
+    const uint8_t auth_result = nfc->ntag424_Authenticate(key_cur[0], 0, 0x71);
+    if (auth_result != 1) {
+      Serial.println(F("Native auth with factory key failed."));
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
+    }
+    Serial.println(F("Auth OK."));
 
     const uint8_t uriIdentifier = 0;
+    // PICC data offset: 7 (NDEF header) + lnurl_length + "?p=" (2) + 16*2 hex digits
+    // This tells the tag where to inject the UID+read counter during SDM.
+    // Ref: NT4H2421Gx datasheet §8.7.2, SDM PICCDataOffset
     const int piccDataOffset = lnurl.length() + 10;
+    // SDM MAC offset: piccDataOffset + UID_hex(14) + read_ctr_hex(6)
+    // = lnurl_length + 10 + 14 + 6 + "&c="(3) = lnurl_length + 33
+    // But we account for the full "?p=..." + "&c=..." structure:
+    // lnurl + "?p=" (2) + 32 hex chars + "&c=" (3) + 16 hex chars
+    // The MAC is appended at the end of the 16 hex c= placeholder.
+    // Net: lnurl_length + 45
     const int sdmMacOffset = lnurl.length() + 45;
+    // Bolt card LNURL placeholder: p=32-hex-char PICC data placeholder,
+    // c=16-hex-char MAC placeholder. These get replaced by the tag's
+    // Secure Dynamic Messaging (SDM) during read.
+    // Ref: bolt-card specification, NT4H2421Gx §8.7
     lnurl += "?p=00000000000000000000000000000000&c=0000000000000000";
     const uint8_t len = lnurl.length();
+    // NDEF Record Header — NFC Forum NDEF specification §3.2
+    // Byte 0: 0x00 = MB=0, ME=0 (more records follow; actually this IS the
+    //         only record but we set MB/ME in byte 2's TNF)
+    // Byte 1: len + 5 = total payload after this byte (record payload size)
+    // Byte 2: 0xD1 = MB=1, ME=1, CF=0, SR=1, IL=0, TNF=0x01 (NFC Well-Known)
+    // Byte 3: 0x01 = type length = 1 byte ("U")
+    // Byte 4: len + 1 = payload length (type "U" + URL string)
+    // Byte 5: 0x55 = 'U' — NFC Well-Known Type "U" (URI record)
+    // Byte 6: 0x00 = URI Identifier Code = "No prepending" (raw URL)
+    // Ref: NFC Forum NDEF Technical Specification §3.2.1
     uint8_t ndefheader[7] = {
         0x0,
         static_cast<uint8_t>(len + 5),
@@ -487,72 +530,94 @@ public:
         uriIdentifier,
     };
     uint8_t *filedata = (uint8_t *)malloc(len + sizeof(ndefheader));
+    if (filedata == nullptr) {
+      Serial.println(F("Failed to allocate NDEF buffer."));
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
+    }
     memcpy(filedata, ndefheader, sizeof(ndefheader));
     memcpy(filedata + sizeof(ndefheader), lnurl.c_str(), len);
+    const size_t ndef_file_length = len + sizeof(ndefheader);
 
-    // Native WriteData (CLA=0x90, INS=0x8D) to NDEF file (file 2).
-    // MFRC522 FIFO is 64 bytes; APDU header (13) + PCB/CID (2) + CRC (2) = 17
-    // bytes overhead → max 47 bytes per WriteData payload.
-    const uint8_t total_len = len + sizeof(ndefheader);
-    const uint8_t kChunkSize = 47;
     bool ndef_write_ok = true;
-    for (uint8_t offset = 0; offset < total_len && ndef_write_ok; offset += kChunkSize) {
-      uint8_t remaining = total_len - offset;
-      uint8_t chunk_len = (remaining > kChunkSize) ? kChunkSize : remaining;
-      uint8_t chunk[47] = {0};
-      memcpy(chunk, filedata + offset, chunk_len);
-      ndef_write_ok = nfc->ntag424_WriteData(2, chunk, chunk_len, offset);
-      if (!ndef_write_ok) {
-        Serial.print(F("WriteData failed at offset "));
-        Serial.println(offset);
+    // MFRC522 FIFO-safe chunk size: 47 bytes.
+    // MFRC522 has a 64-byte FIFO (MFRC522 datasheet §8.6.1).
+    // WriteData APDU: CLA(1)+INS(1)+P1(1)+P2(1)+Lc(1)+header(7)+data(N)+Le(1)
+    // = 12 + N. ISO-DEP adds PCB(1)+CID(1)+CRC(2)=4 bytes overhead.
+    // Total: 4 + 12 + N ≤ 64 → N ≤ 48. Use 47 for safety margin.
+    // Matches the chunk size used by ntag424_FormatNDEF() in ntag424_core.cpp.
+    // Confirmed by reference: Obsttube/MFRC522_NTAG424DNA line 1598.
+    const uint8_t kWriteChunkSize = 47;
+    size_t write_offset = 0;
+    while (write_offset < ndef_file_length) {
+      const uint8_t chunk_len =
+          (ndef_file_length - write_offset > kWriteChunkSize)
+              ? kWriteChunkSize
+              : static_cast<uint8_t>(ndef_file_length - write_offset);
+      if (!nfc->ntag424_WriteData(2, filedata + write_offset, chunk_len,
+                                   static_cast<int>(write_offset))) {
+        ndef_write_ok = false;
+        break;
       }
+      write_offset += chunk_len;
     }
     free(filedata);
 
     if (!ndef_write_ok) {
-      Serial.println(F("NDEF write failed."));
+      Serial.println(F("NDEF write failed via native WriteData."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
     Serial.println(F("NDEF written successfully."));
-
-    // Re-authenticate after writes to refresh session for native management
-    // commands (ChangeFileSettings, ChangeKey).
-    selectNtagApplicationFiles();
-    if (nfc->ntag424_Authenticate(key_cur[0], 0, 0x71) != 1) {
-      Serial.println(F("Re-auth after write failed."));
-      set_job_status_id(JOBSTATUS_ERROR);
-      return job_status;
-    }
-    Serial.println(F("Re-auth OK."));
-
+    // ChangeFileSettings for file 2 (NDEF) — NT4H2421Gx datasheet §7.6.2,
+    // Table 49, and §8.7.2 Table 71 for SDM configuration.
+    //
+    // Byte layout (after FileNo):
+    //   [0]  0x40 = FileOption: SDM enabled (bit 6), Plain read/write
+    //   [1]  0x00 = Access Rights: free read (0x0), free write (0x0)
+    //   [2]  0xE0 = Write access key=0xE (key 0 for write), Read=0x0 (free)
+    //   [3]  0xC1 = SDMOptions: UID mirror + ReadCnt mirror + MAC + encrypt
+    //   [4]  0xFF = SDMAccessRights: SDMReadRetr key=0xF (free)
+    //   [5]  0x12 = SDMCounterRetr: retrieve read counter
+    //   [6-8]   PICCDataOffset (3 bytes, LE) — where SDM injects UID+counter
+    //   [9-11]  SDMMACInputOffset (3 bytes, LE) — MAC input location
+    //   [12-14] SDMMACOffset (3 bytes, LE) — where SDM writes the CMAC
+    // Ref: NT4H2421Gx datasheet §8.7.2 Table 71, bolt-card specification
     uint8_t fileSettings[] = {0x40,
-                              0xE0,
+                              0x00,
                               0xE0,
                               0xC1,
                               0xFF,
                               0x12,
                               static_cast<uint8_t>(piccDataOffset & 0xff),
                               static_cast<uint8_t>((piccDataOffset >> 8) & 0xff),
-                               static_cast<uint8_t>((piccDataOffset >> 16) & 0xff),
-                               static_cast<uint8_t>(sdmMacOffset & 0xff),
-                               static_cast<uint8_t>((sdmMacOffset >> 8) & 0xff),
-                               static_cast<uint8_t>((sdmMacOffset >> 16) & 0xff),
-                               static_cast<uint8_t>(sdmMacOffset & 0xff),
-                               static_cast<uint8_t>((sdmMacOffset >> 8) & 0xff),
-                               static_cast<uint8_t>((sdmMacOffset >> 16) & 0xff)};
+                              static_cast<uint8_t>((piccDataOffset >> 16) & 0xff),
+                              static_cast<uint8_t>(sdmMacOffset & 0xff),
+                              static_cast<uint8_t>((sdmMacOffset >> 8) & 0xff),
+                              static_cast<uint8_t>((sdmMacOffset >> 16) & 0xff),
+                              static_cast<uint8_t>(sdmMacOffset & 0xff),
+                              static_cast<uint8_t>((sdmMacOffset >> 8) & 0xff),
+                              static_cast<uint8_t>((sdmMacOffset >> 16) & 0xff)};
     nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
                                     (uint8_t)sizeof(fileSettings),
+                                    // NTAG424_COMM_MODE_FULL: AES-128 encrypt +
+                                    // CMAC on command and response.
+                                    // Ref: NT4H2421Gx datasheet §7.6.2
                                     (uint8_t)NTAG424_COMM_MODE_FULL);
 
+    // Change all 5 application keys. Key version 0x01 marks the card as
+    // provisioned (factory = 0x00). Keys changed in reverse order (4→0)
+    // to avoid losing access mid-operation.
+    // Ref: NT4H2421Gx datasheet §7.3.2, AN12196 §6.3
     if (!changeAllKeys(0x01)) {
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
 
+    // Verify new keys work: AuthenticateEV2First with new key 0, then
+    // probe all key versions to confirm the burn succeeded.
     selectNtagApplicationFiles();
     Serial.println(F("[burn] Post-burn verification..."));
-
     const uint8_t authed = nfc->ntag424_Authenticate(key_new[0], 0, 0x71);
     if (authed != 1) {
       Serial.println(F("[burn] VERIFY FAIL: new-key auth failed"));
@@ -561,8 +626,8 @@ public:
     }
     Serial.println(F("[burn] New-key auth OK"));
 
-    bool all_verified = true;
-    for (int i = 0; i < 5; i++) {
+    bool burn_verified = true;
+    for (int i = 1; i < 5; i++) {
       uint8_t v = bolty_get_key_version(nfc, i);
       if (v != 0x01) {
         Serial.print(F("[burn] VERIFY FAIL: Key "));
@@ -571,11 +636,11 @@ public:
         if (v < 0x10) Serial.print('0');
         Serial.print(v, HEX);
         Serial.println(F(" — expected 0x01"));
-        all_verified = false;
+        burn_verified = false;
       }
     }
 
-    if (all_verified) {
+    if (burn_verified) {
       Serial.println(F("[burn] VERIFY OK: All keys confirmed at target version 0x01"));
       set_job_status_id(JOBSTATUS_DONE);
     } else {
@@ -633,6 +698,9 @@ public:
     Serial.println(F("Authentication successful (factory zero key)."));
 
     Serial.println(F("Disabling SDM and resetting file settings..."));
+    // Reset file 2 settings: disable SDM, keep Plain read/write access.
+    // {0x00, 0x00, 0xE0} = no SDM mirroring, free access, standard file.
+    // Ref: NT4H2421Gx datasheet §7.6.2 Table 49
     uint8_t fileSettings[] = {0x00, 0x00, 0xE0};
     nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
                                     (uint8_t)sizeof(fileSettings),
@@ -659,6 +727,106 @@ public:
     return job_status;
   }
 
+  // Authenticate every key slot to prove we know all keys before wiping.
+  // For K3/K4, if the explicit key fails, probes K3=K1 (LNBits) and zeros.
+  // Updates key_cur[] if probing finds a working key.
+  KeyVerifyResult verify_all_keys() {
+    KeyVerifyResult vr = {};
+    memset(vr.key_versions, 0xFF, 5);
+    uint8_t zero_key[16] = {0};
+
+    Serial.println(F("[verify] Reading key versions..."));
+    for (int i = 0; i < 5; i++) {
+      vr.key_versions[i] = bolty_get_key_version(nfc, i);
+    }
+
+    vr.all_factory = true;
+    for (int i = 0; i < 5; i++) {
+      if (vr.key_versions[i] != 0x00) { vr.all_factory = false; break; }
+    }
+
+    if (vr.all_factory) {
+      Serial.println(F("[verify] All keys at factory (0x00) — card is blank."));
+      for (int i = 0; i < 5; i++) vr.verified[i] = true;
+      vr.all_verified = true;
+      return vr;
+    }
+
+    Serial.println(F("[verify] Authenticating all keys..."));
+    for (int i = 0; i < 5; i++) {
+      selectNtagApplicationFiles();
+      Serial.print(F("[verify]   K"));
+      Serial.print(i);
+      Serial.print(F(": ver=0x"));
+      if (vr.key_versions[i] < 0x10) Serial.print(F("0"));
+      Serial.print(vr.key_versions[i], HEX);
+
+      if (vr.key_versions[i] == 0x00) {
+        if (nfc->ntag424_Authenticate(zero_key, i, 0x71) == 1) {
+          vr.verified[i] = true;
+          Serial.println(F(" FACTORY-OK"));
+        } else {
+          vr.verified[i] = false;
+          Serial.println(F(" FACTORY-FAIL (desync!)"));
+        }
+        continue;
+      }
+
+      // Provisioned slot — try explicit key first.
+      if (nfc->ntag424_Authenticate(key_cur[i], i, 0x71) == 1) {
+        vr.verified[i] = true;
+        Serial.println(F(" AUTHENTICATED"));
+        continue;
+      }
+
+      // Explicit key failed. Probe K3=K1 or K4=K2 (LNBits), then zeros.
+      if (i == 3 || i == 4) {
+        const uint8_t lnbits_src = (i == 3) ? 1 : 2;
+        Serial.print(F(" probing..."));
+        selectNtagApplicationFiles();
+        if (nfc->ntag424_Authenticate(key_cur[lnbits_src], i, 0x71) == 1) {
+          Serial.print(F(" K"));
+          Serial.print(i);
+          Serial.print(F("=K"));
+          Serial.print(lnbits_src);
+          Serial.println(F(" (LNBits) OK"));
+          memcpy(key_cur[i], key_cur[lnbits_src], 16);
+          vr.verified[i] = true;
+          continue;
+        }
+        selectNtagApplicationFiles();
+        if (nfc->ntag424_Authenticate(zero_key, i, 0x71) == 1) {
+          Serial.println(F(" zeros OK"));
+          memset(key_cur[i], 0, 16);
+          vr.verified[i] = true;
+          continue;
+        }
+        Serial.println(F(" PROBE-FAIL"));
+        vr.verified[i] = false;
+      } else {
+        Serial.println(F(" FAILED (no probe for K0/K1/K2)"));
+        vr.verified[i] = false;
+      }
+    }
+
+    uint8_t ok_count = 0;
+    for (int i = 0; i < 5; i++) { if (vr.verified[i]) ok_count++; }
+    vr.all_verified = (ok_count == 5);
+
+    if (vr.all_verified) {
+      Serial.println(F("[verify] All 5 keys verified — safe to wipe."));
+    } else {
+      Serial.print(F("[verify] ABORT: "));
+      Serial.print(5 - ok_count);
+      Serial.print(F(" key(s) UNVERIFIED:"));
+      for (int i = 0; i < 5; i++) {
+        if (!vr.verified[i]) { Serial.print(F(" K")); Serial.print(i); }
+      }
+      Serial.println();
+    }
+    return vr;
+  }
+
   uint8_t wipe() {
     uint8_t uid[12] = {0};
     uint8_t uidLength = 0;
@@ -682,106 +850,61 @@ public:
       return job_status;
     }
 
-    uint8_t key_versions[5] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    bool all_factory = true;
-    bool any_factory = false;
+    KeyVerifyResult vr = verify_all_keys();
 
-    Serial.println(F("[wipe] Probing all 5 key versions..."));
-    for (int i = 0; i < 5; i++) {
-      key_versions[i] = bolty_get_key_version(nfc, i);
-      Serial.print(F("[wipe] Key "));
-      Serial.print(i);
-      Serial.print(F(" version: 0x"));
-      if (key_versions[i] < 0x10) Serial.print('0');
-      Serial.println(key_versions[i], HEX);
-
-      if (key_versions[i] != 0x00) {
-        all_factory = false;
-      } else {
-        any_factory = true;
-      }
-    }
-
-    if (all_factory) {
-      Serial.println(F("[wipe] Card is fully factory — no keys to wipe"));
+    if (vr.all_factory) {
       set_job_status_id(JOBSTATUS_GUARD_REJECT);
       return job_status;
     }
 
-    if (any_factory) {
-      Serial.println(F("[wipe] Mixed key state detected — proceeding with adaptive wipe"));
-    } else {
-      Serial.println(F("[wipe] Pre-wipe check OK — all keys appear changed"));
+    if (!vr.all_verified) {
+      set_job_status_id(JOBSTATUS_GUARD_REJECT);
+      return job_status;
     }
 
-    for (int i = 0; i < 5; i++) {
-      if (key_versions[i] == 0x00) {
-        memset(key_cur[i], 0, 16);
-        Serial.print(F("[wipe] Key "));
-        Serial.print(i);
-        Serial.println(F(" already factory — skipping"));
-      }
-    }
-
-    bool k3_is_zero = true, k4_is_zero = true;
-    for (int b = 0; b < 16; b++) {
-      if (key_cur[3][b] != 0) k3_is_zero = false;
-      if (key_cur[4][b] != 0) k4_is_zero = false;
-    }
-    if (k3_is_zero && key_versions[3] != 0x00) {
-      Serial.println(F("[wipe] K3 is zeros but key is changed — trying K3=K1 fallback (LNBits pattern)"));
-      memcpy(key_cur[3], key_cur[1], 16);
-    }
-    if (k4_is_zero && key_versions[4] != 0x00) {
-      Serial.println(F("[wipe] K4 is zeros but key is changed — trying K4=K2 fallback (LNBits pattern)"));
-      memcpy(key_cur[4], key_cur[2], 16);
-    }
-
+    // Re-auth K0 for wipe ops (verify cycle may have left non-K0 session active).
     selectNtagApplicationFiles();
-
-    uint8_t auth_result = nfc->ntag424_Authenticate(key_cur[0], 0, 0x71);
-    if (auth_result != 1) {
-      Serial.println(F("[wipe] First auth attempt failed, retrying with re-activation..."));
-      delay(50);
-      if (!bolty_read_passive_target(nfc, uid, &uidLength)) {
-        Serial.println(F("[wipe] Re-activation failed — card lost"));
-        set_job_status_id(JOBSTATUS_ERROR);
-        return job_status;
-      }
-      selectNtagApplicationFiles();
-      auth_result = nfc->ntag424_Authenticate(key_cur[0], 0, 0x71);
+    if (nfc->ntag424_Authenticate(key_cur[0], 0, 0x71) != 1) {
+      Serial.println(F("Post-verify K0 re-auth failed."));
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
     }
+    Serial.println("Disable Mirroring and SDM.");
+    // Reset file 2 settings: disable SDM, keep Plain read/write access.
+    // {0x00, 0x00, 0xE0} = no SDM mirroring, free access, standard file.
+    // Ref: NT4H2421Gx datasheet §7.6.2 Table 49
+    uint8_t fileSettings[] = {0x00, 0x00, 0xE0};
+    nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
+                                    (uint8_t)sizeof(fileSettings),
+                                    (uint8_t)NTAG424_COMM_MODE_FULL);
 
-    if (auth_result != 1) {
-      Serial.println(F("[wipe] Authentication failed after retry."));
+    // Reset all keys to factory defaults (key version 0x00 = factory state).
+    // Ref: NT4H2421Gx datasheet §7.3.2
+    if (!changeAllKeys(0x00)) {
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
 
-    Serial.println(F("[wipe] Authentication successful."));
-    Serial.println("Disable Mirroring and SDM.");
-    uint8_t fileSettings[] = {0x00, 0x00, 0xE0};
-    const uint8_t cfs_result = nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
-                                    (uint8_t)sizeof(fileSettings),
-                                    (uint8_t)NTAG424_COMM_MODE_FULL);
-    Serial.print(F("[wipe] ChangeFileSettings result: "));
-    Serial.println(cfs_result);
-
-    changeAllKeys(0x00); // intentional: verification below reports per-key results
-
+    // Re-authenticate with the new (factory zero) key. Changing key 0
+    // invalidates the old auth session, but FormatNDEF needs an active
+    // session because the NDEF file access rights require key 0 for write.
+    // Ref: NT4H2421Gx datasheet §7.3.2 — "If the key that was used for
+    //   the active authentication is changed, the PICC terminates the
+    //   transaction (SDM state is reset)."
     selectNtagApplicationFiles();
-    Serial.println(F("[wipe] Formatting NDEF..."));
+    if (nfc->ntag424_Authenticate(key_new[0], 0, 0x71) != 1) {
+      Serial.println("Re-authentication after key change failed.");
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
+    }
+
     if (nfc->ntag424_FormatNDEF()) {
-      Serial.println(F("[wipe] NDEF formatted OK"));
-      job_perc = 100;
-    } else {
-      Serial.println(F("[wipe] NDEF format failed (may be OK if already blank)"));
       job_perc = 100;
     }
 
+    // Post-wipe verification: confirm all keys are at factory version 0x00.
     selectNtagApplicationFiles();
     Serial.println(F("[wipe] Post-wipe verification..."));
-
     uint8_t zero_key[16] = {0};
     const uint8_t authed = nfc->ntag424_Authenticate(zero_key, 0, 0x71);
     if (authed != 1) {

@@ -67,23 +67,23 @@
 // ESP32-DevKitC V4 + PN532 V1.0 (software SPI via 4-pin constructor)
 //
 // PN532 header pin order (left to right, silk-screen side up):
-//   VCC  GND  SCK  MISO  MOSI  NSS  RST  IRQ
+//   SCK  MISO  MOSI  NSS  IRQ  RST  GND  5V
 //
-// Wire color convention (sequential from VCC):
-//   Brown  Black  White  Gray  Purple  Blue  Green  Yellow
+// Wire colors (reading from 5V pin toward SCK):
+//   Brown  Black  White  Gray  Red  Orange  Yellow  Green
 //
-// Pin mapping (chosen for zero wire twist — all GPIOs adjacent):
+// Pin mapping:
 //
 //   PN532     Wire      ESP32 GPIO   Function
 //   ─────     ────      ──────────   ────────
-//   VCC       Brown     5V           Power (or 3V3)
+//   5V        Brown     5V           Power
 //   GND       Black     GND          Ground
-//   SCK       White     GPIO 19      SPI Clock (software)
-//   MISO      Gray      GPIO 18      SPI Data In
-//   MOSI      Purple    GPIO 17      SPI Data Out
-//   NSS/CS    Blue      GPIO 25      Chip Select
-//   RST       Green     GPIO 26      Reset (active low)
-//   IRQ       Yellow    GPIO 16      Interrupt (optional)
+//   RST       White     GPIO 26      Reset (active low)
+//   IRQ       Gray      GPIO 16      Interrupt (optional)
+//   NSS/CS    Red       GPIO 25      Chip Select
+//   MOSI      Orange    GPIO 17      SPI Data Out
+//   MISO      Yellow    GPIO 18      SPI Data In
+//   SCK       Green     GPIO 19      SPI Clock (software)
 //
 // Notes:
 //   - Uses software bit-bang SPI at 100 kHz (Adafruit 4-pin constructor).

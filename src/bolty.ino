@@ -29,15 +29,22 @@
 #include "FS.h"
 #include "SPIFFS.h"
 
+#if HAS_WEB_LOOKUP
+#include <WiFi.h>
+#include <HTTPClient.h>
+#endif
+
 #if HAS_WIFI
 #include <WiFi.h>
 #include <Wire.h>
 #include <esp_wifi.h>
+#if HAS_DISPLAY
 #include <qrcode_rep.h>
+#endif
 #define DYNAMIC_JSON_DOCUMENT_SIZE 1024
 #include "ArduinoJson.h"
 #include "AsyncJson.h"
-#include "ESPAsyncWebSrv.h"
+#include "ESPAsyncWebServer.h"
 #include <WiFiAP.h>
 #define DEST_FS_USES_SPIFFS
 #include <ESP32-targz.h>
@@ -147,6 +154,15 @@ int signal_restart_delayed = 0;
 
 bool bolty_hw_ready = false;
 static bool atom_hold_action_fired = false;
+
+// Current issuer key — RAM only, ephemeral, lost on reboot
+static uint8_t current_issuer_key[16] = {0};
+static bool has_issuer_key = false;
+
+#if HAS_WEB_LOOKUP
+static bool wifi_connected = false;
+static char web_lookup_url[128] = "https://boltcardpoc.psbt.me/api/keys";
+#endif
 
 enum class IdleCardKind : uint8_t {
   none = 0,
@@ -549,6 +565,7 @@ void loadBoltConfig(uint8_t slot) {
     Serial.println(" not found");
     strcpy(mBoltConfig.card_name, "*new*");
     mBoltConfig.url[0] = 0;
+    strcpy(mBoltConfig.card_mode, "withdraw");
     mBoltConfig.uid[0] = 0;
     mBoltConfig.k0[0] = 0;
     mBoltConfig.k1[0] = 0;
@@ -562,6 +579,9 @@ void loadBoltConfig(uint8_t slot) {
     strcpy(mBoltConfig.wifi_ssid, "Tollgate");
     mBoltConfig.wifi_password[0] = 0;
     mBoltConfig.wifi_probe_enabled = false;
+  }
+  if (mBoltConfig.card_mode[0] == '\0') {
+    strcpy(mBoltConfig.card_mode, "withdraw");
   }
   dumpconfig();
 }
@@ -667,6 +687,8 @@ String web_keysetup_processor(const String &var) {
     return mBoltConfig.wallet_url;
   if (var == "uid")
     return mBoltConfig.uid;
+  if (var == "card_mode")
+    return strlen(mBoltConfig.card_mode) ? mBoltConfig.card_mode : "withdraw";
   return processor_default(var);
 }
 #endif
@@ -719,6 +741,8 @@ String processor_default(const String &var){
     return mBoltConfig.card_name;
   if (var == "url")
     return mBoltConfig.url;
+  if (var == "card_mode")
+    return strlen(mBoltConfig.card_mode) ? mBoltConfig.card_mode : "withdraw";
   if (var == "ks0")
     return shortenkeys(mBoltConfig.k0);
   if (var == "ks1")
@@ -1423,7 +1447,11 @@ void setup(void) {
         }
         if (data.containsKey("card_name"))
           strcpy(mBoltConfig.card_name, data["card_name"]);
-        if (data.containsKey("lnurlw_base"))
+        if (data.containsKey("card_mode"))
+          strncpy(mBoltConfig.card_mode, data["card_mode"], sizeof(mBoltConfig.card_mode));
+        if (data.containsKey("lnurlp_base"))
+          strcpy(mBoltConfig.url, data["lnurlp_base"]);
+        else if (data.containsKey("lnurlw_base"))
           strcpy(mBoltConfig.url, data["lnurlw_base"]);
         if (data.containsKey("wallet_name"))
           strcpy(mBoltConfig.wallet_name, data["wallet_name"]);
@@ -1537,6 +1565,7 @@ void serial_print_help() {
   Serial.println(F("  uid               Scan card and print UID"));
   Serial.println(F("  status            Print current config and status"));
   Serial.println(F("  keys <k0> <k1> <k2> <k3> <k4>  Set 5 keys (32-char hex each)"));
+  Serial.println(F("  issuer <hex32>     Set issuer key for deterministic per-card derivation"));
   Serial.println(F("  url <lnurl>        Set LNURL for burn"));
   Serial.println(F("  burn              Burn card (tap card, uses keys+url)"));
   Serial.println(F("  wipe              Wipe card (tap card, uses keys)"));
@@ -1549,6 +1578,11 @@ void serial_print_help() {
   Serial.println(F("  diagnose          Auth-based state detection (for recovery work)"));
   Serial.println(F("  probe             Probe last assessed card URI once"));
   Serial.println(F("  probe on|off      Enable/disable auto probe after assessment"));
+  #if HAS_WEB_LOOKUP
+  Serial.println(F("  wifi <ssid> <pass> Connect to WiFi for web key lookup"));
+  Serial.println(F("  wifi off          Disconnect WiFi"));
+  Serial.println(F("  keyserver <url>   Set web key lookup URL"));
+  #endif
   Serial.println(F("  --- Safety / Testing ---"));
   Serial.println(F("  check             Auth with factory zero keys (confirm card is blank)"));
   Serial.println(F("  dummyburn         Burn with zero keys + dummy URL (test write path)"));
@@ -1570,6 +1604,24 @@ void serial_print_status() {
   Serial.print(F("  k2: ")); Serial.println(mBoltConfig.k2);
   Serial.print(F("  k3: ")); Serial.println(mBoltConfig.k3);
   Serial.print(F("  k4: ")); Serial.println(mBoltConfig.k4);
+  Serial.print(F("  Issuer key: "));
+  if (has_issuer_key) {
+    Serial.println(convertIntToHex(current_issuer_key, 16));
+  } else {
+    Serial.println(F("(none)"));
+  }
+  #if HAS_WEB_LOOKUP
+  Serial.print(F("  WiFi: "));
+  if (wifi_connected) {
+    Serial.print(F("connected ("));
+    Serial.print(WiFi.localIP());
+    Serial.println(F(")"));
+    Serial.print(F("  Keyserver: "));
+    Serial.println(web_lookup_url);
+  } else {
+    Serial.println(F("not connected"));
+  }
+  #endif
   Serial.println();
 }
 
@@ -1588,7 +1640,55 @@ static const uint8_t BOLTCARD_ISSUER_KEY_DEV[16] = {
   0x00, 0x00, 0x00, 0x00,
   0x00, 0x00, 0x00, 0x01,
 };
-static const uint32_t BOLTCARD_VERSION_CANDIDATES[2] = {1, 0};
+static const uint8_t BOLTCARD_ISSUER_KEY_BOLTPOC[16] = {
+  0xB0, 0x73, 0x39, 0x59,
+  0x68, 0x6C, 0x5D, 0xA2,
+  0x74, 0x12, 0x30, 0x84,
+  0xB5, 0xC0, 0x78, 0x20,
+};
+static const uint8_t BOLTCARD_ISSUER_KEY_BOLTPOC2[16] = {
+  0x0A, 0x27, 0x62, 0x06,
+  0xCC, 0xAE, 0x41, 0x73,
+  0x9B, 0x35, 0x41, 0xE2,
+  0x85, 0x22, 0x3E, 0xEE,
+};
+static const uint8_t BOLTCARD_ISSUER_KEY_PROXY[16] = {
+  0x55, 0x73, 0x45, 0x71,
+  0xCE, 0x72, 0xED, 0x36,
+  0x49, 0x94, 0xCF, 0x2F,
+  0x20, 0x91, 0x40, 0x92,
+};
+static const uint8_t BOLTCARD_ISSUER_KEY_PROXY2[16] = {
+  0x43, 0x71, 0xF0, 0x15,
+  0x9A, 0x98, 0xA8, 0x50,
+  0x09, 0xFF, 0x2B, 0xCF,
+  0x21, 0xC5, 0xB3, 0x01,
+};
+static const uint8_t BOLTCARD_ISSUER_KEY_PROXY3[16] = {
+  0xCE, 0x20, 0xDA, 0x28,
+  0x08, 0x11, 0x14, 0x4B,
+  0x0A, 0xAD, 0x13, 0xFD,
+  0x87, 0x4E, 0xAE, 0xCA,
+};
+static const uint32_t BOLTCARD_VERSION_CANDIDATES[4] = {1, 0, 2, 3};
+static const uint8_t * const BOLTCARD_ISSUER_KEYS[7] = {
+  BOLTCARD_ISSUER_KEY_ZERO,
+  BOLTCARD_ISSUER_KEY_DEV,
+  BOLTCARD_ISSUER_KEY_BOLTPOC,
+  BOLTCARD_ISSUER_KEY_BOLTPOC2,
+  BOLTCARD_ISSUER_KEY_PROXY,
+  BOLTCARD_ISSUER_KEY_PROXY2,
+  BOLTCARD_ISSUER_KEY_PROXY3,
+};
+static const __FlashStringHelper * const BOLTCARD_ISSUER_KEY_LABELS[7] = {
+  F("00000000000000000000000000000000"),
+  F("00000000000000000000000000000001"),
+  F("b0733959686c5da274123084b5c07820"),
+  F("0a276206ccae41739b3541e285223eee"),
+  F("55734571ce72ed364994cf2f20914092"),
+  F("4371f0159a98a85009ff2bcf21c5b301"),
+  F("ce20da280811144b0aad13fd874eaeca"),
+};
 
 struct DeterministicBoltcardMatch {
   bool saw_k1_match;
@@ -1687,8 +1787,8 @@ static bool deterministic_try_known_matches(BoltyNfcReader *nfc,
   uint8_t c_bytes[8] = {0};
   const bool c_parse_ok = has_c && parse_hex_fixed(c_hex, c_bytes, sizeof(c_bytes));
 
-  for (int candidate = 0; candidate < 2; candidate++) {
-    const uint8_t *issuer_key = (candidate == 0) ? BOLTCARD_ISSUER_KEY_ZERO : BOLTCARD_ISSUER_KEY_DEV;
+  for (int candidate = 0; candidate < 7; candidate++) {
+    const uint8_t *issuer_key = BOLTCARD_ISSUER_KEYS[candidate];
 
     uint8_t keys_v1[5][16] = {{0}};
     derive_deterministic_boltcard_keys(nfc, issuer_key, uid, 1, keys_v1);
@@ -1725,6 +1825,111 @@ static bool deterministic_try_known_matches(BoltyNfcReader *nfc,
   return false;
 }
 
+#if HAS_WEB_LOOKUP
+// Parse a hex char to nibble value
+static uint8_t hex_nibble(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return 0;
+}
+
+// Parse 32-char hex string to 16 bytes. Returns false on bad format.
+static bool parse_hex_32(const char *hex, uint8_t out[16]) {
+  for (int i = 0; i < 16; i++) {
+    char hi = hex[i * 2], lo = hex[i * 2 + 1];
+    if (!isxdigit(hi) || !isxdigit(lo)) return false;
+    out[i] = (hex_nibble(hi) << 4) | hex_nibble(lo);
+  }
+  return true;
+}
+
+// Find a key value like "k0":"<hex32>" starting from search_pos.
+// Returns pointer past the closing quote, or nullptr if not found.
+static const char* find_key_hex(const char *json, const char *key_name, const char *search_from, uint8_t out[16]) {
+  const char *p = strstr(search_from, key_name);
+  if (!p) return nullptr;
+  const char *colon = strchr(p, ':');
+  if (!colon) return nullptr;
+  const char *open_q = strchr(colon + 1, '"');
+  if (!open_q) return nullptr;
+  const char *val = open_q + 1;
+  const char *close_q = strchr(val, '"');
+  if (!close_q || (close_q - val) != 32) return nullptr;
+  if (!parse_hex_32(val, out)) return nullptr;
+  return close_q + 1;
+}
+
+// Fetch keysets from web API, try each K1 against p=, return matched keys.
+static bool web_lookup_and_match(BoltyNfcReader *nfc,
+                                  const char *uid_hex,
+                                  const uint8_t *p_bytes, const uint8_t *uid,
+                                  uint8_t matched_keys[5][16],
+                                  uint32_t &out_counter, uint8_t out_decrypted[16]) {
+  if (!wifi_connected) return false;
+
+  HTTPClient http;
+  char url[256];
+  snprintf(url, sizeof(url), "%s?uid=%s", web_lookup_url, uid_hex);
+  http.begin(url);
+  http.setTimeout(5000);
+  int code = http.GET();
+  if (code != 200) {
+    Serial.print(F("[web] HTTP "));
+    Serial.println(code);
+    http.end();
+    return false;
+  }
+  String body = http.getString();
+  http.end();
+
+  Serial.print(F("[web] Response len: "));
+  Serial.println(body.length());
+
+  const char *search_from = body.c_str();
+  int keyset_idx = 0;
+  while (true) {
+    const char *k0_pos = strstr(search_from, "\"k0\"");
+    if (!k0_pos) break;
+
+    uint8_t try_keys[5][16] = {{0}};
+    const char *key_names[] = {"\"k0\"", "\"k1\"", "\"k2\"", "\"k3\"", "\"k4\""};
+    bool all_found = true;
+    const char *after = k0_pos;
+    for (int i = 0; i < 5; i++) {
+      after = find_key_hex(body.c_str(), key_names[i], after, try_keys[i]);
+      if (!after) { all_found = false; break; }
+    }
+
+    if (!all_found) {
+      search_from = k0_pos + 4;
+      continue;
+    }
+
+    Serial.print(F("[web] Trying keyset #"));
+    Serial.println(keyset_idx);
+
+    uint32_t counter = 0;
+    uint8_t decrypted[16] = {0};
+    if (deterministic_decrypt_p(nfc, try_keys[1], p_bytes, uid, decrypted, counter)) {
+      Serial.print(F("[web] Keyset #"));
+      Serial.print(keyset_idx);
+      Serial.println(F(" K1 MATCH!"));
+      memcpy(matched_keys, try_keys, sizeof(try_keys));
+      out_counter = counter;
+      memcpy(out_decrypted, decrypted, 16);
+      return true;
+    }
+
+    keyset_idx++;
+    search_from = k0_pos + 4;
+  }
+
+  Serial.println(F("[web] No keyset matched K1 decrypt."));
+  return false;
+}
+#endif
+
 static void print_deterministic_boltcard_check(BoltyNfcReader *nfc,
                                                const uint8_t *uid,
                                                uint8_t uid_len,
@@ -1760,18 +1965,23 @@ static void print_deterministic_boltcard_check(BoltyNfcReader *nfc,
   bool any_match = false;
   bool any_full_match = false;
 
-  for (int candidate = 0; candidate < 2; candidate++) {
-    const uint8_t *issuer_key = (candidate == 0) ? BOLTCARD_ISSUER_KEY_ZERO : BOLTCARD_ISSUER_KEY_DEV;
-    const __FlashStringHelper *issuer_label =
-        (candidate == 0) ? F("00000000000000000000000000000000")
-                         : F("00000000000000000000000000000001");
+  for (int candidate = 0; candidate < 7; candidate++) {
+    const uint8_t *issuer_key = BOLTCARD_ISSUER_KEYS[candidate];
+    const __FlashStringHelper *issuer_label = BOLTCARD_ISSUER_KEY_LABELS[candidate];
 
-    uint8_t keys_v1[5][16] = {{0}};
-    derive_deterministic_boltcard_keys(nfc, issuer_key, uid, 1, keys_v1);
-
+    // K1 is derived from issuer_key only (version-independent), but try all versions anyway
     uint8_t decrypted[16] = {0};
     uint32_t counter = 0;
-    const bool k1_match = deterministic_decrypt_p(nfc, keys_v1[1], p_bytes, uid, decrypted, counter);
+    bool k1_match = false;
+    uint32_t k1_matched_version = 0;
+
+    for (int vi = 0; vi < 4 && !k1_match; vi++) {
+      uint32_t try_version = BOLTCARD_VERSION_CANDIDATES[vi];
+      uint8_t keys_try[5][16] = {{0}};
+      derive_deterministic_boltcard_keys(nfc, issuer_key, uid, try_version, keys_try);
+      k1_match = deterministic_decrypt_p(nfc, keys_try[1], p_bytes, uid, decrypted, counter);
+      if (k1_match) k1_matched_version = try_version;
+    }
 
     Serial.print(F("[inspect] Issuer key "));
     Serial.print(issuer_label);
@@ -1806,7 +2016,7 @@ static void print_deterministic_boltcard_check(BoltyNfcReader *nfc,
 
     int matched_version = -1;
     uint8_t matched_keys[5][16] = {{0}};
-    for (int version_idx = 0; version_idx < 2; version_idx++) {
+    for (int version_idx = 0; version_idx < 4; version_idx++) {
       const uint32_t version = BOLTCARD_VERSION_CANDIDATES[version_idx];
       uint8_t derived_keys[5][16] = {{0}};
       derive_deterministic_boltcard_keys(nfc, issuer_key, uid, version, derived_keys);
@@ -1908,31 +2118,113 @@ static bool assess_current_card(CardAssessment &assessment) {
     if (ndef_extract_uri(ndef, ndef_len, assessment.uri)) {
       assessment.has_uri = true;
       const bool has_lnurlw = assessment.uri.startsWith("lnurlw://") || assessment.uri.indexOf("lnurlw://") >= 0;
+      const bool has_lnurlp = assessment.uri.startsWith("lnurlp://") || assessment.uri.indexOf("lnurlp://") >= 0;
       String p_hex;
       String c_hex;
       const bool has_p = uri_get_query_param(assessment.uri, "p", p_hex);
       const bool has_c = uri_get_query_param(assessment.uri, "c", c_hex);
-      assessment.looks_like_boltcard = has_lnurlw || (has_p && has_c);
+      assessment.looks_like_boltcard = has_lnurlw || has_lnurlp || (has_p && has_c);
 
-      DeterministicBoltcardMatch match;
-      const bool full_match = deterministic_try_known_matches(bolt.nfc, uid, uid_len, assessment.uri, match);
-      assessment.deterministic_k1_match = match.saw_k1_match;
-      assessment.deterministic_full_match = full_match;
-      if (full_match) {
-        memcpy(assessment.derived_keys, match.keys, sizeof(assessment.derived_keys));
-      }
-      if (match.saw_k1_match) {
-        assessment.key_confidence[1] = KeyConfidence::high;
-      }
-      if (full_match) {
-        for (int i = 0; i < 5; i++) {
-          assessment.key_confidence[i] = KeyConfidence::high;
+      // Try current issuer key first (if set)
+      bool issuer_matched = false;
+      if (has_issuer_key && uid_len == 7 && has_p) {
+        uint8_t p_bytes[16] = {0};
+        if (parse_hex_fixed(p_hex, p_bytes, 16)) {
+          for (int vi = 0; vi < 4 && !issuer_matched; vi++) {
+            uint32_t try_ver = BOLTCARD_VERSION_CANDIDATES[vi];
+            uint8_t try_keys[5][16] = {{0}};
+            derive_deterministic_boltcard_keys(bolt.nfc, current_issuer_key, uid, try_ver, try_keys);
+            uint8_t dec[16] = {0};
+            uint32_t ctr = 0;
+            if (deterministic_decrypt_p(bolt.nfc, try_keys[1], p_bytes, uid, dec, ctr)) {
+              // K1 matched — check CMAC if available
+              bool cmac_ok = false;
+              if (has_c && c_hex.length() >= 16) {
+                uint8_t c_bytes[8] = {0};
+                if (parse_hex_fixed(c_hex, c_bytes, 8)) {
+                  cmac_ok = deterministic_verify_cmac(bolt.nfc, try_keys[2], uid, ctr, c_bytes);
+                }
+              }
+              if (cmac_ok || !has_c) {
+                issuer_matched = true;
+                memcpy(assessment.derived_keys, try_keys, sizeof(assessment.derived_keys));
+                for (int i = 0; i < 5; i++) {
+                  assessment.key_confidence[i] = KeyConfidence::high;
+                }
+                assessment.deterministic_k1_match = true;
+                assessment.deterministic_full_match = true;
+                led_signal_key_local();
+              }
+            }
+          }
         }
-      } else if (match.saw_k1_match) {
-        assessment.key_confidence[0] = KeyConfidence::partial;
-        assessment.key_confidence[2] = KeyConfidence::partial;
-        assessment.key_confidence[3] = KeyConfidence::partial;
-        assessment.key_confidence[4] = KeyConfidence::partial;
+      }
+
+      // Try web lookup if no issuer match and WiFi connected
+      #if HAS_WEB_LOOKUP
+      if (!issuer_matched && wifi_connected && uid_len == 7 && has_p) {
+        uint8_t p_bytes[16] = {0};
+        if (parse_hex_fixed(p_hex, p_bytes, 16)) {
+          char uid_hex[15] = {0};
+          for (int i = 0; i < uid_len; i++) {
+            snprintf(uid_hex + i*2, 3, "%02X", uid[i]);
+          }
+          uint8_t web_keys[5][16] = {{0}};
+          uint32_t web_counter = 0;
+          uint8_t web_decrypted[16] = {0};
+          if (web_lookup_and_match(bolt.nfc, uid_hex, p_bytes, uid, web_keys, web_counter, web_decrypted)) {
+            // K1 matched from web — check CMAC
+            bool cmac_ok = false;
+            if (has_c && c_hex.length() >= 16) {
+              uint8_t c_bytes[8] = {0};
+              if (parse_hex_fixed(c_hex, c_bytes, 8)) {
+                cmac_ok = deterministic_verify_cmac(bolt.nfc, web_keys[2], uid, web_counter, c_bytes);
+              }
+            }
+            if (cmac_ok || !has_c) {
+              issuer_matched = true;
+              memcpy(assessment.derived_keys, web_keys, sizeof(assessment.derived_keys));
+              for (int i = 0; i < 5; i++) {
+                assessment.key_confidence[i] = KeyConfidence::high;
+              }
+              assessment.deterministic_k1_match = true;
+              assessment.deterministic_full_match = true;
+              led_signal_key_online();
+              Serial.println(F("[assess] Web key lookup match!"));
+              // Auto-load into mBoltConfig for wipe/burn
+              strncpy(mBoltConfig.k0, convertIntToHex(web_keys[0], 16).c_str(), 33);
+              strncpy(mBoltConfig.k1, convertIntToHex(web_keys[1], 16).c_str(), 33);
+              strncpy(mBoltConfig.k2, convertIntToHex(web_keys[2], 16).c_str(), 33);
+              strncpy(mBoltConfig.k3, convertIntToHex(web_keys[3], 16).c_str(), 33);
+              strncpy(mBoltConfig.k4, convertIntToHex(web_keys[4], 16).c_str(), 33);
+            }
+          }
+        }
+      }
+      #endif
+
+      // Fall through to hardcoded issuer keys if no match from current issuer
+      if (!issuer_matched) {
+        DeterministicBoltcardMatch match;
+        const bool full_match = deterministic_try_known_matches(bolt.nfc, uid, uid_len, assessment.uri, match);
+        assessment.deterministic_k1_match = match.saw_k1_match;
+        assessment.deterministic_full_match = full_match;
+        if (full_match) {
+          memcpy(assessment.derived_keys, match.keys, sizeof(assessment.derived_keys));
+        }
+        if (match.saw_k1_match) {
+          assessment.key_confidence[1] = KeyConfidence::high;
+        }
+        if (full_match) {
+          for (int i = 0; i < 5; i++) {
+            assessment.key_confidence[i] = KeyConfidence::high;
+          }
+        } else if (match.saw_k1_match) {
+          assessment.key_confidence[0] = KeyConfidence::partial;
+          assessment.key_confidence[2] = KeyConfidence::partial;
+          assessment.key_confidence[3] = KeyConfidence::partial;
+          assessment.key_confidence[4] = KeyConfidence::partial;
+        }
       }
     }
   }
@@ -2268,6 +2560,142 @@ ndef_fail:
           Serial.println(F("[inspect] URI: not found / non-URI NDEF"));
         }
         print_boltcard_heuristics(uri);
+
+        // --- Key Matching (issuer → web → hardcoded) ---
+        // Parse p= and c= once for all key matching attempts
+        String p_hex, c_hex;
+        const bool has_p = uri_get_query_param(uri, "p", p_hex);
+        const bool has_c = uri_get_query_param(uri, "c", c_hex);
+        uint8_t p_bytes[16] = {0};
+        uint8_t c_bytes[8] = {0};
+        bool p_ok = false, c_ok = false;
+        if (has_p) p_ok = parse_hex_fixed(p_hex, p_bytes, 16);
+        if (has_c) c_ok = parse_hex_fixed(c_hex, c_bytes, 8);
+        bool keys_auto_loaded = false;
+
+        // --- 1. Current Issuer Key Check ---
+        if (has_issuer_key && uid_len == 7 && has_p && p_ok) {
+          Serial.println(F("[inspect] --- Current Issuer Key Check ---"));
+          bool issuer_k1_match = false;
+          uint32_t issuer_counter = 0;
+          uint8_t issuer_decrypted[16] = {0};
+          uint8_t issuer_matched_keys[5][16] = {{0}};
+          int issuer_matched_version = -1;
+
+          // Try all version candidates
+          for (int vi = 0; vi < 4 && !issuer_k1_match; vi++) {
+            uint32_t try_ver = BOLTCARD_VERSION_CANDIDATES[vi];
+            uint8_t try_keys[5][16] = {{0}};
+            derive_deterministic_boltcard_keys(bolt.nfc, current_issuer_key, uid, try_ver, try_keys);
+            issuer_k1_match = deterministic_decrypt_p(bolt.nfc, try_keys[1], p_bytes, uid, issuer_decrypted, issuer_counter);
+            if (issuer_k1_match) {
+              memcpy(issuer_matched_keys, try_keys, sizeof(issuer_matched_keys));
+              issuer_matched_version = (int)try_ver;
+            }
+          }
+
+          Serial.print(F("[inspect] Issuer key "));
+          Serial.print(convertIntToHex(current_issuer_key, 16));
+          Serial.print(F(" -> K1 decrypt: "));
+          Serial.println(issuer_k1_match ? F("MATCH") : F("NO MATCH"));
+
+          if (issuer_k1_match) {
+            Serial.print(F("[inspect]   PICCData header: 0x"));
+            print_hex_byte_prefixed(issuer_decrypted[0]);
+            Serial.println();
+            Serial.print(F("[inspect]   Decrypted UID: "));
+            print_hex_bytes_spaced(issuer_decrypted + 1, 7);
+            Serial.println();
+            Serial.print(F("[inspect]   Read counter: "));
+            Serial.println(issuer_counter);
+
+            // Try K2/CMAC verification
+            if (c_ok) {
+              bool issuer_cmac_ok = deterministic_verify_cmac(bolt.nfc, issuer_matched_keys[2], uid, issuer_counter, c_bytes);
+              Serial.print(F("[inspect]   K2/CMAC check (version "));
+              Serial.print(issuer_matched_version);
+              Serial.print(F("): "));
+              Serial.println(issuer_cmac_ok ? F("MATCH") : F("NO MATCH"));
+
+              if (issuer_cmac_ok) {
+                Serial.println(F("[inspect]   Card matches current issuer key!"));
+                led_signal_key_local();
+                strncpy(mBoltConfig.k0, convertIntToHex(issuer_matched_keys[0], 16).c_str(), 33);
+                strncpy(mBoltConfig.k1, convertIntToHex(issuer_matched_keys[1], 16).c_str(), 33);
+                strncpy(mBoltConfig.k2, convertIntToHex(issuer_matched_keys[2], 16).c_str(), 33);
+                strncpy(mBoltConfig.k3, convertIntToHex(issuer_matched_keys[3], 16).c_str(), 33);
+                strncpy(mBoltConfig.k4, convertIntToHex(issuer_matched_keys[4], 16).c_str(), 33);
+                Serial.println(F("[inspect]   Keys auto-loaded. Ready for wipe/burn."));
+                keys_auto_loaded = true;
+              }
+            } else {
+              Serial.println(F("[inspect]   c= missing — cannot verify K2/CMAC."));
+              strncpy(mBoltConfig.k0, convertIntToHex(issuer_matched_keys[0], 16).c_str(), 33);
+              strncpy(mBoltConfig.k1, convertIntToHex(issuer_matched_keys[1], 16).c_str(), 33);
+              strncpy(mBoltConfig.k2, convertIntToHex(issuer_matched_keys[2], 16).c_str(), 33);
+              strncpy(mBoltConfig.k3, convertIntToHex(issuer_matched_keys[3], 16).c_str(), 33);
+              strncpy(mBoltConfig.k4, convertIntToHex(issuer_matched_keys[4], 16).c_str(), 33);
+              Serial.println(F("[inspect]   Keys auto-loaded (K1 only, no CMAC proof)."));
+              keys_auto_loaded = true;
+            }
+          }
+        }
+
+        // --- 2. Web Lookup ---
+        #if HAS_WEB_LOOKUP
+        if (!keys_auto_loaded && uid_len == 7 && has_p && p_ok) {
+          Serial.println(F("[inspect] --- Web Key Lookup ---"));
+          char uid_hex[15] = {0};
+          for (int i = 0; i < uid_len; i++) {
+            snprintf(uid_hex + i*2, 3, "%02X", uid[i]);
+          }
+          uint8_t web_keys[5][16] = {{0}};
+          uint32_t web_counter = 0;
+          uint8_t web_decrypted[16] = {0};
+
+          if (web_lookup_and_match(bolt.nfc, uid_hex, p_bytes, uid, web_keys, web_counter, web_decrypted)) {
+            Serial.print(F("[inspect]   Web match! Counter: "));
+            Serial.println(web_counter);
+            Serial.print(F("[inspect]   Decrypted UID: "));
+            print_hex_bytes_spaced(web_decrypted + 1, 7);
+            Serial.println();
+
+            // Try K2/CMAC verification
+            if (c_ok) {
+              bool web_cmac_ok = deterministic_verify_cmac(bolt.nfc, web_keys[2], uid, web_counter, c_bytes);
+              Serial.print(F("[inspect]   K2/CMAC check: "));
+              Serial.println(web_cmac_ok ? F("MATCH") : F("NO MATCH"));
+              if (web_cmac_ok) {
+                Serial.println(F("[inspect]   Card matched via web lookup!"));
+                led_signal_key_online();
+                strncpy(mBoltConfig.k0, convertIntToHex(web_keys[0], 16).c_str(), 33);
+                strncpy(mBoltConfig.k1, convertIntToHex(web_keys[1], 16).c_str(), 33);
+                strncpy(mBoltConfig.k2, convertIntToHex(web_keys[2], 16).c_str(), 33);
+                strncpy(mBoltConfig.k3, convertIntToHex(web_keys[3], 16).c_str(), 33);
+                strncpy(mBoltConfig.k4, convertIntToHex(web_keys[4], 16).c_str(), 33);
+                Serial.println(F("[inspect]   Keys auto-loaded from web. Ready for wipe/burn."));
+                keys_auto_loaded = true;
+              }
+            } else {
+              Serial.println(F("[inspect]   c= missing — loading web keys without CMAC proof."));
+              led_signal_key_online();
+              strncpy(mBoltConfig.k0, convertIntToHex(web_keys[0], 16).c_str(), 33);
+              strncpy(mBoltConfig.k1, convertIntToHex(web_keys[1], 16).c_str(), 33);
+              strncpy(mBoltConfig.k2, convertIntToHex(web_keys[2], 16).c_str(), 33);
+              strncpy(mBoltConfig.k3, convertIntToHex(web_keys[3], 16).c_str(), 33);
+              strncpy(mBoltConfig.k4, convertIntToHex(web_keys[4], 16).c_str(), 33);
+              Serial.println(F("[inspect]   Keys auto-loaded from web (K1 only)."));
+              keys_auto_loaded = true;
+            }
+          } else if (!wifi_connected) {
+            Serial.println(F("[inspect]   WiFi not connected — skipping web lookup."));
+          } else {
+            Serial.println(F("[inspect]   No matching keyset found online."));
+          }
+        }
+        #endif
+
+        // --- 3. Hardcoded Issuer Keys ---
         print_deterministic_boltcard_check(bolt.nfc, uid, uid_len, uri);
       }
 
@@ -2397,6 +2825,41 @@ ndef_fail:
     }
     serial_cmd_active = false;
   }
+  else if (cmd == "issuer") {
+    // Show current issuer key
+    if (has_issuer_key) {
+      Serial.print(F("[issuer] Current issuer key: "));
+      Serial.println(convertIntToHex(current_issuer_key, 16));
+    } else {
+      Serial.println(F("[issuer] No issuer key set"));
+    }
+  }
+  else if (cmd.startsWith("issuer ")) {
+    String hex = cmd.substring(7);
+    hex.trim();
+    if (hex.length() != 32) {
+      Serial.println(F("[error] Issuer key must be exactly 32 hex chars"));
+      return;
+    }
+    // Validate hex chars
+    for (unsigned int i = 0; i < hex.length(); i++) {
+      char c = hex.charAt(i);
+      if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+        Serial.println(F("[error] Issuer key must be hex only (0-9, a-f)"));
+        return;
+      }
+    }
+    uint8_t tmp[16] = {0};
+    if (!parse_hex_fixed(hex, tmp, 16)) {
+      Serial.println(F("[error] Failed to parse issuer key hex"));
+      return;
+    }
+    memcpy(current_issuer_key, tmp, 16);
+    has_issuer_key = true;
+    Serial.print(F("[issuer] Issuer key set: "));
+    Serial.println(hex);
+    Serial.println(F("[issuer] Per-card K0-K4 will be derived from this key during inspect/burn/wipe"));
+  }
   else if (cmd.startsWith("keys ")) {
     String args = cmd.substring(5);
     int s1 = args.indexOf(' ');
@@ -2422,6 +2885,7 @@ ndef_fail:
     strncpy(mBoltConfig.k2, k2.c_str(), 33);
     strncpy(mBoltConfig.k3, k3.c_str(), 33);
     strncpy(mBoltConfig.k4, k4.c_str(), 33);
+    has_issuer_key = false;  // Mutual exclusion: keys overrides issuer
     Serial.println(F("[keys] Keys set"));
     Serial.print(F("  k0: ")); Serial.println(k0);
     Serial.print(F("  k4: ")); Serial.println(k4);
@@ -2434,8 +2898,30 @@ ndef_fail:
       return;
     }
     strncpy(mBoltConfig.url, url.c_str(), sizeof(mBoltConfig.url));
+    if (url.startsWith("lnurlp://")) {
+      strncpy(mBoltConfig.card_mode, "pos", sizeof(mBoltConfig.card_mode));
+    } else if (url.startsWith("https://")) {
+      strncpy(mBoltConfig.card_mode, "2fa", sizeof(mBoltConfig.card_mode));
+    } else {
+      strncpy(mBoltConfig.card_mode, "withdraw", sizeof(mBoltConfig.card_mode));
+    }
     saveBoltConfig(active_bolt_config);
     Serial.print(F("[url] Set to: ")); Serial.println(url);
+  }
+  else if (cmd == "mode pos") {
+    strncpy(mBoltConfig.card_mode, "pos", sizeof(mBoltConfig.card_mode));
+    saveBoltConfig(active_bolt_config);
+    Serial.println(F("[mode] Set to: pos"));
+  }
+  else if (cmd == "mode 2fa") {
+    strncpy(mBoltConfig.card_mode, "2fa", sizeof(mBoltConfig.card_mode));
+    saveBoltConfig(active_bolt_config);
+    Serial.println(F("[mode] Set to: 2fa"));
+  }
+  else if (cmd == "mode withdraw") {
+    strncpy(mBoltConfig.card_mode, "withdraw", sizeof(mBoltConfig.card_mode));
+    saveBoltConfig(active_bolt_config);
+    Serial.println(F("[mode] Set to: withdraw"));
   }
   else if (cmd.startsWith("reseturl ")) {
     String url = cmd.substring(9);
@@ -2462,6 +2948,64 @@ ndef_fail:
     saveBoltConfig(active_bolt_config);
     Serial.println(F("[wifipass] Updated"));
   }
+#if HAS_WEB_LOOKUP
+  else if (cmd.startsWith("wifi ")) {
+    // wifi <ssid> <pass> — connect to WiFi for web key lookup
+    String args = cmd.substring(5);
+    args.trim();
+    int sp = args.indexOf(' ');
+    if (sp < 0) {
+      Serial.println(F("[error] Usage: wifi <ssid> <password>"));
+      return;
+    }
+    String ssid = args.substring(0, sp);
+    String pass = args.substring(sp + 1);
+    pass.trim();
+    Serial.print(F("[wifi] Connecting to "));
+    Serial.println(ssid);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    unsigned long t0 = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) {
+      delay(500);
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      wifi_connected = true;
+      Serial.print(F("[wifi] Connected! IP: "));
+      Serial.println(WiFi.localIP());
+    } else {
+      wifi_connected = false;
+      Serial.println(F("[wifi] FAILED to connect"));
+    }
+  }
+  else if (cmd == "wifi off") {
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    wifi_connected = false;
+    Serial.println(F("[wifi] Disconnected"));
+  }
+  else if (cmd == "wifi") {
+    if (wifi_connected) {
+      Serial.print(F("[wifi] Connected, IP: "));
+      Serial.println(WiFi.localIP());
+      Serial.print(F("[wifi] Lookup URL: "));
+      Serial.println(web_lookup_url);
+    } else {
+      Serial.println(F("[wifi] Not connected. Use: wifi <ssid> <password>"));
+    }
+  }
+  else if (cmd.startsWith("keyserver ")) {
+    String url = cmd.substring(10);
+    url.trim();
+    if (url.length() >= sizeof(web_lookup_url)) {
+      Serial.println(F("[error] URL too long"));
+      return;
+    }
+    strncpy(web_lookup_url, url.c_str(), sizeof(web_lookup_url));
+    Serial.print(F("[keyserver] Set to: "));
+    Serial.println(web_lookup_url);
+  }
+#endif
   else if (cmd == "probe on") {
     mBoltConfig.wifi_probe_enabled = true;
     saveBoltConfig(active_bolt_config);

@@ -64,6 +64,8 @@ static inline bool http_probe_url(const String &url) {
   String http_url = url;
   if (http_url.startsWith("lnurlw://")) {
     http_url = "https://" + http_url.substring(10);
+  } else if (http_url.startsWith("lnurlp://")) {
+    http_url = "https://" + http_url.substring(10);
   }
 
   if (!http_url.startsWith("http://") && !http_url.startsWith("https://")) {
