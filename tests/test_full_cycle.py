@@ -185,20 +185,14 @@ def main():
         sys.exit(1)
 
     # Check post-burn verify output
-    verify_ok = "VERIFY" in resp and "NLEN=" in resp
-    step("3b", "post-burn NDEF verify ran", verify_ok, "No VERIFY output in burn response")
+    verify_ok = "VERIFY" in resp and "AUTH k0: OK" in resp
+    step("3b", "post-burn K0 auth verify", verify_ok, "No VERIFY — AUTH k0 output in burn response")
 
-    # Check if NLEN was valid
-    nlen_match = re.search(r'NLEN=(\d+)', resp)
-    if nlen_match:
-        nlen = int(nlen_match.group(1))
-        step("3c", f"NLEN={nlen} (valid)", nlen > 0 and nlen <= 252)
-    else:
-        step("3c", "NLEN found", False, "No NLEN in output")
+    ndef_verify_ok = "NDEF read OK" in resp
+    step("3c", "post-burn NDEF read verify", ndef_verify_ok, "No NDEF read OK in burn response")
 
-    # Check if NDEF peek succeeded
-    peek_ok = "NDEF peek OK" in resp
-    step("3d", "NDEF peek OK", peek_ok, "Post-burn NDEF peek failed")
+    has_p_and_c = "p=" in resp and "c=" in resp
+    step("3d", "NDEF contains p= and c=", has_p_and_c, "No p=/c= in burn verify output")
 
     time.sleep(1)
 
