@@ -664,9 +664,14 @@ public:
 
     uint8_t kv = bolty_get_key_version(nfc, 1);
     if (kv == 0x00) {
-      Serial.println(F("ABORT: Card key 1 version is 0x00 - card already has factory keys."));
-      set_job_status_id(JOBSTATUS_GUARD_REJECT);
-      return job_status;
+      uint8_t kv3 = bolty_get_key_version(nfc, 3);
+      uint8_t kv4 = bolty_get_key_version(nfc, 4);
+      if (kv3 == 0x00 && kv4 == 0x00) {
+        Serial.println(F("ABORT: All key versions are 0x00 — card already has factory keys."));
+        set_job_status_id(JOBSTATUS_GUARD_REJECT);
+        return job_status;
+      }
+      Serial.println(F("NOTE: Key 1 version is 0x00 (partial reset) — continuing with explicit keys."));
     }
 
     Serial.print(F("Pre-wipe check OK - card key 1 version: 0x"));
