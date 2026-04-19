@@ -233,8 +233,8 @@ private:
 class BoltDevice {
 public:
   BoltyNfcReader *nfc = nullptr;
-  uint8_t key_cur[5][16] = {{0}};
-  uint8_t key_new[5][16] = {{0}};
+  BoltcardKeys cur_keys = BoltcardKeys::allZeros();
+  BoltcardKeys new_keys = BoltcardKeys::allZeros();
 
   uint8_t job_status = JOBSTATUS_IDLE;
   uint8_t job_perc = 0;
@@ -260,31 +260,18 @@ public:
   }
 #endif
 
-  void setDefautKeys(uint8_t keys[5][16]) {
-    for (int i = 0; i < 5; i++) {
-      memset((void *)(keys[i]), 0, 16);
-    }
-  }
-
-  void setDefautKeysNew() { setDefautKeys(key_new); }
-  void setDefautKeysCur() { setDefautKeys(key_cur); }
-
   void loadKeysForBurn(const sBoltConfig &config) {
-    setDefautKeysCur();
-    setNewKey(config.k0, 0);
-    setNewKey(config.k1, 1);
-    setNewKey(config.k2, 2);
-    setNewKey(config.k3, 3);
-    setNewKey(config.k4, 4);
+    cur_keys = BoltcardKeys::allZeros();
+    new_keys = BoltcardKeys::fromHexStrings(config.k0, config.k1, config.k2, config.k3, config.k4);
   }
 
   void loadKeysForWipe(const sBoltConfig &config) {
-    setDefautKeysNew();
-    setCurKey(config.k0, 0);
-    setCurKey(config.k1, 1);
-    setCurKey(config.k2, 2);
-    setCurKey(config.k3, 3);
-    setCurKey(config.k4, 4);
+    cur_keys = BoltcardKeys::fromHexStrings(config.k0, config.k1, config.k2, config.k3, config.k4);
+    new_keys = BoltcardKeys::allZeros();
+  }
+
+  void setCurKeysFromHex(const char* k0, const char* k1, const char* k2, const char* k3, const char* k4) {
+    cur_keys = BoltcardKeys::fromHexStrings(k0, k1, k2, k3, k4);
   }
 
   bool selectNtagApplicationFiles() {
@@ -309,11 +296,11 @@ public:
       Serial.print(F("[changeAllKeys] Key "));
       Serial.print(key_index);
       Serial.print(F(": cur="));
-      for (int b = 0; b < 16; b++) { if (key_cur[key_index][b] < 0x10) Serial.print('0'); Serial.print(key_cur[key_index][b], HEX); }
+      for (int b = 0; b < 16; b++) { if (cur_keys.keys[key_index][b] < 0x10) Serial.print('0'); Serial.print(cur_keys.keys[key_index][b], HEX); }
       Serial.print(F(" new="));
-      for (int b = 0; b < 16; b++) { if (key_new[key_index][b] < 0x10) Serial.print('0'); Serial.print(key_new[key_index][b], HEX); }
+      for (int b = 0; b < 16; b++) { if (new_keys.keys[key_index][b] < 0x10) Serial.print('0'); Serial.print(new_keys.keys[key_index][b], HEX); }
       Serial.println();
-      if (!nfc->ntag424_ChangeKey(key_cur[key_index], key_new[key_index],
+      if (!nfc->ntag424_ChangeKey(cur_keys.keys[key_index], new_keys.keys[key_index],
                                   key_index, target_key_version)) {
         Serial.print(F("[changeAllKeys] FAILED on key "));
         Serial.print(key_index);
@@ -343,9 +330,6 @@ public:
       keys[ki] = (upper | lower);
     }
   }
-
-  void setNewKey(String key, uint8_t keyno) { setKey(key_new[keyno], key); }
-  void setCurKey(String key, uint8_t keyno) { setKey(key_cur[keyno], key); }
 
   bool begin() {
 #if BOLTY_NFC_BACKEND_MFRC522
@@ -571,8 +555,8 @@ public:
     }
 
     // Native AuthenticateEV2First: cmd=0x71 (NT4H2421Gx §7.3.1.1).
-    // Using key_cur[0] (factory zero key) with key number 0.
-    const uint8_t auth_result = nfc->ntag424_Authenticate(key_cur[0], 0, 0x71);
+    // Using cur_keys.keys[0] (factory zero key) with key number 0.
+    const uint8_t auth_result = nfc->ntag424_Authenticate(cur_keys.keys[0], 0, 0x71);
     if (auth_result != 1) {
       Serial.println(F("Native auth with factory key failed."));
       set_job_status_id(JOBSTATUS_ERROR);
@@ -706,7 +690,7 @@ public:
     // probe all key versions to confirm the burn succeeded.
     selectNtagApplicationFiles();
     Serial.println(F("[burn] Post-burn verification..."));
-    const uint8_t authed = nfc->ntag424_Authenticate(key_new[0], 0, 0x71);
+    const uint8_t authed = nfc->ntag424_Authenticate(new_keys.keys[0], 0, 0x71);
     if (authed != 1) {
       Serial.println(F("[burn] VERIFY FAIL: new-key auth failed"));
       set_job_status_id(JOBSTATUS_ERROR);
@@ -817,7 +801,7 @@ public:
 
   // Authenticate every key slot to prove we know all keys before wiping.
   // For K3/K4, if the explicit key fails, probes K3=K1 (LNBits) and zeros.
-  // Updates key_cur[] if probing finds a working key.
+  // Updates cur_keys.keys[] if probing finds a working key.
   KeyVerifyResult verify_all_keys() {
     KeyVerifyResult vr = {};
     memset(vr.key_versions, 0xFF, 5);
@@ -861,7 +845,7 @@ public:
       }
 
       // Provisioned slot — try explicit key first.
-      if (nfc->ntag424_Authenticate(key_cur[i], i, 0x71) == 1) {
+      if (nfc->ntag424_Authenticate(cur_keys.keys[i], i, 0x71) == 1) {
         vr.verified[i] = true;
         Serial.println(F(" AUTHENTICATED"));
         continue;
@@ -872,20 +856,20 @@ public:
         const uint8_t lnbits_src = (i == 3) ? 1 : 2;
         Serial.print(F(" probing..."));
         selectNtagApplicationFiles();
-        if (nfc->ntag424_Authenticate(key_cur[lnbits_src], i, 0x71) == 1) {
+        if (nfc->ntag424_Authenticate(cur_keys.keys[lnbits_src], i, 0x71) == 1) {
           Serial.print(F(" K"));
           Serial.print(i);
           Serial.print(F("=K"));
           Serial.print(lnbits_src);
           Serial.println(F(" (LNBits) OK"));
-          memcpy(key_cur[i], key_cur[lnbits_src], 16);
+          memcpy(cur_keys.keys[i], cur_keys.keys[lnbits_src], 16);
           vr.verified[i] = true;
           continue;
         }
         selectNtagApplicationFiles();
         if (nfc->ntag424_Authenticate(zero_key, i, 0x71) == 1) {
           Serial.println(F(" zeros OK"));
-          memset(key_cur[i], 0, 16);
+          memset(cur_keys.keys[i], 0, 16);
           vr.verified[i] = true;
           continue;
         }
@@ -952,7 +936,7 @@ public:
 
     // Re-auth K0 for wipe ops (verify cycle may have left non-K0 session active).
     selectNtagApplicationFiles();
-    if (nfc->ntag424_Authenticate(key_cur[0], 0, 0x71) != 1) {
+    if (nfc->ntag424_Authenticate(cur_keys.keys[0], 0, 0x71) != 1) {
       Serial.println(F("Post-verify K0 re-auth failed."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
@@ -980,7 +964,7 @@ public:
     //   the active authentication is changed, the PICC terminates the
     //   transaction (SDM state is reset)."
     selectNtagApplicationFiles();
-    if (nfc->ntag424_Authenticate(key_new[0], 0, 0x71) != 1) {
+    if (nfc->ntag424_Authenticate(new_keys.keys[0], 0, 0x71) != 1) {
       Serial.println("Re-authentication after key change failed.");
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;

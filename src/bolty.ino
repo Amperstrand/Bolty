@@ -2275,13 +2275,13 @@ void handle_serial_command(String cmd) {
     Serial.println(F("[auth] Tap card now..."));
     serial_cmd_active = true;
     led_on();
-    bolt.setCurKey(String(mBoltConfig.k0), 0);
+    bolt.setCurKeysFromHex(mBoltConfig.k0, mBoltConfig.k1, mBoltConfig.k2, mBoltConfig.k3, mBoltConfig.k4);
     Serial.print(F("[auth] Trying k0: "));
-    for (int i = 0; i < 16; i++) { if (bolt.key_cur[0][i] < 0x10) Serial.print("0"); Serial.print(bolt.key_cur[0][i], HEX); }
+    for (int i = 0; i < 16; i++) { if (bolt.cur_keys.keys[0][i] < 0x10) Serial.print("0"); Serial.print(bolt.cur_keys.keys[0][i], HEX); }
     Serial.println();
     Serial.print(F("[auth] k0 bytes: "));
     for (int i = 0; i < 16; i++) {
-      Serial.print(bolt.key_cur[0][i], DEC);
+      Serial.print(bolt.cur_keys.keys[0][i], DEC);
       Serial.print(" ");
     }
     Serial.println();
@@ -2299,7 +2299,7 @@ void handle_serial_command(String cmd) {
     } while (!found);
     delay(50);
     Serial.println(F("[auth] About to authenticate..."));
-    uint8_t result = bolt.nfc->ntag424_Authenticate(bolt.key_cur[0], 0, 0x71);
+    uint8_t result = bolt.nfc->ntag424_Authenticate(bolt.cur_keys.keys[0], 0, 0x71);
     Serial.print(F("[auth] ntag424_Authenticate returned: "));
     Serial.println(result);
     Serial.print(F("[auth] Session authenticated: "));
@@ -3057,7 +3057,7 @@ ndef_fail:
       if (result == JOBSTATUS_DONE) {
         // Post-burn verify: auth with new key 0 to confirm key change worked,
         // then read NDEF to verify the URL was written correctly.
-        const uint8_t v_auth0 = bolt.nfc->ntag424_Authenticate(bolt.key_new[0], 0, 0x71);
+        const uint8_t v_auth0 = bolt.nfc->ntag424_Authenticate(bolt.new_keys.keys[0], 0, 0x71);
         Serial.print(F("[burn] VERIFY — AUTH k0: "));
         Serial.println(v_auth0 == 1 ? F("OK") : F("FAIL"));
         if (v_auth0 == 1) {
@@ -3166,9 +3166,9 @@ ndef_fail:
     Serial.println(F("[check] Tap card now..."));
     serial_cmd_active = true;
     led_on();
-    bolt.setDefautKeysCur();
+    bolt.cur_keys = BoltcardKeys::allZeros();
     Serial.print(F("[check] Using zero key: "));
-    for (int i = 0; i < 16; i++) { if (bolt.key_cur[0][i] < 0x10) Serial.print("0"); Serial.print(bolt.key_cur[0][i], HEX); }
+    for (int i = 0; i < 16; i++) { if (bolt.cur_keys.keys[0][i] < 0x10) Serial.print("0"); Serial.print(bolt.cur_keys.keys[0][i], HEX); }
     Serial.println();
     unsigned long t0 = millis();
     bool found = false;
@@ -3183,7 +3183,7 @@ ndef_fail:
       if (millis() - t0 > 15000) { Serial.println(F("[check] TIMEOUT")); serial_cmd_active = false; return; }
     } while (!found);
     delay(50);
-    uint8_t result = bolt.nfc->ntag424_Authenticate(bolt.key_cur[0], 0, 0x71);
+    uint8_t result = bolt.nfc->ntag424_Authenticate(bolt.cur_keys.keys[0], 0, 0x71);
     Serial.println(result == 1 ? F("[check] SUCCESS — card has factory zero keys") : F("[check] FAILED — card does NOT have factory keys"));
     led_blink(result == 1 ? 3 : 5, 100);
     serial_cmd_active = false;
@@ -3193,8 +3193,8 @@ ndef_fail:
     Serial.println(F("[dummyburn] Tap card now..."));
     serial_cmd_active = true;
     led_on();
-    bolt.setDefautKeysCur();
-    bolt.setDefautKeysNew();
+    bolt.cur_keys = BoltcardKeys::allZeros();
+    bolt.new_keys = BoltcardKeys::allZeros();
     String lnurl = "https://dummy.test";
     uint8_t result;
     unsigned long t0 = millis();
