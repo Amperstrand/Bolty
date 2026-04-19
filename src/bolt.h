@@ -142,6 +142,94 @@ struct KeyVerifyResult {
   bool all_factory;        // all 5 keys at version 0x00
 };
 
+struct BoltcardKeys {
+  uint8_t keys[5][16] = {{0}};
+
+  enum Slot : uint8_t {
+    MasterKey     = 0,
+    EncryptionKey = 1,
+    AuthenticationKey = 2,
+    MacReadKey    = 3,
+    MacWriteKey   = 4
+  };
+
+  static BoltcardKeys allZeros() {
+    BoltcardKeys k;
+    memset(k.keys, 0, sizeof(k.keys));
+    return k;
+  }
+
+  static BoltcardKeys fromHexStrings(const char* k0, const char* k1,
+                                      const char* k2, const char* k3,
+                                      const char* k4) {
+    BoltcardKeys k;
+    k.setSlotFromHex(MasterKey, k0);
+    k.setSlotFromHex(EncryptionKey, k1);
+    k.setSlotFromHex(AuthenticationKey, k2);
+
+    // LNbits fallback: k3→k1 if empty/all-zeros, k4→k2 if empty/all-zeros
+    if (k3 == nullptr || strlen(k3) == 0 || isAllZerosHex(k3)) {
+      k.setSlotFromHex(MacReadKey, k1);
+    } else {
+      k.setSlotFromHex(MacReadKey, k3);
+    }
+    if (k4 == nullptr || strlen(k4) == 0 || isAllZerosHex(k4)) {
+      k.setSlotFromHex(MacWriteKey, k2);
+    } else {
+      k.setSlotFromHex(MacWriteKey, k4);
+    }
+    return k;
+  }
+
+  bool isSlotFactoryDefault(uint8_t slot) const {
+    for (int i = 0; i < 16; i++) {
+      if (keys[slot][i] != 0) return false;
+    }
+    return true;
+  }
+
+  bool allSlotsFactoryDefault() const {
+    for (int s = 0; s < 5; s++) {
+      if (!isSlotFactoryDefault(s)) return false;
+    }
+    return true;
+  }
+
+  void copySlotTo(uint8_t slot, uint8_t dest[16]) const {
+    memcpy(dest, keys[slot], 16);
+  }
+
+  void copyAllTo(uint8_t dest[5][16]) const {
+    memcpy(dest, keys, sizeof(keys));
+  }
+
+private:
+  void setSlotFromHex(uint8_t slot, const char* hex) {
+    if (hex == nullptr) return;
+    size_t len = strlen(hex);
+    for (size_t i = 0; i + 1 < len && (i / 2) < 16; i += 2) {
+      uint8_t upper = convertCharToHex(hex[i]);
+      uint8_t lower = (i + 1 < len) ? convertCharToHex(hex[i + 1]) : 0;
+      keys[slot][i / 2] = (upper << 4) | lower;
+    }
+  }
+
+  static bool isAllZerosHex(const char* hex) {
+    if (hex == nullptr) return true;
+    for (size_t i = 0; i < strlen(hex); i++) {
+      if (hex[i] != '0') return false;
+    }
+    return true;
+  }
+
+  static uint8_t convertCharToHex(char ch) {
+    const char upper = toupper(ch);
+    if (upper >= '0' && upper <= '9') return upper - '0';
+    if (upper >= 'A' && upper <= 'F') return upper - 'A' + 10;
+    return 0;
+  }
+};
+
 class BoltDevice {
 public:
   BoltyNfcReader *nfc = nullptr;
