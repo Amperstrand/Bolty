@@ -203,16 +203,43 @@ public:
 
   bool selectNdefFileOnly() { return nfc->ntag424_ISOSelectNDEFFile(); }
 
+  // Change all 5 application keys in reverse order (4→0) so the auth key
+  // (K0) is changed last. Continues through individual failures to avoid
+  // leaving the card in a partial-wipe state.
+  // Ref: NT4H2421Gx datasheet §7.3.2, AN12196 §6.3
   bool changeAllKeys(uint8_t target_key_version) {
+    Serial.print(F("[changeAllKeys] Changing keys 4→3→2→1→0, target version=0x"));
+    if (target_key_version < 0x10) Serial.print('0');
+    Serial.println(target_key_version, HEX);
+    uint8_t failed_keys = 0;
     for (int i = 0; i < 5; i++) {
       const uint8_t key_index = 4 - i;
+      Serial.print(F("[changeAllKeys] Key "));
+      Serial.print(key_index);
+      Serial.print(F(": cur="));
+      for (int b = 0; b < 16; b++) { if (key_cur[key_index][b] < 0x10) Serial.print('0'); Serial.print(key_cur[key_index][b], HEX); }
+      Serial.print(F(" new="));
+      for (int b = 0; b < 16; b++) { if (key_new[key_index][b] < 0x10) Serial.print('0'); Serial.print(key_new[key_index][b], HEX); }
+      Serial.println();
       if (!nfc->ntag424_ChangeKey(key_cur[key_index], key_new[key_index],
                                   key_index, target_key_version)) {
-        Serial.print("ChangeKey error! Key: ");
-        Serial.println(key_index);
-        return false;
+        Serial.print(F("[changeAllKeys] FAILED on key "));
+        Serial.print(key_index);
+        Serial.println(F(" (continuing with remaining keys)"));
+        failed_keys++;
+        continue;
       }
+      Serial.print(F("[changeAllKeys] Key "));
+      Serial.print(key_index);
+      Serial.println(F(" -> OK"));
     }
+    if (failed_keys > 0) {
+      Serial.print(F("[changeAllKeys] COMPLETED WITH ERRORS: "));
+      Serial.print(failed_keys);
+      Serial.println(F(" keys failed"));
+      return false;
+    }
+    Serial.println(F("[changeAllKeys] All 5 keys changed successfully"));
     return true;
   }
 
@@ -558,13 +585,37 @@ public:
       return job_status;
     }
 
-    // Verify new keys work: AuthenticateEV2First with new key 0
-    const uint8_t authenticated_after = nfc->ntag424_Authenticate(key_new[0], 0, 0x71);
-    if (authenticated_after == 1) {
-      Serial.println("Authentication 2 Success.");
+    // Verify new keys work: AuthenticateEV2First with new key 0, then
+    // probe all key versions to confirm the burn succeeded.
+    selectNtagApplicationFiles();
+    Serial.println(F("[burn] Post-burn verification..."));
+    const uint8_t authed = nfc->ntag424_Authenticate(key_new[0], 0, 0x71);
+    if (authed != 1) {
+      Serial.println(F("[burn] VERIFY FAIL: new-key auth failed"));
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
+    }
+    Serial.println(F("[burn] New-key auth OK"));
+
+    bool burn_verified = true;
+    for (int i = 1; i < 5; i++) {
+      uint8_t v = bolty_get_key_version(nfc, i);
+      if (v != 0x01) {
+        Serial.print(F("[burn] VERIFY FAIL: Key "));
+        Serial.print(i);
+        Serial.print(F(" version=0x"));
+        if (v < 0x10) Serial.print('0');
+        Serial.print(v, HEX);
+        Serial.println(F(" — expected 0x01"));
+        burn_verified = false;
+      }
+    }
+
+    if (burn_verified) {
+      Serial.println(F("[burn] VERIFY OK: All keys confirmed at target version 0x01"));
       set_job_status_id(JOBSTATUS_DONE);
     } else {
-      Serial.println("Authentication 2 failed.");
+      Serial.println(F("[burn] VERIFY FAIL: Some keys not at target version"));
       set_job_status_id(JOBSTATUS_ERROR);
     }
     return job_status;
@@ -822,12 +873,36 @@ public:
       job_perc = 100;
     }
 
-    const uint8_t authenticated = nfc->ntag424_Authenticate(key_new[0], 0, 0x71);
-    if (authenticated == 1) {
-      Serial.println("Authentication 2 Success.");
+    // Post-wipe verification: confirm all keys are at factory version 0x00.
+    selectNtagApplicationFiles();
+    Serial.println(F("[wipe] Post-wipe verification..."));
+    uint8_t zero_key[16] = {0};
+    const uint8_t authed = nfc->ntag424_Authenticate(zero_key, 0, 0x71);
+    if (authed != 1) {
+      Serial.println(F("[wipe] VERIFY FAIL: zero-key auth failed — wipe did not succeed"));
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
+    }
+
+    bool all_verified = true;
+    for (int i = 0; i < 5; i++) {
+      uint8_t v = bolty_get_key_version(nfc, i);
+      if (v != 0x00) {
+        Serial.print(F("[wipe] VERIFY FAIL: Key "));
+        Serial.print(i);
+        Serial.print(F(" version=0x"));
+        if (v < 0x10) Serial.print('0');
+        Serial.print(v, HEX);
+        Serial.println(F(" — expected 0x00"));
+        all_verified = false;
+      }
+    }
+
+    if (all_verified) {
+      Serial.println(F("[wipe] VERIFY OK: All 5 keys confirmed factory (version 0x00)"));
       set_job_status_id(JOBSTATUS_DONE);
     } else {
-      Serial.println("Authentication 2 failed.");
+      Serial.println(F("[wipe] VERIFY FAIL: Some keys not at factory state"));
       set_job_status_id(JOBSTATUS_ERROR);
     }
     return job_status;
