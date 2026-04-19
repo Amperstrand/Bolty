@@ -23,6 +23,7 @@
 #include "bolty_utils.h"
 #include "PiccData.h"
 #include "Bolt11Decode.h"
+#include "KeyDerivation.h"
 #include "build_metadata.h"
 #include "gui.h"
 #include "led.h"
@@ -1631,12 +1632,6 @@ void serial_print_status() {
 
 // ntag424_getKeyVersion moved to bolt.h for use by burn/wipe guards
 
-static const uint8_t BOLTCARD_DET_TAG_CARDKEY[4] = {0x2D, 0x00, 0x3F, 0x75};
-static const uint8_t BOLTCARD_DET_TAG_K0[4] = {0x2D, 0x00, 0x3F, 0x76};
-static const uint8_t BOLTCARD_DET_TAG_K1[4] = {0x2D, 0x00, 0x3F, 0x77};
-static const uint8_t BOLTCARD_DET_TAG_K2[4] = {0x2D, 0x00, 0x3F, 0x78};
-static const uint8_t BOLTCARD_DET_TAG_K3[4] = {0x2D, 0x00, 0x3F, 0x79};
-static const uint8_t BOLTCARD_DET_TAG_K4[4] = {0x2D, 0x00, 0x3F, 0x7A};
 static const uint8_t BOLTCARD_ISSUER_KEY_ZERO[16] = {0};
 static const uint8_t BOLTCARD_ISSUER_KEY_DEV[16] = {
   0x00, 0x00, 0x00, 0x00,
@@ -1710,11 +1705,7 @@ static void derive_deterministic_card_key(BoltyNfcReader *nfc,
                                           uint32_t version,
                                           uint8_t out_card_key[16]) {
   (void)nfc;
-  uint8_t msg[15] = {0};
-  memcpy(msg, BOLTCARD_DET_TAG_CARDKEY, 4);
-  memcpy(msg + 4, uid, 7);
-  write_u32_le(version, msg + 11);
-  AES128_CMAC(issuer_key, msg, sizeof(msg), out_card_key);
+  keyderivation_card_key(issuer_key, uid, version, out_card_key);
 }
 
 static void derive_deterministic_boltcard_keys(BoltyNfcReader *nfc,
@@ -1723,13 +1714,7 @@ static void derive_deterministic_boltcard_keys(BoltyNfcReader *nfc,
                                                uint32_t version,
                                                uint8_t out_keys[5][16]) {
   (void)nfc;
-  uint8_t card_key[16] = {0};
-  derive_deterministic_card_key(nfc, issuer_key, uid, version, card_key);
-  AES128_CMAC(card_key, BOLTCARD_DET_TAG_K0, sizeof(BOLTCARD_DET_TAG_K0), out_keys[0]);
-  AES128_CMAC(issuer_key, BOLTCARD_DET_TAG_K1, sizeof(BOLTCARD_DET_TAG_K1), out_keys[1]);
-  AES128_CMAC(card_key, BOLTCARD_DET_TAG_K2, sizeof(BOLTCARD_DET_TAG_K2), out_keys[2]);
-  AES128_CMAC(card_key, BOLTCARD_DET_TAG_K3, sizeof(BOLTCARD_DET_TAG_K3), out_keys[3]);
-  AES128_CMAC(card_key, BOLTCARD_DET_TAG_K4, sizeof(BOLTCARD_DET_TAG_K4), out_keys[4]);
+  keyderivation_boltcard_keys(issuer_key, uid, version, out_keys);
 }
 
 static bool deterministic_decrypt_p(BoltyNfcReader *nfc,
