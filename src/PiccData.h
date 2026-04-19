@@ -23,8 +23,11 @@
 #define PICC_DATA_H
 
 #include <stdint.h>
+#include "debug.h"
 #include <string.h>
+#include "debug.h"
 #include "ntag424_crypto.h"
+#include "debug.h"
 
 struct PiccData {
   bool valid;
@@ -173,17 +176,17 @@ static inline PiccData picc_parse_url(const uint8_t k1[16], const uint8_t k2[16]
 
 static inline void picc_print(const PiccData* picc) {
   if (!picc->valid) {
-    Serial.println(F("[picc] INVALID"));
+    DBG_PRINTLN(F("[picc] INVALID"));
     return;
   }
-  Serial.print(F("[picc] UID: "));
+  DBG_PRINT(F("[picc] UID: "));
   for (int i = 0; i < 7; i++) {
-    if (picc->uid[i] < 0x10) Serial.print('0');
-    Serial.print(picc->uid[i], HEX);
-    if (i < 6) Serial.print(':');
+    if (picc->uid[i] < 0x10) DBG_PRINT('0');
+    DBG_PRINT(picc->uid[i], HEX);
+    if (i < 6) DBG_PRINT(':');
   }
-  Serial.print(F("  Counter: "));
-  Serial.println(picc->counter);
+  DBG_PRINT(F("  Counter: "));
+  DBG_PRINTLN(picc->counter);
 }
 
 #endif // PICC_DATA_H

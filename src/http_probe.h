@@ -2,11 +2,15 @@
 #define HTTP_PROBE_H
 
 #include <Arduino.h>
+#include "debug.h"
 #include "bolt.h"
+#include "debug.h"
 
 #if HAS_HTTP_PROBE
 #include <HTTPClient.h>
+#include "debug.h"
 #include <WiFi.h>
+#include "debug.h"
 
 extern sBoltConfig mBoltConfig;
 
@@ -69,19 +73,19 @@ static inline bool http_probe_url(const String &url) {
   }
 
   if (!http_url.startsWith("http://") && !http_url.startsWith("https://")) {
-    Serial.println(F("[probe] URL is not HTTP, skipping"));
+    DBG_PRINTLN(F("[probe] URL is not HTTP, skipping"));
     return false;
   }
 
   if (mBoltConfig.wifi_ssid[0] == '\0') {
-    Serial.println(F("[probe] WiFi SSID is empty, skipping"));
+    DBG_PRINTLN(F("[probe] WiFi SSID is empty, skipping"));
     return false;
   }
 
-  Serial.print(F("[probe] URL: "));
-  Serial.println(http_url);
-  Serial.print(F("[probe] Connecting WiFi to SSID: "));
-  Serial.println(mBoltConfig.wifi_ssid);
+  DBG_PRINT(F("[probe] URL: "));
+  DBG_PRINTLN(http_url);
+  DBG_PRINT(F("[probe] Connecting WiFi to SSID: "));
+  DBG_PRINTLN(mBoltConfig.wifi_ssid);
 
   WiFi.persistent(false);
   WiFi.setAutoReconnect(false);
@@ -96,14 +100,14 @@ static inline bool http_probe_url(const String &url) {
   }
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println(F("[probe] WiFi connect timeout"));
+    DBG_PRINTLN(F("[probe] WiFi connect timeout"));
     http_probe_disconnect_wifi();
     led_tick();
     return true;
   }
 
-  Serial.print(F("[probe] WiFi connected, IP: "));
-  Serial.println(WiFi.localIP());
+  DBG_PRINT(F("[probe] WiFi connected, IP: "));
+  DBG_PRINTLN(WiFi.localIP());
 
   HTTPClient http;
   http.useHTTP10(true);
@@ -112,7 +116,7 @@ static inline bool http_probe_url(const String &url) {
   http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
 
   if (!http.begin(http_url)) {
-    Serial.println(F("[probe] HTTP begin failed"));
+    DBG_PRINTLN(F("[probe] HTTP begin failed"));
     http_probe_disconnect_wifi();
     led_tick();
     return true;
@@ -121,33 +125,33 @@ static inline bool http_probe_url(const String &url) {
   led_notify_activity();
   led_tick();
   const int http_code = http.GET();
-  Serial.print(F("[probe] HTTP status: "));
-  Serial.println(http_code);
+  DBG_PRINT(F("[probe] HTTP status: "));
+  DBG_PRINTLN(http_code);
 
   if (http_code > 0) {
     char body_preview[513] = {0};
     bool truncated = false;
     const size_t preview_len =
         http_probe_read_body_preview(http, body_preview, sizeof(body_preview), truncated);
-    Serial.print(F("[probe] Body preview ("));
-    Serial.print(preview_len);
-    Serial.println(F(" bytes):"));
+    DBG_PRINT(F("[probe] Body preview ("));
+    DBG_PRINT(preview_len);
+    DBG_PRINTLN(F(" bytes):"));
     if (preview_len > 0) {
-      Serial.println(body_preview);
+      DBG_PRINTLN(body_preview);
       if (truncated) {
-        Serial.println(F("[probe] Body truncated to 512 chars"));
+        DBG_PRINTLN(F("[probe] Body truncated to 512 chars"));
       }
     } else {
-      Serial.println(F("[probe] <empty body>"));
+      DBG_PRINTLN(F("[probe] <empty body>"));
     }
   } else {
-    Serial.print(F("[probe] HTTP GET failed: "));
-    Serial.println(http.errorToString(http_code));
+    DBG_PRINT(F("[probe] HTTP GET failed: "));
+    DBG_PRINTLN(http.errorToString(http_code));
   }
 
   http.end();
   http_probe_disconnect_wifi();
-  Serial.println(F("[probe] WiFi disconnected"));
+  DBG_PRINTLN(F("[probe] WiFi disconnected"));
   led_tick();
   return true;
 #else

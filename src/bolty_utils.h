@@ -2,8 +2,10 @@
 #define BOLTY_UTILS_H
 
 #include <Arduino.h>
+#include "debug.h"
 
 #include "bolt.h"
+#include "debug.h"
 
 inline const char *ntag424_error_name(uint8_t sw1, uint8_t sw2) {
   if (sw1 == 0x91) {
@@ -59,9 +61,9 @@ inline const char *ntag424_error_name(uint8_t sw1, uint8_t sw2) {
 
 inline void print_hex_byte_prefixed(uint8_t value) {
   if (value < 0x10) {
-    Serial.print(F("0"));
+    DBG_PRINT(F("0"));
   }
-  Serial.print(value, HEX);
+  DBG_PRINT(value, HEX);
 }
 
 inline uint8_t bcd_to_decimal(uint8_t value) {
@@ -122,13 +124,13 @@ inline void print_ndef_ascii(const uint8_t *ndef, int len) {
   for (int i = 0; i < len; i++) {
     Serial.write(ndef[i] >= 0x20 && ndef[i] < 0x7F ? ndef[i] : '.');
   }
-  Serial.println();
+  DBG_PRINTLN();
 }
 
 inline void print_boltcard_heuristics(const String &uri) {
-  Serial.println(F("[inspect] --- Boltcard Heuristics ---"));
+  DBG_PRINTLN(F("[inspect] --- Boltcard Heuristics ---"));
   if (uri.length() == 0) {
-    Serial.println(F("[inspect] No URI record found in NDEF."));
+    DBG_PRINTLN(F("[inspect] No URI record found in NDEF."));
     return;
   }
 
@@ -143,29 +145,29 @@ inline void print_boltcard_heuristics(const String &uri) {
   const bool has_p = p_idx >= 0;
   const bool has_c = c_idx >= 0;
 
-  Serial.print(F("[inspect] URI has lnurlw scheme: "));
-  Serial.println(has_lnurlw ? F("YES") : F("NO"));
-  Serial.print(F("[inspect] URI has lnurlp scheme: "));
-  Serial.println(has_lnurlp ? F("YES") : F("NO"));
-  Serial.print(F("[inspect] URI has https scheme: "));
-  Serial.println(has_https ? F("YES") : F("NO"));
-  Serial.print(F("[inspect] URI has p= param: "));
-  Serial.println(has_p ? F("YES") : F("NO"));
-  Serial.print(F("[inspect] URI has c= param: "));
-  Serial.println(has_c ? F("YES") : F("NO"));
+  DBG_PRINT(F("[inspect] URI has lnurlw scheme: "));
+  DBG_PRINTLN(has_lnurlw ? F("YES") : F("NO"));
+  DBG_PRINT(F("[inspect] URI has lnurlp scheme: "));
+  DBG_PRINTLN(has_lnurlp ? F("YES") : F("NO"));
+  DBG_PRINT(F("[inspect] URI has https scheme: "));
+  DBG_PRINTLN(has_https ? F("YES") : F("NO"));
+  DBG_PRINT(F("[inspect] URI has p= param: "));
+  DBG_PRINTLN(has_p ? F("YES") : F("NO"));
+  DBG_PRINT(F("[inspect] URI has c= param: "));
+  DBG_PRINTLN(has_c ? F("YES") : F("NO"));
 
   if (has_p) {
-    Serial.print(F("[inspect] p= offset in URI: "));
-    Serial.println(p_idx);
+    DBG_PRINT(F("[inspect] p= offset in URI: "));
+    DBG_PRINTLN(p_idx);
   }
   if (has_c) {
-    Serial.print(F("[inspect] c= offset in URI: "));
-    Serial.println(c_idx);
+    DBG_PRINT(F("[inspect] c= offset in URI: "));
+    DBG_PRINTLN(c_idx);
   }
 
   const bool looks_boltcard = has_lnurlw || has_lnurlp || (has_p && has_c);
-  Serial.print(F("[inspect] Looks like Bolt Card: "));
-  Serial.println(looks_boltcard ? F("YES") : F("NO / UNKNOWN"));
+  DBG_PRINT(F("[inspect] Looks like Bolt Card: "));
+  DBG_PRINTLN(looks_boltcard ? F("YES") : F("NO / UNKNOWN"));
 }
 
 inline bool hex_nibble(char ch, uint8_t &value) {
@@ -226,21 +228,21 @@ inline bool uri_get_query_param(const String &uri, const char *name,
 inline void print_hex_bytes_inline(const uint8_t *data, size_t len) {
   for (size_t i = 0; i < len; i++) {
     if (data[i] < 0x10) {
-      Serial.print(F("0"));
+      DBG_PRINT(F("0"));
     }
-    Serial.print(data[i], HEX);
+    DBG_PRINT(data[i], HEX);
   }
 }
 
 inline void print_hex_bytes_spaced(const uint8_t *data, size_t len) {
   for (size_t i = 0; i < len; i++) {
     if (i > 0) {
-      Serial.print(F(" "));
+      DBG_PRINT(F(" "));
     }
     if (data[i] < 0x10) {
-      Serial.print(F("0"));
+      DBG_PRINT(F("0"));
     }
-    Serial.print(data[i], HEX);
+    DBG_PRINT(data[i], HEX);
   }
 }
 

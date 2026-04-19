@@ -2,10 +2,13 @@
 #define BOLTY_LED_H
 
 #include "hardware_config.h"
+#include "debug.h"
 #include <Arduino.h>
+#include "debug.h"
 
 #if HAS_LED_MATRIX
 #include <M5Unified.h>
+#include "debug.h"
 #endif
 
 #if HAS_LED_MATRIX
@@ -167,8 +170,8 @@ static inline void led_setup() {
   M5.begin(cfg);
   bolty_led_internal::initialized = true;
   bolty_led_internal::supported = M5.Led.isEnabled();
-  Serial.print("[led] Atom matrix enabled: ");
-  Serial.println(bolty_led_internal::supported ? "yes" : "no");
+  DBG_PRINT("[led] Atom matrix enabled: ");
+  DBG_PRINTLN(bolty_led_internal::supported ? "yes" : "no");
   if (!bolty_led_internal::supported) return;
 
   pinMode(39, INPUT);
@@ -186,25 +189,25 @@ static inline void led_self_test(bool nfc_ok) {
   M5.Led.setAllColor(0, 0, 0);
   bolty_led_internal::row_set(0, 255, 255, 0);
   M5.Led.display();
-  Serial.println("[test] LED matrix...");
+  DBG_PRINTLN("[test] LED matrix...");
   delay(300);
   M5.Led.setAllColor(0, 0, 0);
   bolty_led_internal::row_set(0, 0, 255, 0);
   M5.Led.display();
-  Serial.println("[test] LED matrix OK");
+  DBG_PRINTLN("[test] LED matrix OK");
   delay(300);
 
   M5.Led.setAllColor(0, 0, 0);
   bolty_led_internal::row_set(0, 0, 255, 0);
   bolty_led_internal::row_set(1, 255, 255, 0);
   M5.Led.display();
-  Serial.println("[test] NFC...");
+  DBG_PRINTLN("[test] NFC...");
   delay(300);
   M5.Led.setAllColor(0, 0, 0);
   bolty_led_internal::row_set(0, 0, 255, 0);
   bolty_led_internal::row_set(1, nfc_ok ? 0 : 255, nfc_ok ? 255 : 0, 0);
   M5.Led.display();
-  Serial.print("[test] NFC "); Serial.println(nfc_ok ? "OK" : "FAIL");
+  DBG_PRINT("[test] NFC "); DBG_PRINTLN(nfc_ok ? "OK" : "FAIL");
   delay(300);
 
   M5.Led.setAllColor(0, 0, 0);
@@ -212,14 +215,14 @@ static inline void led_self_test(bool nfc_ok) {
   bolty_led_internal::row_set(1, nfc_ok ? 0 : 255, nfc_ok ? 255 : 0, 0);
   bolty_led_internal::row_set(2, 255, 255, 0);
   M5.Led.display();
-  Serial.println("[test] Button (GPIO39)...");
+  DBG_PRINTLN("[test] Button (GPIO39)...");
   delay(300);
   M5.Led.setAllColor(0, 0, 0);
   bolty_led_internal::row_set(0, 0, 255, 0);
   bolty_led_internal::row_set(1, nfc_ok ? 0 : 255, nfc_ok ? 255 : 0, 0);
   bolty_led_internal::row_set(2, 0, 255, 0);
   M5.Led.display();
-  Serial.println("[test] Button present");
+  DBG_PRINTLN("[test] Button present");
   delay(300);
 
   if (nfc_ok) {

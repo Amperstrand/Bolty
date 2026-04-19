@@ -2,11 +2,15 @@
 #define BOLT_H
 
 #include "gui.h"
+#include "debug.h"
 #include "hardware_config.h"
+#include "debug.h"
 #include "led.h"
+#include "debug.h"
 
 #if BOLTY_NFC_BACKEND_MFRC522
 #include <MFRC522_NTAG424.h>
+#include "debug.h"
 using BoltyNfcReader = MFRC522_NTAG424;
 #else
 #include <Adafruit_PN532_NTAG424.h>
@@ -95,16 +99,16 @@ inline void bolty_print_hex(BoltyNfcReader *nfc, const uint8_t *data,
 #if BOLTY_NFC_BACKEND_MFRC522
   for (uint8_t i = 0; i < length; ++i) {
     if (data[i] < 0x10) {
-      Serial.print(F("0x0"));
+      DBG_PRINT(F("0x0"));
     } else {
-      Serial.print(F("0x"));
+      DBG_PRINT(F("0x"));
     }
-    Serial.print(data[i], HEX);
+    DBG_PRINT(data[i], HEX);
     if (i + 1 < length) {
-      Serial.print(F(" "));
+      DBG_PRINT(F(" "));
     }
   }
-  Serial.println();
+  DBG_PRINTLN();
 #else
   nfc->PrintHex(data, length);
 #endif
@@ -287,38 +291,38 @@ public:
   // leaving the card in a partial-wipe state.
   // Ref: NT4H2421Gx datasheet §7.3.2, AN12196 §6.3
   bool changeAllKeys(uint8_t target_key_version) {
-    Serial.print(F("[changeAllKeys] Changing keys 4→3→2→1→0, target version=0x"));
-    if (target_key_version < 0x10) Serial.print('0');
-    Serial.println(target_key_version, HEX);
+    DBG_PRINT(F("[changeAllKeys] Changing keys 4→3→2→1→0, target version=0x"));
+    if (target_key_version < 0x10) DBG_PRINT('0');
+    DBG_PRINTLN(target_key_version, HEX);
     uint8_t failed_keys = 0;
     for (int i = 0; i < 5; i++) {
       const uint8_t key_index = 4 - i;
-      Serial.print(F("[changeAllKeys] Key "));
-      Serial.print(key_index);
-      Serial.print(F(": cur="));
-      for (int b = 0; b < 16; b++) { if (cur_keys.keys[key_index][b] < 0x10) Serial.print('0'); Serial.print(cur_keys.keys[key_index][b], HEX); }
-      Serial.print(F(" new="));
-      for (int b = 0; b < 16; b++) { if (new_keys.keys[key_index][b] < 0x10) Serial.print('0'); Serial.print(new_keys.keys[key_index][b], HEX); }
-      Serial.println();
+      DBG_PRINT(F("[changeAllKeys] Key "));
+      DBG_PRINT(key_index);
+      DBG_PRINT(F(": cur="));
+      for (int b = 0; b < 16; b++) { if (cur_keys.keys[key_index][b] < 0x10) DBG_PRINT('0'); DBG_PRINT(cur_keys.keys[key_index][b], HEX); }
+      DBG_PRINT(F(" new="));
+      for (int b = 0; b < 16; b++) { if (new_keys.keys[key_index][b] < 0x10) DBG_PRINT('0'); DBG_PRINT(new_keys.keys[key_index][b], HEX); }
+      DBG_PRINTLN();
       if (!nfc->ntag424_ChangeKey(cur_keys.keys[key_index], new_keys.keys[key_index],
                                   key_index, target_key_version)) {
-        Serial.print(F("[changeAllKeys] FAILED on key "));
-        Serial.print(key_index);
-        Serial.println(F(" (continuing with remaining keys)"));
+        DBG_PRINT(F("[changeAllKeys] FAILED on key "));
+        DBG_PRINT(key_index);
+        DBG_PRINTLN(F(" (continuing with remaining keys)"));
         failed_keys++;
         continue;
       }
-      Serial.print(F("[changeAllKeys] Key "));
-      Serial.print(key_index);
-      Serial.println(F(" -> OK"));
+      DBG_PRINT(F("[changeAllKeys] Key "));
+      DBG_PRINT(key_index);
+      DBG_PRINTLN(F(" -> OK"));
     }
     if (failed_keys > 0) {
-      Serial.print(F("[changeAllKeys] COMPLETED WITH ERRORS: "));
-      Serial.print(failed_keys);
-      Serial.println(F(" keys failed"));
+      DBG_PRINT(F("[changeAllKeys] COMPLETED WITH ERRORS: "));
+      DBG_PRINT(failed_keys);
+      DBG_PRINTLN(F(" keys failed"));
       return false;
     }
-    Serial.println(F("[changeAllKeys] All 5 keys changed successfully"));
+    DBG_PRINTLN(F("[changeAllKeys] All 5 keys changed successfully"));
     return true;
   }
 
@@ -340,18 +344,18 @@ public:
         init_ok = true;
         break;
       }
-      Serial.print("MFRC522 begin attempt ");
-      Serial.print(attempt);
-      Serial.println(" failed");
+      DBG_PRINT("MFRC522 begin attempt ");
+      DBG_PRINT(attempt);
+      DBG_PRINTLN(" failed");
       delay(200);
     }
     if (!init_ok) {
-      Serial.println("MFRC522 begin failed");
+      DBG_PRINTLN("MFRC522 begin failed");
       return false;
     }
     const uint8_t version = nfc->PCD_ReadRegister(MFRC522_I2C::VersionReg);
-    Serial.print("Found MFRC522 version 0x");
-    Serial.println(version, HEX);
+    DBG_PRINT("Found MFRC522 version 0x");
+    DBG_PRINTLN(version, HEX);
 #elif BOLTY_NFC_BACKEND_PN532_UART
 #if NFC_RESET_PIN >= 0
     pinMode(NFC_RESET_PIN, OUTPUT);
@@ -360,22 +364,22 @@ public:
     digitalWrite(NFC_RESET_PIN, HIGH);
     delay(10);
 #endif
-    Serial.println("PN532 UART mode (Serial2)");
+    DBG_PRINTLN("PN532 UART mode (Serial2)");
     extern HardwareSerial PN532Serial;
     PN532Serial.begin(115200, SERIAL_8N1, PN532_UART_RX, PN532_UART_TX);
     while (PN532Serial.available()) PN532Serial.read();
     nfc->begin();
     uint32_t versiondata = nfc->getFirmwareVersion();
     if (!versiondata) {
-      Serial.print("Didn't find PN53x board (UART)");
+      DBG_PRINT("Didn't find PN53x board (UART)");
       return false;
     }
-    Serial.print("Found chip PN53x");
-    Serial.println((versiondata >> 24) & 0xFF, HEX);
-    Serial.print("Firmware ver. ");
-    Serial.print((versiondata >> 16) & 0xFF, DEC);
-    Serial.print('.');
-    Serial.println((versiondata >> 8) & 0xFF, DEC);
+    DBG_PRINT("Found chip PN53x");
+    DBG_PRINTLN((versiondata >> 24) & 0xFF, HEX);
+    DBG_PRINT("Firmware ver. ");
+    DBG_PRINT((versiondata >> 16) & 0xFF, DEC);
+    DBG_PRINT('.');
+    DBG_PRINTLN((versiondata >> 8) & 0xFF, DEC);
     nfc->SAMConfig();
 #else
     pinMode(PN532_SS, OUTPUT);
@@ -390,21 +394,21 @@ public:
     nfc->begin();
     uint32_t versiondata = nfc->getFirmwareVersion();
     if (!versiondata) {
-      Serial.print("Didn't find PN53x board");
+      DBG_PRINT("Didn't find PN53x board");
       return false;
     }
-    Serial.print("Found chip PN53x");
-    Serial.println((versiondata >> 24) & 0xFF, HEX);
-    Serial.print("Firmware ver. ");
-    Serial.print((versiondata >> 16) & 0xFF, DEC);
-    Serial.print('.');
-    Serial.println((versiondata >> 8) & 0xFF, DEC);
+    DBG_PRINT("Found chip PN53x");
+    DBG_PRINTLN((versiondata >> 24) & 0xFF, HEX);
+    DBG_PRINT("Firmware ver. ");
+    DBG_PRINT((versiondata >> 16) & 0xFF, DEC);
+    DBG_PRINT('.');
+    DBG_PRINTLN((versiondata >> 8) & 0xFF, DEC);
     nfc->SAMConfig();
 #endif
 
     _consecutive_scan_failures = 0;
     _last_reader_reinit_ms = 0;
-    Serial.println("NFC Ready...");
+    DBG_PRINTLN("NFC Ready...");
     return true;
   }
 
@@ -417,16 +421,16 @@ public:
         ok = true;
         break;
       }
-      Serial.print("MFRC522 reinit attempt ");
-      Serial.print(attempt);
-      Serial.println(" failed");
+      DBG_PRINT("MFRC522 reinit attempt ");
+      DBG_PRINT(attempt);
+      DBG_PRINTLN(" failed");
       delay(100);
     }
     if (!ok) {
-      Serial.println("MFRC522 reinit failed");
+      DBG_PRINTLN("MFRC522 reinit failed");
       return false;
     }
-    Serial.println("MFRC522 reinit complete");
+    DBG_PRINTLN("MFRC522 reinit complete");
     return true;
 #else
     pinMode(NFC_RESET_PIN, OUTPUT);
@@ -439,13 +443,13 @@ public:
 
     uint32_t versiondata = nfc->getFirmwareVersion();
     if (!versiondata) {
-      Serial.println("PN532 reinit failed: firmware query returned no data");
+      DBG_PRINTLN("PN532 reinit failed: firmware query returned no data");
       return false;
     }
 
     nfc->SAMConfig();
     _last_reader_reinit_ms = millis();
-    Serial.println("PN532 reinit complete");
+    DBG_PRINTLN("PN532 reinit complete");
     return true;
 #endif
   }
@@ -473,8 +477,8 @@ public:
     displayTextCentered(-3 + (4 * 21), get_job_status());
     tft.setTextColor(APPBLACK);
 #else
-    Serial.print("[status] ");
-    Serial.println(get_job_status());
+    DBG_PRINT("[status] ");
+    DBG_PRINTLN(get_job_status());
 #endif
   }
 
@@ -499,7 +503,7 @@ public:
       if (_consecutive_scan_failures >= MAX_SCAN_FAILURES &&
           (_last_reader_reinit_ms == 0 ||
            (millis() - _last_reader_reinit_ms) >= REINIT_BACKOFF_MS)) {
-        Serial.println("NFC scan failures exceeded threshold, reinitializing");
+        DBG_PRINTLN("NFC scan failures exceeded threshold, reinitializing");
         if (reinitReader()) {
           _consecutive_scan_failures = 0;
         }
@@ -521,35 +525,35 @@ public:
     }
 
     set_job_status_id(JOBSTATUS_PROVISIONING);
-    Serial.println("Found an ISO14443A tag");
-    Serial.print("  UID Length: ");
-    Serial.print(uidLength, DEC);
-    Serial.println(" bytes");
-    Serial.print("  UID Value: ");
+    DBG_PRINTLN("Found an ISO14443A tag");
+    DBG_PRINT("  UID Length: ");
+    DBG_PRINT(uidLength, DEC);
+    DBG_PRINTLN(" bytes");
+    DBG_PRINT("  UID Value: ");
     bolty_print_hex(nfc, uid, uidLength);
-    Serial.println("");
+    DBG_PRINTLN("");
 
     if (!(((uidLength == 7) || (uidLength == 4)) && nfc->ntag424_isNTAG424())) {
-      Serial.println("This doesn't seem to be an NTAG424 tag. (UUID length != 7 bytes and UUID length != 4)!");
+      DBG_PRINTLN("This doesn't seem to be an NTAG424 tag. (UUID length != 7 bytes and UUID length != 4)!");
       return job_status;
     }
 
     uint8_t kv = bolty_get_key_version(nfc, 1);
     if (kv != 0x00) {
-      Serial.print(F("ABORT: Card key 1 version is 0x"));
+      DBG_PRINT(F("ABORT: Card key 1 version is 0x"));
       if (kv < 0x10) {
-        Serial.print(F("0"));
+        DBG_PRINT(F("0"));
       }
-      Serial.print(kv, HEX);
-      Serial.println(F(" - card appears provisioned. Wipe first."));
+      DBG_PRINT(kv, HEX);
+      DBG_PRINTLN(F(" - card appears provisioned. Wipe first."));
       set_job_status_id(JOBSTATUS_GUARD_REJECT);
       return job_status;
     }
 
-    Serial.println(F("Pre-burn check OK - card has factory keys"));
+    DBG_PRINTLN(F("Pre-burn check OK - card has factory keys"));
 
     if (!selectNtagApplicationFiles()) {
-      Serial.println(F("Failed to select NTAG application files."));
+      DBG_PRINTLN(F("Failed to select NTAG application files."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
@@ -558,11 +562,11 @@ public:
     // Using cur_keys.keys[0] (factory zero key) with key number 0.
     const uint8_t auth_result = nfc->ntag424_Authenticate(cur_keys.keys[0], 0, 0x71);
     if (auth_result != 1) {
-      Serial.println(F("Native auth with factory key failed."));
+      DBG_PRINTLN(F("Native auth with factory key failed."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
-    Serial.println(F("Auth OK."));
+    DBG_PRINTLN(F("Auth OK."));
 
     const uint8_t uriIdentifier = 0;
     // PICC data offset: 7 (NDEF header) + lnurl_length + "?p=" (2) + 16*2 hex digits
@@ -603,7 +607,7 @@ public:
     };
     uint8_t *filedata = (uint8_t *)malloc(len + sizeof(ndefheader));
     if (filedata == nullptr) {
-      Serial.println(F("Failed to allocate NDEF buffer."));
+      DBG_PRINTLN(F("Failed to allocate NDEF buffer."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
@@ -636,11 +640,11 @@ public:
     free(filedata);
 
     if (!ndef_write_ok) {
-      Serial.println(F("NDEF write failed via native WriteData."));
+      DBG_PRINTLN(F("NDEF write failed via native WriteData."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
-    Serial.println(F("NDEF written successfully."));
+    DBG_PRINTLN(F("NDEF written successfully."));
     // ChangeFileSettings for file 2 (NDEF) — NT4H2421Gx datasheet §7.6.2,
     // Table 49, and §8.7.2 Table 71 for SDM configuration.
     //
@@ -689,34 +693,34 @@ public:
     // Verify new keys work: AuthenticateEV2First with new key 0, then
     // probe all key versions to confirm the burn succeeded.
     selectNtagApplicationFiles();
-    Serial.println(F("[burn] Post-burn verification..."));
+    DBG_PRINTLN(F("[burn] Post-burn verification..."));
     const uint8_t authed = nfc->ntag424_Authenticate(new_keys.keys[0], 0, 0x71);
     if (authed != 1) {
-      Serial.println(F("[burn] VERIFY FAIL: new-key auth failed"));
+      DBG_PRINTLN(F("[burn] VERIFY FAIL: new-key auth failed"));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
-    Serial.println(F("[burn] New-key auth OK"));
+    DBG_PRINTLN(F("[burn] New-key auth OK"));
 
     bool burn_verified = true;
     for (int i = 1; i < 5; i++) {
       uint8_t v = bolty_get_key_version(nfc, i);
       if (v != 0x01) {
-        Serial.print(F("[burn] VERIFY FAIL: Key "));
-        Serial.print(i);
-        Serial.print(F(" version=0x"));
-        if (v < 0x10) Serial.print('0');
-        Serial.print(v, HEX);
-        Serial.println(F(" — expected 0x01"));
+        DBG_PRINT(F("[burn] VERIFY FAIL: Key "));
+        DBG_PRINT(i);
+        DBG_PRINT(F(" version=0x"));
+        if (v < 0x10) DBG_PRINT('0');
+        DBG_PRINT(v, HEX);
+        DBG_PRINTLN(F(" — expected 0x01"));
         burn_verified = false;
       }
     }
 
     if (burn_verified) {
-      Serial.println(F("[burn] VERIFY OK: All keys confirmed at target version 0x01"));
+      DBG_PRINTLN(F("[burn] VERIFY OK: All keys confirmed at target version 0x01"));
       set_job_status_id(JOBSTATUS_DONE);
     } else {
-      Serial.println(F("[burn] VERIFY FAIL: Some keys not at target version"));
+      DBG_PRINTLN(F("[burn] VERIFY FAIL: Some keys not at target version"));
       set_job_status_id(JOBSTATUS_ERROR);
     }
     return job_status;
@@ -732,44 +736,44 @@ public:
     }
 
     set_job_status_id(JOBSTATUS_WIPING);
-    Serial.println(F("Found an ISO14443A tag"));
-    Serial.print(F("  UID Length: "));
-    Serial.print(uidLength, DEC);
-    Serial.println(F(" bytes"));
-    Serial.print(F("  UID Value: "));
+    DBG_PRINTLN(F("Found an ISO14443A tag"));
+    DBG_PRINT(F("  UID Length: "));
+    DBG_PRINT(uidLength, DEC);
+    DBG_PRINTLN(F(" bytes"));
+    DBG_PRINT(F("  UID Value: "));
     bolty_print_hex(nfc, uid, uidLength);
-    Serial.println();
+    DBG_PRINTLN();
 
     if (!(((uidLength == 7) || (uidLength == 4)) && nfc->ntag424_isNTAG424())) {
-      Serial.println(F("This doesn't seem to be an NTAG424 tag."));
+      DBG_PRINTLN(F("This doesn't seem to be an NTAG424 tag."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
 
     const uint8_t kv = bolty_get_key_version(nfc, 0);
     if (kv != 0x00) {
-      Serial.print(F("ABORT: Key 0 version is 0x"));
+      DBG_PRINT(F("ABORT: Key 0 version is 0x"));
       if (kv < 0x10) {
-        Serial.print(F("0"));
+        DBG_PRINT(F("0"));
       }
-      Serial.print(kv, HEX);
-      Serial.println(F(" — resetNdefOnly requires factory keys. Use 'wipe' instead."));
+      DBG_PRINT(kv, HEX);
+      DBG_PRINTLN(F(" — resetNdefOnly requires factory keys. Use 'wipe' instead."));
       set_job_status_id(JOBSTATUS_GUARD_REJECT);
       return job_status;
     }
 
-    Serial.println(F("Pre-reset check OK — key 0 is factory default"));
+    DBG_PRINTLN(F("Pre-reset check OK — key 0 is factory default"));
     selectNtagApplicationFiles();
 
     uint8_t zero_key[16] = {0};
     if (nfc->ntag424_Authenticate(zero_key, 0, 0x71) != 1) {
-      Serial.println(F("Authentication with zero key FAILED."));
+      DBG_PRINTLN(F("Authentication with zero key FAILED."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
-    Serial.println(F("Authentication successful (factory zero key)."));
+    DBG_PRINTLN(F("Authentication successful (factory zero key)."));
 
-    Serial.println(F("Disabling SDM and resetting file settings..."));
+    DBG_PRINTLN(F("Disabling SDM and resetting file settings..."));
     // Reset file 2 settings: disable SDM, keep Plain read/write access.
     // {0x00, 0x00, 0xE0} = no SDM mirroring, free access, standard file.
     // Ref: NT4H2421Gx datasheet §7.6.2 Table 49
@@ -781,18 +785,18 @@ public:
     selectNtagApplicationFiles();
     nfc->ntag424_Authenticate(zero_key, 0, 0x71);
     if (nfc->ntag424_FormatNDEF()) {
-      Serial.println(F("NDEF formatted OK."));
+      DBG_PRINTLN(F("NDEF formatted OK."));
     } else {
-      Serial.println(F("NDEF format skipped (already blank)."));
+      DBG_PRINTLN(F("NDEF format skipped (already blank)."));
     }
     job_perc = 100;
 
     selectNtagApplicationFiles();
     const uint8_t verify_auth = nfc->ntag424_Authenticate(zero_key, 0, 0x71);
     if (verify_auth == 1) {
-      Serial.println(F("Verify auth OK — keys unchanged."));
+      DBG_PRINTLN(F("Verify auth OK — keys unchanged."));
     } else {
-      Serial.println(F("WARNING: Verify auth failed (unexpected)."));
+      DBG_PRINTLN(F("WARNING: Verify auth failed (unexpected)."));
     }
 
     set_job_status_id(JOBSTATUS_DONE);
@@ -807,7 +811,7 @@ public:
     memset(vr.key_versions, 0xFF, 5);
     uint8_t zero_key[16] = {0};
 
-    Serial.println(F("[verify] Reading key versions..."));
+    DBG_PRINTLN(F("[verify] Reading key versions..."));
     for (int i = 0; i < 5; i++) {
       vr.key_versions[i] = bolty_get_key_version(nfc, i);
     }
@@ -818,28 +822,28 @@ public:
     }
 
     if (vr.all_factory) {
-      Serial.println(F("[verify] All keys at factory (0x00) — card is blank."));
+      DBG_PRINTLN(F("[verify] All keys at factory (0x00) — card is blank."));
       for (int i = 0; i < 5; i++) vr.verified[i] = true;
       vr.all_verified = true;
       return vr;
     }
 
-    Serial.println(F("[verify] Authenticating all keys..."));
+    DBG_PRINTLN(F("[verify] Authenticating all keys..."));
     for (int i = 0; i < 5; i++) {
       selectNtagApplicationFiles();
-      Serial.print(F("[verify]   K"));
-      Serial.print(i);
-      Serial.print(F(": ver=0x"));
-      if (vr.key_versions[i] < 0x10) Serial.print(F("0"));
-      Serial.print(vr.key_versions[i], HEX);
+      DBG_PRINT(F("[verify]   K"));
+      DBG_PRINT(i);
+      DBG_PRINT(F(": ver=0x"));
+      if (vr.key_versions[i] < 0x10) DBG_PRINT(F("0"));
+      DBG_PRINT(vr.key_versions[i], HEX);
 
       if (vr.key_versions[i] == 0x00) {
         if (nfc->ntag424_Authenticate(zero_key, i, 0x71) == 1) {
           vr.verified[i] = true;
-          Serial.println(F(" FACTORY-OK"));
+          DBG_PRINTLN(F(" FACTORY-OK"));
         } else {
           vr.verified[i] = false;
-          Serial.println(F(" FACTORY-FAIL (desync!)"));
+          DBG_PRINTLN(F(" FACTORY-FAIL (desync!)"));
         }
         continue;
       }
@@ -847,36 +851,36 @@ public:
       // Provisioned slot — try explicit key first.
       if (nfc->ntag424_Authenticate(cur_keys.keys[i], i, 0x71) == 1) {
         vr.verified[i] = true;
-        Serial.println(F(" AUTHENTICATED"));
+        DBG_PRINTLN(F(" AUTHENTICATED"));
         continue;
       }
 
       // Explicit key failed. Probe K3=K1 or K4=K2 (LNBits), then zeros.
       if (i == 3 || i == 4) {
         const uint8_t lnbits_src = (i == 3) ? 1 : 2;
-        Serial.print(F(" probing..."));
+        DBG_PRINT(F(" probing..."));
         selectNtagApplicationFiles();
         if (nfc->ntag424_Authenticate(cur_keys.keys[lnbits_src], i, 0x71) == 1) {
-          Serial.print(F(" K"));
-          Serial.print(i);
-          Serial.print(F("=K"));
-          Serial.print(lnbits_src);
-          Serial.println(F(" (LNBits) OK"));
+          DBG_PRINT(F(" K"));
+          DBG_PRINT(i);
+          DBG_PRINT(F("=K"));
+          DBG_PRINT(lnbits_src);
+          DBG_PRINTLN(F(" (LNBits) OK"));
           memcpy(cur_keys.keys[i], cur_keys.keys[lnbits_src], 16);
           vr.verified[i] = true;
           continue;
         }
         selectNtagApplicationFiles();
         if (nfc->ntag424_Authenticate(zero_key, i, 0x71) == 1) {
-          Serial.println(F(" zeros OK"));
+          DBG_PRINTLN(F(" zeros OK"));
           memset(cur_keys.keys[i], 0, 16);
           vr.verified[i] = true;
           continue;
         }
-        Serial.println(F(" PROBE-FAIL"));
+        DBG_PRINTLN(F(" PROBE-FAIL"));
         vr.verified[i] = false;
       } else {
-        Serial.println(F(" FAILED (no probe for K0/K1/K2)"));
+        DBG_PRINTLN(F(" FAILED (no probe for K0/K1/K2)"));
         vr.verified[i] = false;
       }
     }
@@ -886,15 +890,15 @@ public:
     vr.all_verified = (ok_count == 5);
 
     if (vr.all_verified) {
-      Serial.println(F("[verify] All 5 keys verified — safe to wipe."));
+      DBG_PRINTLN(F("[verify] All 5 keys verified — safe to wipe."));
     } else {
-      Serial.print(F("[verify] ABORT: "));
-      Serial.print(5 - ok_count);
-      Serial.print(F(" key(s) UNVERIFIED:"));
+      DBG_PRINT(F("[verify] ABORT: "));
+      DBG_PRINT(5 - ok_count);
+      DBG_PRINT(F(" key(s) UNVERIFIED:"));
       for (int i = 0; i < 5; i++) {
-        if (!vr.verified[i]) { Serial.print(F(" K")); Serial.print(i); }
+        if (!vr.verified[i]) { DBG_PRINT(F(" K")); DBG_PRINT(i); }
       }
-      Serial.println();
+      DBG_PRINTLN();
     }
     return vr;
   }
@@ -909,16 +913,16 @@ public:
     }
 
     set_job_status_id(JOBSTATUS_WIPING);
-    Serial.println("Found an ISO14443A tag");
-    Serial.print("  UID Length: ");
-    Serial.print(uidLength, DEC);
-    Serial.println(" bytes");
-    Serial.print("  UID Value: ");
+    DBG_PRINTLN("Found an ISO14443A tag");
+    DBG_PRINT("  UID Length: ");
+    DBG_PRINT(uidLength, DEC);
+    DBG_PRINTLN(" bytes");
+    DBG_PRINT("  UID Value: ");
     bolty_print_hex(nfc, uid, uidLength);
-    Serial.println("");
+    DBG_PRINTLN("");
 
     if (!(((uidLength == 7) || (uidLength == 4)) && nfc->ntag424_isNTAG424())) {
-      Serial.println("This doesn't seem to be an NTAG424 tag. (UUID length != 7 bytes and UUID length != 4)!");
+      DBG_PRINTLN("This doesn't seem to be an NTAG424 tag. (UUID length != 7 bytes and UUID length != 4)!");
       return job_status;
     }
 
@@ -937,11 +941,11 @@ public:
     // Re-auth K0 for wipe ops (verify cycle may have left non-K0 session active).
     selectNtagApplicationFiles();
     if (nfc->ntag424_Authenticate(cur_keys.keys[0], 0, 0x71) != 1) {
-      Serial.println(F("Post-verify K0 re-auth failed."));
+      DBG_PRINTLN(F("Post-verify K0 re-auth failed."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
-    Serial.println("Disable Mirroring and SDM.");
+    DBG_PRINTLN("Disable Mirroring and SDM.");
     // Reset file 2 settings: disable SDM, keep Plain read/write access.
     // {0x00, 0x00, 0xE0} = no SDM mirroring, free access, standard file.
     // Ref: NT4H2421Gx datasheet §7.6.2 Table 49
@@ -965,7 +969,7 @@ public:
     //   transaction (SDM state is reset)."
     selectNtagApplicationFiles();
     if (nfc->ntag424_Authenticate(new_keys.keys[0], 0, 0x71) != 1) {
-      Serial.println("Re-authentication after key change failed.");
+      DBG_PRINTLN("Re-authentication after key change failed.");
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
@@ -976,11 +980,11 @@ public:
 
     // Post-wipe verification: confirm all keys are at factory version 0x00.
     selectNtagApplicationFiles();
-    Serial.println(F("[wipe] Post-wipe verification..."));
+    DBG_PRINTLN(F("[wipe] Post-wipe verification..."));
     uint8_t zero_key[16] = {0};
     const uint8_t authed = nfc->ntag424_Authenticate(zero_key, 0, 0x71);
     if (authed != 1) {
-      Serial.println(F("[wipe] VERIFY FAIL: zero-key auth failed — wipe did not succeed"));
+      DBG_PRINTLN(F("[wipe] VERIFY FAIL: zero-key auth failed — wipe did not succeed"));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
@@ -989,21 +993,21 @@ public:
     for (int i = 0; i < 5; i++) {
       uint8_t v = bolty_get_key_version(nfc, i);
       if (v != 0x00) {
-        Serial.print(F("[wipe] VERIFY FAIL: Key "));
-        Serial.print(i);
-        Serial.print(F(" version=0x"));
-        if (v < 0x10) Serial.print('0');
-        Serial.print(v, HEX);
-        Serial.println(F(" — expected 0x00"));
+        DBG_PRINT(F("[wipe] VERIFY FAIL: Key "));
+        DBG_PRINT(i);
+        DBG_PRINT(F(" version=0x"));
+        if (v < 0x10) DBG_PRINT('0');
+        DBG_PRINT(v, HEX);
+        DBG_PRINTLN(F(" — expected 0x00"));
         all_verified = false;
       }
     }
 
     if (all_verified) {
-      Serial.println(F("[wipe] VERIFY OK: All 5 keys confirmed factory (version 0x00)"));
+      DBG_PRINTLN(F("[wipe] VERIFY OK: All 5 keys confirmed factory (version 0x00)"));
       set_job_status_id(JOBSTATUS_DONE);
     } else {
-      Serial.println(F("[wipe] VERIFY FAIL: Some keys not at factory state"));
+      DBG_PRINTLN(F("[wipe] VERIFY FAIL: Some keys not at factory state"));
       set_job_status_id(JOBSTATUS_ERROR);
     }
     return job_status;
