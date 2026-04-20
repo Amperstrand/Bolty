@@ -111,10 +111,11 @@ inline void bolty_print_hex(BoltyNfcReader *nfc, const uint8_t *data,
 #endif
 }
 
+// No ISO SELECT before GetKeyVersion — ISO SELECT (CLA=0x00) desyncs
+// cmd_counter during authenticated sessions because the card doesn't
+// count ISO commands but our process_response() does. Native GetKeyVersion
+// (CLA=0x90, INS=0x64) works without app selection. See issue #8.
 inline uint8_t bolty_get_key_version(BoltyNfcReader *nfc, uint8_t keyno) {
-  if (!nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID)) {
-    return 0xFF;
-  }
   uint8_t version = 0xFF;
   if (nfc->ntag424_GetKeyVersion(keyno, &version)) {
     return version;
@@ -704,10 +705,20 @@ public:
       return job_status;
     }
 
-    // TODO: EC-5 card presence check removed — bolty_get_key_version()
-    // sends ISO Select via raw transceive which desyncs cmd_counter with
-    // the card, causing 91 AE on subsequent ChangeKey.  Restore with a
-    // native GetKeyVersion that uses ntag424_send_apdu instead.
+    // EC-5: Verify card is still present and keys unchanged before key rotation.
+    // Now safe because bolty_get_key_version() uses native GetKeyVersion
+    // without ISO SELECT (which desynced cmd_counter). See issue #8.
+    {
+      uint8_t ec5_kv = bolty_get_key_version(nfc, 0);
+      if (ec5_kv == 0xFF) {
+        DBG_PRINTLN(F("[burn] EC-5 CHECK: card disappeared before key change — aborting"));
+        set_job_status_id(JOBSTATUS_ERROR);
+        return job_status;
+      }
+      DBG_PRINT(F("[burn] EC-5 CHECK: key 0 version=0x"));
+      if (ec5_kv < 0x10) DBG_PRINT('0');
+      DBG_PRINTLN(ec5_kv, HEX);
+    }
 
     // Change all 5 application keys. Key version 0x01 marks the card as
     // provisioned (factory = 0x00). Keys changed in reverse order (4→0)
@@ -992,7 +1003,18 @@ public:
       return job_status;
     }
 
-    // TODO: EC-5 card presence check removed — same cmd_counter desync as burn().
+    // EC-5: Verify card still present before key rotation. See issue #8.
+    {
+      uint8_t ec5_kv = bolty_get_key_version(nfc, 0);
+      if (ec5_kv == 0xFF) {
+        DBG_PRINTLN(F("[wipe] EC-5 CHECK: card disappeared before key change — aborting"));
+        set_job_status_id(JOBSTATUS_ERROR);
+        return job_status;
+      }
+      DBG_PRINT(F("[wipe] EC-5 CHECK: key 0 version=0x"));
+      if (ec5_kv < 0x10) DBG_PRINT('0');
+      DBG_PRINTLN(ec5_kv, HEX);
+    }
 
     // Reset all keys to factory defaults (key version 0x00 = factory state).
     // Ref: NT4H2421Gx datasheet §7.3.2
