@@ -535,8 +535,15 @@ void saveBoltConfig(uint8_t slot) {
   char path[20];
   sprintf(path, "/config%02x.dat", slot);
   SPIFFS.begin(true);
+  // Never persist keys to flash — write a sanitized copy with zeroed key fields.
+  sBoltConfig sanitized = mBoltConfig;
+  memset(sanitized.k0, 0, sizeof(sanitized.k0));
+  memset(sanitized.k1, 0, sizeof(sanitized.k1));
+  memset(sanitized.k2, 0, sizeof(sanitized.k2));
+  memset(sanitized.k3, 0, sizeof(sanitized.k3));
+  memset(sanitized.k4, 0, sizeof(sanitized.k4));
   fs::File myFile = SPIFFS.open(path, FILE_WRITE);
-  myFile.write((byte *)&mBoltConfig, sizeof(sBoltConfig));
+  myFile.write((byte *)&sanitized, sizeof(sBoltConfig));
   myFile.close();
 }
 
@@ -2523,13 +2530,13 @@ ndef_fail:
       Serial.println(F("[inspect] --- Key Versions (read-only) ---"));
       bool all_zero = true;
       bool any_keyver_error = false;
+      uint8_t key_versions[5] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
       if (!bolt.nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID)) {
         Serial.println(F("[inspect] Failed to select NTAG424 application for key version reads"));
         any_keyver_error = true;
       } else {
         for (int k = 0; k < 5; k++) {
-          uint8_t kv = 0xFF;
-          const bool ok = bolt.nfc->ntag424_GetKeyVersion(k, &kv);
+          const bool ok = bolt.nfc->ntag424_GetKeyVersion(k, &key_versions[k]);
           Serial.print(F("[inspect] Key "));
           Serial.print(k);
           Serial.print(F(" version: "));
@@ -2539,10 +2546,28 @@ ndef_fail:
             continue;
           }
           Serial.print(F("0x"));
-          print_hex_byte_prefixed(kv);
-          if (kv == 0x00) Serial.println(F(" (factory default)"));
+          print_hex_byte_prefixed(key_versions[k]);
+          if (key_versions[k] == 0x00) Serial.println(F(" (factory default)"));
           else Serial.println(F(" (changed)"));
-          if (kv != 0x00) all_zero = false;
+          if (key_versions[k] != 0x00) all_zero = false;
+        }
+      }
+
+      // Detect inconsistent states (mixed factory + changed keys)
+      if (!all_zero && !any_keyver_error) {
+        bool all_changed = true;
+        for (int k = 0; k < 5; k++) { if (key_versions[k] == 0x00) all_changed = false; }
+        if (!all_changed) {
+          Serial.println(F("[inspect] *** INCONSISTENT STATE DETECTED ***"));
+          Serial.print(F("[inspect] Partial burn/wipe: keys "));
+          for (int k = 0; k < 5; k++) {
+            if (key_versions[k] == 0x00) {
+              Serial.print(F("K")); Serial.print(k); Serial.print(F("=factory "));
+            }
+          }
+          Serial.println(F("are still factory"));
+          Serial.println(F("[inspect] If you know the keys used, try 'wipe' to reset all keys."));
+          Serial.println(F("[inspect] If K0 is still factory, 'burn' may work (it requires K0=0x00)."));
         }
       }
 

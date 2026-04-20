@@ -2,15 +2,11 @@
 #define BOLT_H
 
 #include "gui.h"
-#include "debug.h"
 #include "hardware_config.h"
-#include "debug.h"
 #include "led.h"
-#include "debug.h"
 
 #if BOLTY_NFC_BACKEND_MFRC522
 #include <MFRC522_NTAG424.h>
-#include "debug.h"
 using BoltyNfcReader = MFRC522_NTAG424;
 #else
 #include <Adafruit_PN532_NTAG424.h>
@@ -19,6 +15,7 @@ using BoltyNfcReader = Adafruit_PN532;
 
 #include <SPI.h>
 #include <Wire.h>
+#include "debug.h"
 
 #define JOBSTATUS_IDLE 0
 #define JOBSTATUS_WAITING 1
@@ -290,11 +287,13 @@ public:
   // (K0) is changed last. Continues through individual failures to avoid
   // leaving the card in a partial-wipe state.
   // Ref: NT4H2421Gx datasheet §7.3.2, AN12196 §6.3
+  // Abort changeAllKeys immediately on first failure.
+  // Since keys are changed 4→0, if K3 fails, K0 is still original —
+  // recovery is possible with old K0. Continuing would leave mixed state.
   bool changeAllKeys(uint8_t target_key_version) {
     DBG_PRINT(F("[changeAllKeys] Changing keys 4→3→2→1→0, target version=0x"));
     if (target_key_version < 0x10) DBG_PRINT('0');
     DBG_PRINTLN(target_key_version, HEX);
-    uint8_t failed_keys = 0;
     for (int i = 0; i < 5; i++) {
       const uint8_t key_index = 4 - i;
       DBG_PRINT(F("[changeAllKeys] Key "));
@@ -306,21 +305,24 @@ public:
       DBG_PRINTLN();
       if (!nfc->ntag424_ChangeKey(cur_keys.keys[key_index], new_keys.keys[key_index],
                                   key_index, target_key_version)) {
-        DBG_PRINT(F("[changeAllKeys] FAILED on key "));
+        DBG_PRINT(F("[changeAllKeys] ABORT: FAILED on key "));
         DBG_PRINT(key_index);
-        DBG_PRINTLN(F(" (continuing with remaining keys)"));
-        failed_keys++;
-        continue;
+        DBG_PRINTLN(F(" — stopping immediately to avoid inconsistent card state"));
+        // Report which keys succeeded before failure (all keys > key_index are done)
+        if (i > 0) {
+          DBG_PRINT(F("[changeAllKeys] Keys already changed successfully: "));
+          for (int j = 0; j < i; j++) {
+            DBG_PRINT(F("K"));
+            DBG_PRINT(4 - j);
+            if (j < i - 1) DBG_PRINT(F(", "));
+          }
+          DBG_PRINTLN();
+        }
+        return false;
       }
       DBG_PRINT(F("[changeAllKeys] Key "));
       DBG_PRINT(key_index);
       DBG_PRINTLN(F(" -> OK"));
-    }
-    if (failed_keys > 0) {
-      DBG_PRINT(F("[changeAllKeys] COMPLETED WITH ERRORS: "));
-      DBG_PRINT(failed_keys);
-      DBG_PRINTLN(F(" keys failed"));
-      return false;
     }
     DBG_PRINTLN(F("[changeAllKeys] All 5 keys changed successfully"));
     return true;
@@ -514,7 +516,21 @@ public:
 
   String getScannedUid() { return last_scanned_uid; }
 
+  // Max URL length: NDEF file = 256 bytes. Total message = 7 (header) + url_len
+  // + 61 (SDM "?p=32hex&c=16hex"). Plus 2 for NLEN. Max url_len = 256 - 70 = 186.
+  static const int MAX_URL_LENGTH = 186;
+
   uint8_t burn(String lnurl) {
+    if ((int)lnurl.length() > MAX_URL_LENGTH) {
+      DBG_PRINT(F("[burn] URL too long: "));
+      DBG_PRINT(lnurl.length());
+      DBG_PRINT(F(" bytes (max "));
+      DBG_PRINT(MAX_URL_LENGTH);
+      DBG_PRINTLN(F(")"));
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
+    }
+
     uint8_t uid[12] = {0};
     uint8_t uidLength = 0;
     job_status = JOBSTATUS_WAITING;
@@ -562,7 +578,13 @@ public:
     // Using cur_keys.keys[0] (factory zero key) with key number 0.
     const uint8_t auth_result = nfc->ntag424_Authenticate(cur_keys.keys[0], 0, 0x71);
     if (auth_result != 1) {
-      DBG_PRINTLN(F("Native auth with factory key failed."));
+      uint8_t chk_uid[12] = {0};
+      uint8_t chk_uid_len = 0;
+      if (bolty_read_passive_target(nfc, chk_uid, &chk_uid_len)) {
+        DBG_PRINTLN(F("Auth FAILED — card is present but key was rejected (wrong key?)"));
+      } else {
+        DBG_PRINTLN(F("Auth FAILED — card no longer detected (removed during operation?)"));
+      }
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
@@ -674,12 +696,23 @@ public:
                               static_cast<uint8_t>(sdmMacOffset & 0xff),
                               static_cast<uint8_t>((sdmMacOffset >> 8) & 0xff),
                               static_cast<uint8_t>((sdmMacOffset >> 16) & 0xff)};
-    nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
+    if (!nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
                                     (uint8_t)sizeof(fileSettings),
-                                    // NTAG424_COMM_MODE_FULL: AES-128 encrypt +
-                                    // CMAC on command and response.
-                                    // Ref: NT4H2421Gx datasheet §7.6.2
-                                    (uint8_t)NTAG424_COMM_MODE_FULL);
+                                    (uint8_t)NTAG424_COMM_MODE_FULL)) {
+      DBG_PRINTLN(F("ChangeFileSettings (SDM enable) FAILED — aborting burn before key change"));
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
+    }
+
+    // Verify card is still present before starting irreversible key rotation.
+    {
+      uint8_t check = bolty_get_key_version(nfc, 1);
+      if (check == 0xFF) {
+        DBG_PRINTLN(F("Card presence check FAILED before key change — card removed?"));
+        set_job_status_id(JOBSTATUS_ERROR);
+        return job_status;
+      }
+    }
 
     // Change all 5 application keys. Key version 0x01 marks the card as
     // provisioned (factory = 0x00). Keys changed in reverse order (4→0)
@@ -941,7 +974,13 @@ public:
     // Re-auth K0 for wipe ops (verify cycle may have left non-K0 session active).
     selectNtagApplicationFiles();
     if (nfc->ntag424_Authenticate(cur_keys.keys[0], 0, 0x71) != 1) {
-      DBG_PRINTLN(F("Post-verify K0 re-auth failed."));
+      uint8_t chk_uid[12] = {0};
+      uint8_t chk_uid_len = 0;
+      if (bolty_read_passive_target(nfc, chk_uid, &chk_uid_len)) {
+        DBG_PRINTLN(F("Post-verify K0 re-auth FAILED — card present but key rejected"));
+      } else {
+        DBG_PRINTLN(F("Post-verify K0 re-auth FAILED — card removed during verify"));
+      }
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
@@ -950,9 +989,23 @@ public:
     // {0x00, 0x00, 0xE0} = no SDM mirroring, free access, standard file.
     // Ref: NT4H2421Gx datasheet §7.6.2 Table 49
     uint8_t fileSettings[] = {0x00, 0x00, 0xE0};
-    nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
+    if (!nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
                                     (uint8_t)sizeof(fileSettings),
-                                    (uint8_t)NTAG424_COMM_MODE_FULL);
+                                    (uint8_t)NTAG424_COMM_MODE_FULL)) {
+      DBG_PRINTLN(F("ChangeFileSettings (SDM disable) FAILED — aborting wipe before key change"));
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
+    }
+
+    // Verify card is still present before starting irreversible key rotation.
+    {
+      uint8_t check = bolty_get_key_version(nfc, 1);
+      if (check == 0xFF) {
+        DBG_PRINTLN(F("Card presence check FAILED before key change — card removed?"));
+        set_job_status_id(JOBSTATUS_ERROR);
+        return job_status;
+      }
+    }
 
     // Reset all keys to factory defaults (key version 0x00 = factory state).
     // Ref: NT4H2421Gx datasheet §7.3.2
@@ -976,6 +1029,10 @@ public:
 
     if (nfc->ntag424_FormatNDEF()) {
       job_perc = 100;
+    } else {
+      DBG_PRINTLN(F("FormatNDEF FAILED — card keys are reset but NDEF may be stale"));
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
     }
 
     // Post-wipe verification: confirm all keys are at factory version 0x00.
