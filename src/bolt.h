@@ -704,15 +704,10 @@ public:
       return job_status;
     }
 
-    // Verify card is still present before starting irreversible key rotation.
-    {
-      uint8_t check = bolty_get_key_version(nfc, 1);
-      if (check == 0xFF) {
-        DBG_PRINTLN(F("Card presence check FAILED before key change — card removed?"));
-        set_job_status_id(JOBSTATUS_ERROR);
-        return job_status;
-      }
-    }
+    // TODO: EC-5 card presence check removed — bolty_get_key_version()
+    // sends ISO Select via raw transceive which desyncs cmd_counter with
+    // the card, causing 91 AE on subsequent ChangeKey.  Restore with a
+    // native GetKeyVersion that uses ntag424_send_apdu instead.
 
     // Change all 5 application keys. Key version 0x01 marks the card as
     // provisioned (factory = 0x00). Keys changed in reverse order (4→0)
@@ -997,15 +992,7 @@ public:
       return job_status;
     }
 
-    // Verify card is still present before starting irreversible key rotation.
-    {
-      uint8_t check = bolty_get_key_version(nfc, 1);
-      if (check == 0xFF) {
-        DBG_PRINTLN(F("Card presence check FAILED before key change — card removed?"));
-        set_job_status_id(JOBSTATUS_ERROR);
-        return job_status;
-      }
-    }
+    // TODO: EC-5 card presence check removed — same cmd_counter desync as burn().
 
     // Reset all keys to factory defaults (key version 0x00 = factory state).
     // Ref: NT4H2421Gx datasheet §7.3.2
