@@ -55,6 +55,8 @@
 #include "tardata.h"
 #endif
 
+#include "ota.h"
+
 #if HAS_WIFI
 #define WIFIMODE_AP 0
 #define WIFIMODE_STA 1
@@ -1247,6 +1249,10 @@ void setup(void) {
   Serial.println(PN532_LIB_GIT_COMMIT);
   Serial.println("========================");
 
+#if BOLTY_OTA_ENABLED
+  ota_check_and_update();
+#endif
+
   setup_display();
   led_setup();
 
@@ -1601,6 +1607,10 @@ void serial_print_help() {
   Serial.println(F("  recoverkey <n> <hex>  Recover key slot n (0-4) with candidate old key"));
   Serial.println(F("  reset             Reset NDEF+SDM on factory-key card (keys unchanged)"));
   Serial.println(F("  testck            ChangeKey A/B test on key 1 (verify implementation)"));
+#if BOLTY_OTA_ENABLED
+  Serial.println(F("  --- OTA ---"));
+  Serial.println(F("  ota               Check manifest and apply firmware update if newer"));
+#endif
   Serial.println();
 }
 
@@ -3672,6 +3682,11 @@ ndef_fail:
     led_blink(all_pass ? 3 : 5, 100);
     serial_cmd_active = false;
   }
+#if BOLTY_OTA_ENABLED
+  else if (cmd == "ota") {
+    ota_check_and_update();
+  }
+#endif
   else {
     Serial.print(F("[error] Unknown: ")); Serial.println(cmd);
   }
