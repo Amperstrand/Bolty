@@ -5,6 +5,7 @@
 #include <HTTPClient.h>
 #include <Update.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -12,8 +13,10 @@
 #include <mbedtls/base64.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/sha256.h>
+#include <time.h>
 
 #include "build_metadata.h"
+#include "ota_ca_cert.h"
 #include "ota_signing_key.h"
 
 #ifndef OTA_SSID
@@ -31,12 +34,15 @@
 #ifndef OTA_AUTH_TOKEN
 #define OTA_AUTH_TOKEN ""
 #endif
+#ifndef OTA_NTP_SERVER
+#define OTA_NTP_SERVER "pool.ntp.org"
+#endif
 
 #define BOLTY_OTA_STRINGIFY_(x) #x
 #define BOLTY_OTA_STRINGIFY(x)  BOLTY_OTA_STRINGIFY_(x)
 
 #define OTA_MANIFEST_URL \
-  "http://" OTA_HOST ":" BOLTY_OTA_STRINGIFY(OTA_PORT) "/manifest.json"
+  "https://" OTA_HOST ":" BOLTY_OTA_STRINGIFY(OTA_PORT) "/manifest.json"
 
 static bool ota_verify_manifest_signature(unsigned long version_code, const String &sha256_hex, const String &signature_b64) {
   if (sha256_hex.length() != 64 || signature_b64.length() == 0) {
@@ -94,7 +100,39 @@ static bool ota_verify_manifest_signature(unsigned long version_code, const Stri
   return true;
 }
 
-static bool ota_stream_matches_sha256(WiFiClient &client, size_t expected_size, const String &expected_sha256_hex) {
+static bool ota_wait_for_ntp_time() {
+  time_t now = time(nullptr);
+  if (now >= 1700000000) {
+    return true;
+  }
+
+  Serial.print(F("[ota] Syncing time via NTP"));
+  configTime(0, 0, OTA_NTP_SERVER);
+
+  const unsigned long started = millis();
+  while (millis() - started < 30000UL) {
+    delay(500);
+    Serial.print(F("."));
+    now = time(nullptr);
+    if (now >= 1700000000) {
+      Serial.println();
+      Serial.print(F("[ota] Time synced: "));
+      Serial.println(static_cast<unsigned long>(now));
+      return true;
+    }
+  }
+
+  Serial.println();
+  Serial.println(F("[ota] NTP sync failed - aborting HTTPS OTA"));
+  return false;
+}
+
+static void ota_configure_tls_client(WiFiClientSecure &client) {
+  client.setCACert(OTA_CA_CERT_PEM);
+  client.setHandshakeTimeout(15);
+}
+
+static bool ota_stream_matches_sha256(Client &client, size_t expected_size, const String &expected_sha256_hex) {
   if (!Update.begin(expected_size > 0 ? expected_size : UPDATE_SIZE_UNKNOWN, U_FLASH)) {
     Serial.print(F("[ota] Update.begin failed: "));
     Serial.println(Update.errorString());
@@ -227,6 +265,11 @@ static void ota_add_auth_header(HTTPClient &http) {
   }
 }
 
+static void ota_disconnect_wifi() {
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+}
+
 static void ota_check_and_update_impl() {
   Serial.println(F("[ota] Checking for firmware update..."));
   Serial.print(F("[ota] Manifest: "));
@@ -288,10 +331,22 @@ static void ota_check_and_update_impl() {
   Serial.print(F("[ota] Connected, IP: "));
   Serial.println(WiFi.localIP());
 
+  if (!ota_wait_for_ntp_time()) {
+    ota_disconnect_wifi();
+    return;
+  }
+
   HTTPClient http;
-  WiFiClient client;
-  http.begin(client, OTA_MANIFEST_URL);
+  WiFiClientSecure client;
+  ota_configure_tls_client(client);
+  if (!http.begin(client, OTA_MANIFEST_URL)) {
+    Serial.println(F("[ota] HTTPS manifest client init failed"));
+    ota_disconnect_wifi();
+    return;
+  }
   http.useHTTP10(true);
+  http.setConnectTimeout(15000);
+  http.setTimeout(15000);
   ota_add_auth_header(http);
   const int code = http.GET();
 
@@ -299,8 +354,7 @@ static void ota_check_and_update_impl() {
     Serial.print(F("[ota] Manifest fetch failed, HTTP "));
     Serial.println(code);
     http.end();
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
+    ota_disconnect_wifi();
     return;
   }
 
@@ -311,8 +365,7 @@ static void ota_check_and_update_impl() {
   if (err) {
     Serial.print(F("[ota] Manifest JSON parse error: "));
     Serial.println(err.c_str());
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
+    ota_disconnect_wifi();
     return;
   }
 
@@ -327,8 +380,7 @@ static void ota_check_and_update_impl() {
 
   if (remote_version == 0 || fw_url.length() == 0) {
     Serial.println(F("[ota] Manifest missing version_code or url - skipping"));
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
+    ota_disconnect_wifi();
     return;
   }
 
@@ -341,8 +393,7 @@ static void ota_check_and_update_impl() {
 
   if (!ota_verify_manifest_signature(remote_version, fw_sha256, fw_signature)) {
     Serial.println(F("[ota] Manifest signature invalid - skipping OTA"));
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
+    ota_disconnect_wifi();
     return;
   }
 
@@ -350,9 +401,16 @@ static void ota_check_and_update_impl() {
   Serial.println(fw_url);
 
   HTTPClient http2;
-  WiFiClient client2;
-  http2.begin(client2, fw_url);
+  WiFiClientSecure client2;
+  ota_configure_tls_client(client2);
+  if (!http2.begin(client2, fw_url)) {
+    Serial.println(F("[ota] HTTPS firmware client init failed"));
+    ota_disconnect_wifi();
+    return;
+  }
   http2.useHTTP10(true);
+  http2.setConnectTimeout(15000);
+  http2.setTimeout(15000);
   ota_add_auth_header(http2);
   const int fw_code = http2.GET();
 
@@ -360,8 +418,7 @@ static void ota_check_and_update_impl() {
     Serial.print(F("[ota] Firmware fetch failed, HTTP "));
     Serial.println(fw_code);
     http2.end();
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
+    ota_disconnect_wifi();
     return;
   }
 
@@ -378,14 +435,12 @@ static void ota_check_and_update_impl() {
   http2.end();
 
   if (!ok) {
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
+    ota_disconnect_wifi();
     return;
   }
 
   Serial.println(F("[ota] Update complete! Rebooting..."));
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
+  ota_disconnect_wifi();
   delay(200);
   ESP.restart();
 }
