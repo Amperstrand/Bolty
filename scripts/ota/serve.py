@@ -16,6 +16,7 @@ import os
 import socket
 import socketserver
 import sys
+from http import HTTPStatus
 from pathlib import Path
 
 OTA_DIR = Path(__file__).parent
@@ -24,6 +25,32 @@ OTA_DIR = Path(__file__).parent
 class OTAHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(OTA_DIR), **kwargs)
+
+    def _is_authorized(self) -> bool:
+        expected_token = os.environ.get("OTA_AUTH_TOKEN")
+        if not expected_token:
+            return True
+        return self.headers.get("Authorization") == f"Bearer {expected_token}"
+
+    def _require_authorization(self) -> bool:
+        if self._is_authorized():
+            return True
+        self.send_response(HTTPStatus.UNAUTHORIZED)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("WWW-Authenticate", 'Bearer realm="bolty-ota"')
+        self.end_headers()
+        self.wfile.write(b"Unauthorized\n")
+        return False
+
+    def do_GET(self):
+        if not self._require_authorization():
+            return
+        super().do_GET()
+
+    def do_HEAD(self):
+        if not self._require_authorization():
+            return
+        super().do_HEAD()
 
     def log_message(self, fmt, *args):
         sys.stdout.write(f"[serve] {self.address_string()} {fmt % args}\n")
@@ -65,6 +92,10 @@ def main():
     print(f"[serve] Manifest URL  : http://{local_ip}:{args.port}/manifest.json")
     print(f"[serve] Firmware URL  : http://{local_ip}:{args.port}/{Path(data.get('url', '')).name}")
     print(f"[serve] Listening on  : {args.host}:{args.port}")
+    if os.environ.get("OTA_AUTH_TOKEN"):
+        print("[serve] Auth         : bearer token required")
+    else:
+        print("[serve] Auth         : disabled")
     print(f"[serve] Press Ctrl+C to stop.")
     print()
 
