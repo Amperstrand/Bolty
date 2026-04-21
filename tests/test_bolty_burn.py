@@ -1,49 +1,23 @@
 #!/usr/bin/env python3
 """Bolty controlled burn test — headless serial interface."""
 
-import serial, time, sys
+import time
 
-from serial_config import get_serial_baud, get_serial_port
+from test_helpers import STATIC_K0, STATIC_K1, STATIC_K2
+from transport import SerialTransport
 
-PORT = get_serial_port()
-BAUD = get_serial_baud()
-TIMEOUT = 3
-
-# Test keys: each exactly 32 hex chars (16 bytes)
-K0 = "11111111111111111111111111111111"
-K1 = "22222222222222222222222222222222"
-K2 = "33333333333333333333333333333333"
 K3 = "44444444444444444444444444444444"
 K4 = "55555555555555555555555555555555"
-
-# Test URL
 URL = "lnurlw://testcard.local/test?p=00000000000000000000000000000000&c=0000000000000000"
 
 
-def drain(ser, timeout=0.5):
-    """Read all available bytes from serial."""
-    time.sleep(timeout)
-    out = b""
-    while True:
-        chunk = ser.read(ser.in_waiting or 1)
-        if not chunk:
-            break
-        out += chunk
-    return out.decode(errors="replace")
-
-
-def send_cmd(ser, cmd, wait=1.0):
-    """Send a command and return the response."""
-    ser.write((cmd + "\n").encode())
-    resp = drain(ser, wait)
-    return resp
-
-
 def main():
-    print(f"Connecting to {PORT}...")
-    ser = serial.Serial(PORT, BAUD, timeout=TIMEOUT)
+    transport = SerialTransport()
+    print(f"Connecting to {transport.port}...")
+    transport.connect()
 
-    # Hard reset
+    # Hard reset ESP32 via DTR/RTS (needs raw serial access)
+    ser = transport._ser
     print("Hard resetting ESP32...")
     ser.setDTR(False)
     ser.setRTS(True)
@@ -54,10 +28,10 @@ def main():
     ser.setRTS(True)
     time.sleep(0.1)
 
-    # Wait for boot
+    # Wait for boot after reset
     print("Waiting for boot (5s)...")
     time.sleep(5)
-    boot_output = drain(ser, 1.0)
+    boot_output = transport.drain(1.0)
     print("=== BOOT OUTPUT ===")
     print(boot_output)
     print("=== END BOOT ===")
@@ -67,11 +41,11 @@ def main():
 
     # Show current status
     print("\n--- Sending 'help' ---")
-    resp = send_cmd(ser, "help")
+    resp = transport.send_cmd("help", 1.0)
     print(resp)
 
     print("\n--- Sending 'status' ---")
-    resp = send_cmd(ser, "status")
+    resp = transport.send_cmd("status", 1.0)
     print(resp)
 
     # === PHASE 1: Set keys (CARD OFF READER) ===
@@ -81,14 +55,14 @@ def main():
     print("=" * 60)
     input("Press ENTER when card is OFF the reader...")
 
-    keys_cmd = f"keys {K0} {K1} {K2} {K3} {K4}"
-    print(f"\nSending: keys <k0={K0}> <k1={K1}> <k2={K2}> <k3={K3}> <k4={K4}>")
-    resp = send_cmd(ser, keys_cmd, wait=1.0)
+    keys_cmd = f"keys {STATIC_K0} {STATIC_K1} {STATIC_K2} {K3} {K4}"
+    print(f"\nSending: keys <k0={STATIC_K0}> <k1={STATIC_K1}> <k2={STATIC_K2}> <k3={K3}> <k4={K4}>")
+    resp = transport.send_cmd(keys_cmd, 1.0)
     print(resp)
 
     # Verify keys were set
     print("\n--- Verifying with 'status' ---")
-    resp = send_cmd(ser, "status")
+    resp = transport.send_cmd("status", 1.0)
     print(resp)
 
     # === PHASE 2: Set URL (CARD STILL OFF) ===
@@ -97,12 +71,12 @@ def main():
     print("=" * 60)
 
     print(f"\nSending: url {URL}")
-    resp = send_cmd(ser, f"url {URL}", wait=1.0)
+    resp = transport.send_cmd(f"url {URL}", 1.0)
     print(resp)
 
     # Verify URL
     print("\n--- Verifying with 'status' ---")
-    resp = send_cmd(ser, "status")
+    resp = transport.send_cmd("status", 1.0)
     print(resp)
 
     # === PHASE 3: Burn (CARD ON READER) ===
@@ -114,12 +88,12 @@ def main():
 
     # First check uid
     print("\n--- Checking UID ---")
-    resp = send_cmd(ser, "uid", wait=1.0)
+    resp = transport.send_cmd("uid", 1.0)
     print(resp)
 
     # Burn
     print("\n--- Sending 'burn' ---")
-    resp = send_cmd(ser, "burn", wait=5.0)
+    resp = transport.send_cmd("burn", 5.0)
     print(resp)
 
     # === PHASE 4: Verify ===
@@ -128,11 +102,11 @@ def main():
     print("=" * 60)
 
     print("\n--- Status after burn ---")
-    resp = send_cmd(ser, "status", wait=1.0)
+    resp = transport.send_cmd("status", 1.0)
     print(resp)
 
     print("\n--- UID after burn ---")
-    resp = send_cmd(ser, "uid", wait=1.0)
+    resp = transport.send_cmd("uid", 1.0)
     print(resp)
 
     # === PHASE 5: Wipe ===
@@ -142,18 +116,18 @@ def main():
     input("Press ENTER to wipe...")
 
     print("\n--- Sending 'wipe' ---")
-    resp = send_cmd(ser, "wipe", wait=5.0)
+    resp = transport.send_cmd("wipe", 5.0)
     print(resp)
 
     print("\n--- Status after wipe ---")
-    resp = send_cmd(ser, "status", wait=1.0)
+    resp = transport.send_cmd("status", 1.0)
     print(resp)
 
     print("\n" + "=" * 60)
     print("TEST COMPLETE")
     print("=" * 60)
 
-    ser.close()
+    transport.close()
 
 
 if __name__ == "__main__":
