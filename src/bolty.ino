@@ -168,7 +168,7 @@ static bool atom_hold_action_fired = false;
 
 // Current issuer key — RAM only, ephemeral, lost on reboot
 static uint8_t current_issuer_key[16] = {0};
-static bool has_issuer_key = false;
+bool has_issuer_key = false;
 
 #if HAS_WEB_LOOKUP
 static bool wifi_connected = false;
