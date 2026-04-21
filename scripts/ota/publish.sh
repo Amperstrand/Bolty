@@ -8,6 +8,7 @@ OTA_DIR="$SCRIPT_DIR"
 ENV="esp32dev-ota"
 FIRMWARE_SRC="$BOLTY_DIR/.pio/build/$ENV/firmware.bin"
 BUILD_METADATA="$BOLTY_DIR/include/build_metadata.h"
+SIGN_SCRIPT="$OTA_DIR/ota_sign.py"
 PORT="${OTA_PORT:-8765}"
 HOST="${OTA_HOST:-192.168.13.218}"
 
@@ -25,6 +26,11 @@ echo "[publish] Build done."
 
 if [[ ! -f "$FIRMWARE_SRC" ]]; then
     echo "[publish] ERROR: firmware binary not found at $FIRMWARE_SRC"
+    exit 1
+fi
+
+if [[ ! -f "$SIGN_SCRIPT" ]]; then
+    echo "[publish] ERROR: signing helper not found at $SIGN_SCRIPT"
     exit 1
 fi
 
@@ -49,6 +55,8 @@ cat > "$MANIFEST" <<EOF
   "size": $SIZE
 }
 EOF
+
+python3 "$SIGN_SCRIPT" "$MANIFEST" "$FIRMWARE_DEST"
 
 echo "[publish] Published:"
 echo "  Firmware  : $FIRMWARE_DEST ($SIZE bytes)"
