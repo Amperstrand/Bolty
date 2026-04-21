@@ -31,7 +31,7 @@ try:
     Import("env")  # type: ignore[name-defined]
     env = cast(Any, globals()["env"])
     cpp_defines = []
-    for key in ("OTA_SSID", "OTA_PASSWORD", "OTA_HOST", "OTA_AUTH_TOKEN"):
+    for key in ("OTA_SSID", "OTA_PASSWORD", "OTA_HOST", "OTA_AUTH_TOKEN", "OTA_NTP_SERVER"):
         if key in ota_vars:
             cpp_defines.append((key, env.StringifyMacro(ota_vars[key])))
     if "OTA_PORT" in ota_vars:

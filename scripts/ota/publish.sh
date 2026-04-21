@@ -9,6 +9,15 @@ ENV="esp32dev-ota"
 FIRMWARE_SRC="$BOLTY_DIR/.pio/build/$ENV/firmware.bin"
 BUILD_METADATA="$BOLTY_DIR/include/build_metadata.h"
 SIGN_SCRIPT="$OTA_DIR/ota_sign.py"
+ENV_FILE="$BOLTY_DIR/ota.env"
+
+if [[ -f "$ENV_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    set +a
+fi
+
 PORT="${OTA_PORT:-8765}"
 HOST="${OTA_HOST:-192.168.13.218}"
 
@@ -51,7 +60,7 @@ MANIFEST="$OTA_DIR/manifest.json"
 cat > "$MANIFEST" <<EOF
 {
   "version_code": $VERSION_CODE,
-  "url": "http://${HOST}:${PORT}/${FIRMWARE_NAME}",
+  "url": "https://${HOST}:${PORT}/${FIRMWARE_NAME}",
   "size": $SIZE
 }
 EOF

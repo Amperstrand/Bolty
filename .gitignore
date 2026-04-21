@@ -5,3 +5,14 @@ scripts/__pycache__/
 test_auth/
 ota.env
 scripts/ota/keys/ota_signing_key.pem
+include/ota_ca_cert.h
+scripts/ota/__pycache__/
+scripts/ota/firmware-*.bin
+scripts/ota/manifest.json
+scripts/ota/certs/
+scripts/ota/certs/ota_ca_key.pem
+scripts/ota/certs/ota_ca_cert.srl
+scripts/ota/certs/ota_server_key.pem
+scripts/ota/certs/ota_server.csr
+scripts/ota/certs/ota_server_cert.pem
+scripts/ota/certs/ota_server_ext.cnf
