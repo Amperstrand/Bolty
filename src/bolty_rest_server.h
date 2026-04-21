@@ -374,6 +374,7 @@ static void bolty_rest_server_start() {
 
   conf.httpd.stack_size = 8192;
   conf.httpd.max_open_sockets = 2;
+  conf.httpd.max_uri_handlers = 12;
   conf.httpd.lru_purge_enable = true;
   conf.httpd.task_priority = tskIDLE_PRIORITY + 3;
 
@@ -386,7 +387,13 @@ static void bolty_rest_server_start() {
   }
 
   for (int i = 0; i < _rest_uri_count; i++) {
-    httpd_register_uri_handler(_rest_server, &_rest_uris[i]);
+    esp_err_t reg = httpd_register_uri_handler(_rest_server, &_rest_uris[i]);
+    if (reg != ESP_OK) {
+      Serial.print("[rest] FAILED to register ");
+      Serial.print(_rest_uris[i].uri);
+      Serial.print(": ");
+      Serial.println(esp_err_to_name(reg));
+    }
   }
 
   Serial.println("[rest] HTTPS provisioning server started on port 443");

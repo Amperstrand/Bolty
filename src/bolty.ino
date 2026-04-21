@@ -1580,6 +1580,7 @@ void setup(void) {
   Serial.println("REST mode: connecting WiFi for HTTPS provisioning...");
   WiFi.mode(WIFI_STA);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
+  WiFi.setAutoReconnect(true);
   #ifndef OTA_SSID
   #error "OTA_SSID must be defined for REST server mode. Add ota.env and load_env.py to extra_scripts."
   #endif
