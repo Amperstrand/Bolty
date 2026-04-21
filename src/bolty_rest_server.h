@@ -2,7 +2,15 @@
 #if HAS_REST_SERVER
 
 #include <esp_https_server.h>
+#include <ArduinoJson.h>
 #include "rest_server_cert.h"
+
+// Forward declarations for globals defined in bolty.ino
+extern BoltDevice bolt;
+extern sBoltConfig mBoltConfig;
+extern volatile bool serial_cmd_active;
+extern bool bolty_hw_ready;
+extern bool has_issuer_key;
 
 #ifndef REST_AUTH_TOKEN
 #define REST_AUTH_TOKEN ""
@@ -359,9 +367,9 @@ static void bolty_rest_server_start() {
   if (_rest_server != NULL) return;
 
   httpd_ssl_config_t conf = HTTPD_SSL_CONFIG_DEFAULT();
-  conf.servercert = (const char *)REST_SERVER_CERT_PEM;
+  conf.servercert = reinterpret_cast<const uint8_t *>(REST_SERVER_CERT_PEM);
   conf.servercert_len = sizeof(REST_SERVER_CERT_PEM);
-  conf.prvtkey_pem = (const char *)REST_SERVER_KEY_PEM;
+  conf.prvtkey_pem = reinterpret_cast<const uint8_t *>(REST_SERVER_KEY_PEM);
   conf.prvtkey_len = sizeof(REST_SERVER_KEY_PEM);
 
   conf.httpd.stack_size = 8192;
