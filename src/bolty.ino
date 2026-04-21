@@ -1579,8 +1579,15 @@ void setup(void) {
 #if HAS_REST_SERVER
   Serial.println("REST mode: connecting WiFi for HTTPS provisioning...");
   WiFi.mode(WIFI_STA);
+  WiFi.setSleep(WIFI_PS_NONE);       // disable modem sleep — critical for TLS stability
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
   WiFi.setAutoReconnect(true);
+
+  // Register disconnect handler for immediate reconnect
+  WiFi.onEvent([](WiFiEvent_t event) {
+    Serial.println("[rest] WiFi disconnected — auto-reconnecting...");
+  }, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+
   #ifndef OTA_SSID
   #error "OTA_SSID must be defined for REST server mode. Add ota.env and load_env.py to extra_scripts."
   #endif

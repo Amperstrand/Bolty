@@ -372,11 +372,15 @@ static void bolty_rest_server_start() {
   conf.prvtkey_pem = reinterpret_cast<const uint8_t *>(REST_SERVER_KEY_PEM);
   conf.prvtkey_len = sizeof(REST_SERVER_KEY_PEM);
 
-  conf.httpd.stack_size = 8192;
+  conf.httpd.stack_size = 10240;
   conf.httpd.max_open_sockets = 2;
   conf.httpd.max_uri_handlers = 12;
   conf.httpd.lru_purge_enable = true;
-  conf.httpd.task_priority = tskIDLE_PRIORITY + 3;
+  conf.httpd.keep_alive_enable = true;
+  conf.httpd.keep_alive_idle = 5;
+  conf.httpd.keep_alive_interval = 3;
+  conf.httpd.keep_alive_count = 2;
+  conf.httpd.task_priority = tskIDLE_PRIORITY + 5;
 
   esp_err_t ret = httpd_ssl_start(&_rest_server, &conf);
   if (ret != ESP_OK) {
