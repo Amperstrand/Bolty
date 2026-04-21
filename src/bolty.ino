@@ -57,6 +57,12 @@
 
 #include "ota.h"
 
+#if HAS_REST_SERVER
+#include <esp_wifi.h>
+#include <WiFi.h>
+#include "bolty_rest_server.h"
+#endif
+
 #if HAS_WIFI
 #define WIFIMODE_AP 0
 #define WIFIMODE_STA 1
@@ -1568,6 +1574,42 @@ void setup(void) {
   Serial.println("Server started");
 #else
   Serial.println("Headless mode ready. Type 'help' for commands.");
+#endif
+
+#if HAS_REST_SERVER
+  Serial.println("REST mode: connecting WiFi for HTTPS provisioning...");
+  WiFi.mode(WIFI_STA);
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);
+  #ifndef OTA_SSID
+  #error "OTA_SSID must be defined for REST server mode. Add ota.env and load_env.py to extra_scripts."
+  #endif
+  WiFi.begin(OTA_SSID, OTA_PASSWORD);
+  uint8_t rest_tries = 0;
+  while (WiFi.status() != WL_CONNECTED && rest_tries < 40) {
+    delay(500);
+    Serial.print(".");
+    rest_tries++;
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println();
+    Serial.print("[rest] WiFi connected, IP: ");
+    Serial.println(WiFi.localIP());
+    configTime(0, 0, "pool.ntp.org");
+    uint32_t ntp_start = millis();
+    while (time(nullptr) < 1700000000 && millis() - ntp_start < 15000) {
+      delay(500);
+      Serial.print(".");
+    }
+    if (time(nullptr) >= 1700000000) {
+      Serial.println(" NTP OK");
+      bolty_rest_server_start();
+    } else {
+      Serial.println(" NTP failed - HTTPS server NOT started");
+    }
+  } else {
+    Serial.println(" WiFi failed");
+  }
+  Serial.println("REST mode ready. Type 'help' for serial commands.");
 #endif
 }
 
