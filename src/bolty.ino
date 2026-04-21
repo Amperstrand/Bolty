@@ -3806,6 +3806,22 @@ void loop(void) {
     String cmd = Serial.readStringUntil('\n');
     handle_serial_command(cmd);
   }
+#elif HAS_REST_SERVER
+  // REST mode: handle serial + WiFi health
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    handle_serial_command(cmd);
+  }
+  // Reconnect WiFi if dropped (critical for REST availability)
+  if (WiFi.status() != WL_CONNECTED) {
+    static unsigned long _last_wifi_attempt = 0;
+    if (millis() - _last_wifi_attempt > 10000) {  // retry every 10s
+      _last_wifi_attempt = millis();
+      Serial.println("[rest] WiFi lost, reconnecting...");
+      WiFi.disconnect();
+      WiFi.begin(OTA_SSID, OTA_PASSWORD);
+    }
+  }
 #else
   app_stateengine();
 #endif
