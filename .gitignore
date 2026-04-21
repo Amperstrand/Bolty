@@ -4,3 +4,4 @@ include/build_metadata.h
 scripts/__pycache__/
 test_auth/
 ota.env
+scripts/ota/keys/ota_signing_key.pem
