@@ -3,6 +3,7 @@
 
 #include <esp_https_server.h>
 #include <ArduinoJson.h>
+#include <ESPmDNS.h>
 #include "rest_server_cert.h"
 
 // Forward declarations for globals defined in bolty.ino
@@ -12,14 +13,30 @@ extern volatile bool serial_cmd_active;
 extern bool bolty_hw_ready;
 extern bool has_issuer_key;
 
-#ifndef REST_AUTH_TOKEN
-#define REST_AUTH_TOKEN ""
+// Auth tokens — separate read and write access.
+// Set via build flags: -DREST_READ_TOKEN='"..."' -DREST_WRITE_TOKEN='"..."'.
+// Empty string = no auth required for that level.
+// If only REST_AUTH_TOKEN is defined (legacy), it grants full access.
+#ifndef REST_READ_TOKEN
+  #ifdef REST_AUTH_TOKEN
+    #define REST_READ_TOKEN REST_AUTH_TOKEN
+  #else
+    #define REST_READ_TOKEN ""
+  #endif
+#endif
+
+#ifndef REST_WRITE_TOKEN
+  #ifdef REST_AUTH_TOKEN
+    #define REST_WRITE_TOKEN REST_AUTH_TOKEN
+  #else
+    #define REST_WRITE_TOKEN ""
+  #endif
 #endif
 
 static httpd_handle_t _rest_server = NULL;
 
-static bool _rest_check_auth(httpd_req_t *req) {
-  if (strlen(REST_AUTH_TOKEN) == 0) return true;
+static bool _rest_check_token(httpd_req_t *req, const char *expected_token) {
+  if (strlen(expected_token) == 0) return true;
   size_t hdr_len = httpd_req_get_hdr_value_len(req, "Authorization") + 1;
   if (hdr_len <= 1) {
     httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "Missing Authorization header");
@@ -28,10 +45,20 @@ static bool _rest_check_auth(httpd_req_t *req) {
   char *hdr = (char *)malloc(hdr_len);
   if (!hdr) { httpd_resp_send_500(req); return false; }
   httpd_req_get_hdr_value_str(req, "Authorization", hdr, hdr_len);
-  bool ok = (strncmp(hdr, "Bearer ", 7) == 0 && strcmp(hdr + 7, REST_AUTH_TOKEN) == 0);
+  bool ok = (strncmp(hdr, "Bearer ", 7) == 0 && strcmp(hdr + 7, expected_token) == 0);
   free(hdr);
   if (!ok) { httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "Invalid token"); }
   return ok;
+}
+
+// Read endpoints: status, uid, keyver, check, ndef, job
+static bool _rest_check_read_auth(httpd_req_t *req) {
+  return _rest_check_token(req, REST_READ_TOKEN);
+}
+
+// Write endpoints: keys, url, burn, wipe
+static bool _rest_check_write_auth(httpd_req_t *req) {
+  return _rest_check_token(req, REST_WRITE_TOKEN);
 }
 
 static esp_err_t _rest_json(httpd_req_t *req, const char *json) {
@@ -72,7 +99,7 @@ static bool _rest_wait_card(uint8_t *uid, uint8_t *uid_len, uint32_t timeout_ms)
 // ── GET /api/status ──
 
 static esp_err_t rest_get_status(httpd_req_t *req) {
-  if (!_rest_check_auth(req)) return ESP_FAIL;
+  if (!_rest_check_read_auth(req)) return ESP_FAIL;
   char json[384];
   snprintf(json, sizeof(json),
     "{\"ok\":true,\"hw_ready\":%s,\"uid\":\"%s\",\"job\":\"%s\","
@@ -88,7 +115,7 @@ static esp_err_t rest_get_status(httpd_req_t *req) {
 // ── GET /api/uid ──
 
 static esp_err_t rest_get_uid(httpd_req_t *req) {
-  if (!_rest_check_auth(req)) return ESP_FAIL;
+  if (!_rest_check_read_auth(req)) return ESP_FAIL;
   if (!bolty_hw_ready) return _rest_error(req, "NFC not ready");
   if (serial_cmd_active) return _rest_error(req, "Device busy");
   serial_cmd_active = true;
@@ -111,7 +138,7 @@ static esp_err_t rest_get_uid(httpd_req_t *req) {
 // ── POST /api/keys ──
 
 static esp_err_t rest_post_keys(httpd_req_t *req) {
-  if (!_rest_check_auth(req)) return ESP_FAIL;
+  if (!_rest_check_write_auth(req)) return ESP_FAIL;
   if (serial_cmd_active) return _rest_error(req, "Device busy");
   char body[512] = {0};
   if (!_rest_read_body(req, body, sizeof(body))) return _rest_error(req, "Failed to read body");
@@ -140,7 +167,7 @@ static esp_err_t rest_post_keys(httpd_req_t *req) {
 // ── POST /api/url ──
 
 static esp_err_t rest_post_url(httpd_req_t *req) {
-  if (!_rest_check_auth(req)) return ESP_FAIL;
+  if (!_rest_check_write_auth(req)) return ESP_FAIL;
   if (serial_cmd_active) return _rest_error(req, "Device busy");
   char body[512] = {0};
   if (!_rest_read_body(req, body, sizeof(body))) return _rest_error(req, "Failed to read body");
@@ -164,7 +191,7 @@ static esp_err_t rest_post_url(httpd_req_t *req) {
 // ── GET /api/keyver ──
 
 static esp_err_t rest_get_keyver(httpd_req_t *req) {
-  if (!_rest_check_auth(req)) return ESP_FAIL;
+  if (!_rest_check_read_auth(req)) return ESP_FAIL;
   if (!bolty_hw_ready) return _rest_error(req, "NFC not ready");
   if (serial_cmd_active) return _rest_error(req, "Device busy");
   serial_cmd_active = true;
@@ -199,7 +226,7 @@ static esp_err_t rest_get_keyver(httpd_req_t *req) {
 // ── GET /api/check ──
 
 static esp_err_t rest_get_check(httpd_req_t *req) {
-  if (!_rest_check_auth(req)) return ESP_FAIL;
+  if (!_rest_check_read_auth(req)) return ESP_FAIL;
   if (!bolty_hw_ready) return _rest_error(req, "NFC not ready");
   if (serial_cmd_active) return _rest_error(req, "Device busy");
   serial_cmd_active = true;
@@ -224,7 +251,7 @@ static esp_err_t rest_get_check(httpd_req_t *req) {
 // ── POST /api/burn ──
 
 static esp_err_t rest_post_burn(httpd_req_t *req) {
-  if (!_rest_check_auth(req)) return ESP_FAIL;
+  if (!_rest_check_write_auth(req)) return ESP_FAIL;
   if (!bolty_hw_ready) return _rest_error(req, "NFC not ready");
   if (serial_cmd_active) return _rest_error(req, "Device busy");
   if (strlen(mBoltConfig.url) == 0) return _rest_error(req, "No URL set");
@@ -256,7 +283,7 @@ static esp_err_t rest_post_burn(httpd_req_t *req) {
 // ── POST /api/wipe ──
 
 static esp_err_t rest_post_wipe(httpd_req_t *req) {
-  if (!_rest_check_auth(req)) return ESP_FAIL;
+  if (!_rest_check_write_auth(req)) return ESP_FAIL;
   if (!bolty_hw_ready) return _rest_error(req, "NFC not ready");
   if (serial_cmd_active) return _rest_error(req, "Device busy");
   if (strlen(mBoltConfig.k0) == 0) return _rest_error(req, "No keys set");
@@ -287,7 +314,7 @@ static esp_err_t rest_post_wipe(httpd_req_t *req) {
 // ── GET /api/ndef ──
 
 static esp_err_t rest_get_ndef(httpd_req_t *req) {
-  if (!_rest_check_auth(req)) return ESP_FAIL;
+  if (!_rest_check_read_auth(req)) return ESP_FAIL;
   if (!bolty_hw_ready) return _rest_error(req, "NFC not ready");
   if (serial_cmd_active) return _rest_error(req, "Device busy");
   serial_cmd_active = true;
@@ -337,7 +364,7 @@ static esp_err_t rest_get_ndef(httpd_req_t *req) {
 // ── GET /api/job ──
 
 static esp_err_t rest_get_job(httpd_req_t *req) {
-  if (!_rest_check_auth(req)) return ESP_FAIL;
+  if (!_rest_check_read_auth(req)) return ESP_FAIL;
   char json[128];
   snprintf(json, sizeof(json),
     "{\"ok\":true,\"status\":\"%s\",\"id\":%u,\"busy\":%s}",
@@ -401,6 +428,13 @@ static void bolty_rest_server_start() {
   }
 
   Serial.println("[rest] HTTPS provisioning server started on port 443");
+
+  if (MDNS.begin("bolty")) {
+    MDNS.addService("bolty", "tcp", 443);
+    Serial.println("[rest] mDNS: bolty.local → " + WiFi.localIP().toString());
+  } else {
+    Serial.println("[rest] mDNS start failed (non-fatal)");
+  }
 }
 
 static void bolty_rest_server_stop() {

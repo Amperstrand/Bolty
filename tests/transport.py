@@ -107,14 +107,18 @@ class RestTransport(Transport):
     ``https://192.168.1.100/api``.
     """
 
-    def __init__(self, base_url, verify=True, auth_token=None):
+    def __init__(self, base_url, verify=True, auth_token=None, read_token=None, write_token=None):
         super(RestTransport, self).__init__()
         self.base_url = base_url.rstrip("/")
         self.verify = verify
-        self.auth_token = auth_token
-        self._headers = {}
-        if auth_token:
-            self._headers["Authorization"] = "Bearer %s" % auth_token
+        self._read_token = read_token or auth_token
+        self._write_token = write_token or auth_token
+
+    def _headers_for(self, write=False):
+        token = self._write_token if write else self._read_token
+        if token:
+            return {"Authorization": "Bearer %s" % token}
+        return {}
 
     def _request(self, method, path, json_body=None, timeout=10.0):
         """Send HTTP request with auth headers and cert verification."""
@@ -122,12 +126,13 @@ class RestTransport(Transport):
             raise RuntimeError(
                 "requests library required for RestTransport (pip install requests)"
             )
+        write = (method == "POST")
         try:
             resp = requests.request(
                 method,
                 self.base_url + path,
                 json=json_body,
-                headers=self._headers,
+                headers=self._headers_for(write=write),
                 timeout=timeout,
                 verify=self.verify,
             )
