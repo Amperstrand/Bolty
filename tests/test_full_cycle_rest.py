@@ -22,7 +22,11 @@ def main():
     parser.add_argument("--url", default=os.environ.get("BOLTY_REST_URL", ""),
                         help="REST base URL e.g. https://192.168.1.100/api")
     parser.add_argument("--token", default=os.environ.get("BOLTY_REST_TOKEN", ""),
-                        help="Bearer auth token")
+                        help="Bearer auth token (sets both read and write)")
+    parser.add_argument("--read-token", default=os.environ.get("BOLTY_REST_READ_TOKEN", ""),
+                        help="Read-only bearer token")
+    parser.add_argument("--write-token", default=os.environ.get("BOLTY_REST_WRITE_TOKEN", ""),
+                        help="Read-write bearer token")
     args = parser.parse_args()
 
     if not args.url:
@@ -33,6 +37,8 @@ def main():
         base_url=args.url,
         verify=False,
         auth_token=args.token or None,
+        read_token=args.read_token or None,
+        write_token=args.write_token or None,
     )
     transport.connect()
     try:
