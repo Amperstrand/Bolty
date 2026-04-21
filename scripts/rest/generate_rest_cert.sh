@@ -34,7 +34,7 @@ cat > "$SERVER_EXT" <<EOF
 basicConstraints = critical,CA:FALSE
 keyUsage = critical,digitalSignature,keyEncipherment
 extendedKeyUsage = serverAuth
-subjectAltName = DNS:bolty.local,IP:127.0.0.1,IP:192.168.4.1,IP:192.168.1.1
+subjectAltName = DNS:bolty.local,IP:127.0.0.1,IP:192.168.4.1,IP:192.168.1.1,IP:192.168.13.1
 EOF
 
 openssl ecparam -name prime256v1 -genkey -noout -out "$CA_KEY"
