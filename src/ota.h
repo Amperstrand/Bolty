@@ -266,8 +266,13 @@ static void ota_add_auth_header(HTTPClient &http) {
 }
 
 static void ota_disconnect_wifi() {
+#if HAS_REST_SERVER
+  // REST server manages WiFi lifecycle — never tear it down from OTA
+  Serial.println(F("[ota] WiFi left active (REST server mode)"));
+#else
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
+#endif
 }
 
 static void ota_check_and_update_impl() {
@@ -277,6 +282,14 @@ static void ota_check_and_update_impl() {
   Serial.print(F("[ota] Current version: "));
   Serial.println((unsigned long)FW_VERSION_CODE);
 
+#if HAS_REST_SERVER
+  // REST server already connected WiFi — skip scan/connect, use existing link
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println(F("[ota] WiFi not ready yet - skipping OTA"));
+    return;
+  }
+  Serial.println(F("[ota] Using existing WiFi connection"));
+#else
   WiFi.mode(WIFI_STA);
   esp_wifi_set_country_code("EU", true);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
@@ -327,6 +340,7 @@ static void ota_check_and_update_impl() {
     WiFi.mode(WIFI_OFF);
     return;
   }
+#endif
 
   Serial.print(F("[ota] Connected, IP: "));
   Serial.println(WiFi.localIP());
@@ -386,8 +400,7 @@ static void ota_check_and_update_impl() {
 
   if (remote_version <= (unsigned long)FW_VERSION_CODE) {
     Serial.println(F("[ota] Firmware is up to date - no update needed"));
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
+    ota_disconnect_wifi();
     return;
   }
 
