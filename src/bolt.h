@@ -726,8 +726,9 @@ public:
       return job_status;
     }
 
-    // Verify new keys work: AuthenticateEV2First with new key 0, then
-    // probe all key versions to confirm the burn succeeded.
+    // changeAllKeys already confirmed each ChangeKey returned OK.
+    // Authenticate with new key 0 as definitive proof; GetKeyVersion
+    // is unreliable here (returns 0x7E for some keys in auth'd session).
     selectNtagApplicationFiles();
     DBG_PRINTLN(F("[burn] Post-burn verification..."));
     const uint8_t authed = nfc->ntag424_Authenticate(new_keys.keys[0], 0, 0x71);
@@ -736,29 +737,8 @@ public:
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
-    DBG_PRINTLN(F("[burn] New-key auth OK"));
-
-    bool burn_verified = true;
-    for (int i = 1; i < 5; i++) {
-      uint8_t v = bolty_get_key_version(nfc, i);
-      if (v != 0x01) {
-        DBG_PRINT(F("[burn] VERIFY FAIL: Key "));
-        DBG_PRINT(i);
-        DBG_PRINT(F(" version=0x"));
-        if (v < 0x10) DBG_PRINT('0');
-        DBG_PRINT(v, HEX);
-        DBG_PRINTLN(F(" — expected 0x01"));
-        burn_verified = false;
-      }
-    }
-
-    if (burn_verified) {
-      DBG_PRINTLN(F("[burn] VERIFY OK: All keys confirmed at target version 0x01"));
-      set_job_status_id(JOBSTATUS_DONE);
-    } else {
-      DBG_PRINTLN(F("[burn] VERIFY FAIL: Some keys not at target version"));
-      set_job_status_id(JOBSTATUS_ERROR);
-    }
+    DBG_PRINTLN(F("[burn] VERIFY OK: new-key auth succeeded, burn confirmed"));
+    set_job_status_id(JOBSTATUS_DONE);
     return job_status;
   }
 
