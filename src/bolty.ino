@@ -31,10 +31,8 @@
 #include "led.h"
 #include "http_probe.h"
 #include <SPI.h>
-#if HAS_WIFI
 #include "FS.h"
 #include "SPIFFS.h"
-#endif
 
 #if HAS_WEB_LOOKUP
 #include <WiFi.h>
@@ -107,6 +105,7 @@ const char *PARAM_CONFIG = "config";
 // For RSTPD_N to work on TTGO, the author had to desolder a 10k pull-up
 // between RSTPD_N and VCC. This is not needed on DevKitC.
 
+#if HAS_WIFI
 #define APPS (3)
 #define APP_KEYSETUP (0)
 #define APP_BOLTBURN (1)
@@ -115,6 +114,7 @@ const char *PARAM_CONFIG = "config";
 #define APP_STATUS_START (0)
 #define APP_STATUS_LOOP (1)
 #define APP_STATUS_END (2)
+#endif
 
 #if BOLTY_NFC_BACKEND_MFRC522
 BoltDevice bolt(MFRC522_I2C_ADDRESS);
@@ -158,7 +158,6 @@ uint8_t app_active;
 int8_t app_next;
 uint8_t app_status;
 String SIpAddress = "Waiting for ip..";
-#if HAS_WIFI
 IPAddress myIP;
 #endif
 
@@ -446,6 +445,7 @@ static void handle_atom_hold_reset() {
 #endif
 }
 
+#if HAS_WIFI
 typedef void (*tAppHandler)();
 typedef void (*tEvtHandler)(uint8_t btn, uint8_t evt);
 
@@ -460,6 +460,7 @@ struct sAppHandler {
 };
 
 sAppHandler mAppHandler[APPS];
+#endif
 
 #if HAS_WIFI
 void saveSettings() {
@@ -538,9 +539,7 @@ void loadSettings() {
 #else
 void saveSettings() {}
 
-void loadSettings() {
-  memset(&mSettings, 0, sizeof(sSettings));
-}
+void loadSettings() {}
 #endif
 
 void saveBoltConfig(uint8_t slot) {
@@ -608,6 +607,7 @@ void loadBoltConfig(uint8_t slot) {
   dumpconfig();
 }
 
+#if HAS_WIFI
 String exportBoltConfig() {
   String path = "/backup.dat";
   SPIFFS.remove(path);
@@ -634,6 +634,7 @@ void importBoltConfig() {
   myFile.close();
   loadBoltConfig(active_bolt_config);
 }
+#endif
 
 #if LED_PIN >= 0
 void led_on() { digitalWrite(LED_PIN, LOW); }
@@ -660,7 +661,58 @@ void led_blink(int count, int) {
 }
 #endif
 
+// Button event handler — used in both serial and WiFi builds
+void handle_events() {
+#if HAS_WIFI && HAS_BUTTONS
+  handle_atom_button_feedback();
+  // Button 0 short clicky = next keyset
+  if ((sharedvars.appbuttons[0] == 1) && (app_active != APP_KEYSETUP)) {
+    active_bolt_config += 1;
+    if (active_bolt_config >= MAX_BOLT_DEVICES) {
+      active_bolt_config = 0;
+    }
+    loadBoltConfig(active_bolt_config);
+    signal_update_screen = true;
+  }
+  // Button 1 short clicky = next app
+  if ((sharedvars.appbuttons[1] == 1) && (app_active != APP_KEYSETUP)) {
+    app_next = app_active + 1;
+    if (app_next > APPS - 1) {
+      app_next = 1;
+    }
+  }
+  // Button 0 long clicky = toggle WiFi
+  if (sharedvars.appbuttons[0] == 2) {
+    wifi_toogle();
+    signal_update_screen = true;
+  }
+  // Button 1 long clicky = deep sleep
+  if (sharedvars.appbuttons[1] == 2) {
+    nfc_stop();
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_35, 0); // 1 = High, 0 = Low
+    esp_deep_sleep_start();
+  }
+  // Button 0 double clicky
+  if (sharedvars.appbuttons[0] == 3) {
+    Serial.println("double click btn0");
+    String wurl =
+        String(mBoltConfig.wallet_host) + "?" + String(mBoltConfig.wallet_url);
+    Serial.println(wurl);
+  }
+  // Button 1 double clicky
+  if (sharedvars.appbuttons[1] == 3) {
+    Serial.println("double click btn1");
+  }
+  sharedvars.appbuttons[0] = 0;
+  sharedvars.appbuttons[1] = 0;
+#else
+  sharedvars.appbuttons[0] = 0;
+  sharedvars.appbuttons[1] = 0;
+#endif
+}
+
 // Keysetup
+#if HAS_WIFI
 void app_keysetup_start() { Serial.println("app_KEYSETUP_start"); }
 
 long lasttime = 0;
@@ -927,59 +979,6 @@ void update_screen() {
 }
 #endif
 
-void handle_events() {
-#if HAS_BUTTONS
-  handle_atom_button_feedback();
-  // Button 0 short clicky = next keyset
-  if ((sharedvars.appbuttons[0] == 1) && (app_active != APP_KEYSETUP)) {
-    // we dont want to interrupt anything done with keyysetup
-    active_bolt_config += 1;
-    if (active_bolt_config >= MAX_BOLT_DEVICES) {
-      active_bolt_config = 0;
-    }
-    loadBoltConfig(active_bolt_config);
-    signal_update_screen = true;
-  }
-  // Button 1 short clicky = next app
-  if ((sharedvars.appbuttons[1] == 1) && (app_active != APP_KEYSETUP)) {
-    // we dont want to interrupt anything done with keyysetup
-    app_next = app_active + 1;
-    if (app_next > APPS - 1) {
-      app_next = 1;
-    }
-  }
-  // Button 0 long clicky =
-  if (sharedvars.appbuttons[0] == 2) {
-    wifi_toogle();
-    signal_update_screen = true;
-  }
-  // Button 1 long clicky =
-  if (sharedvars.appbuttons[1] == 2) {
-    nfc_stop();
-    esp_sleep_enable_ext0_wakeup(GPIO_NUM_35, 0); // 1 = High, 0 = Low
-    esp_deep_sleep_start();
-  }
-  // Button 0 double clicky =
-  if (sharedvars.appbuttons[0] == 3) {
-    Serial.println("double click btn0");
-    String wurl =
-        String(mBoltConfig.wallet_host) + "?" + String(mBoltConfig.wallet_url);
-    Serial.println(wurl);
-    // displayQR(wurl);
-  }
-  // Button 1 duoble clicky =
-  if (sharedvars.appbuttons[1] == 3) {
-    Serial.println("double click btn1");
-  }
-  // reset button events
-  sharedvars.appbuttons[0] = 0;
-  sharedvars.appbuttons[1] = 0;
-#else
-  sharedvars.appbuttons[0] = 0;
-  sharedvars.appbuttons[1] = 0;
-#endif
-}
-
 void app_stateengine() {
   handle_events();
 #if HAS_DISPLAY
@@ -1032,6 +1031,7 @@ void app_stateengine() {
     app_status = APP_STATUS_START;
   }
 }
+#endif // HAS_WIFI — end of web UI app lifecycle
 
 void dumpconfig() {
   Serial.println(mBoltConfig.wallet_name);
@@ -1052,12 +1052,14 @@ void dumpconfig() {
 }
 
 void dumpsettings() {
+#if HAS_WIFI
   Serial.println(mSettings.wifimode);
   Serial.println(mSettings.essid);
   Serial.println(mSettings.password);
   Serial.println(mSettings.wifi_enabled);
   Serial.println(mSettings.http_username);
   Serial.println(mSettings.http_password);
+#endif
 }
 
 #if HAS_WIFI
@@ -1085,6 +1087,7 @@ void empty() {
   //
 }
 
+#if HAS_WIFI
 void randomchar(char *outbuf, uint8_t count) {
   for (uint8_t i = 0; i < count; i++) {
     Serial.print(i);
@@ -1094,6 +1097,7 @@ void randomchar(char *outbuf, uint8_t count) {
   }
   outbuf[count] = 0;
 }
+#endif
 
 #if HAS_WIFI
 String getIpAddress() {
@@ -1321,12 +1325,9 @@ void setup(void) {
   led_set_hardware_ready(bolty_hw_ready);
   led_boot_animation(bolty_hw_ready);
   Serial.println("Setup done!");
-  app_active = APP_KEYSETUP;
 #if HAS_WIFI
+  app_active = APP_KEYSETUP;
   app_next = APP_BOLTBURN;
-#else
-  app_next = APP_KEYSETUP;
-#endif
   app_status = APP_STATUS_START;
   led_set_app_mode(app_active);
   led_set_job_status(bolt.get_job_status_id());
@@ -1353,6 +1354,9 @@ void setup(void) {
   mAppHandler[APP_BOLTWIPE].app_loop = APP_BOLTWIPE_loop;
   mAppHandler[APP_BOLTWIPE].app_fgcolor = APPBLACK;
   mAppHandler[APP_BOLTWIPE].app_bgcolor = fromrgb(0xee, 0xa0, 0xa0);
+#else
+  led_set_job_status(bolt.get_job_status_id());
+#endif
 
   // initialize the bolt configurations
   active_bolt_config = 0;
@@ -1682,7 +1686,9 @@ void loop(void) {
 #endif
 
   led_set_busy(serial_cmd_active);
+#if HAS_WIFI
   led_set_app_mode(app_active);
+#endif
   led_tick();
 
 #if !HAS_WIFI
