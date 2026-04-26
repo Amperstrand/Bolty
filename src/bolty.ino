@@ -25,12 +25,16 @@
 #include "Bolt11Decode.h"
 #include "KeyDerivation.h"
 #include "build_metadata.h"
+#if HAS_WIFI
 #include "gui.h"
+#endif
 #include "led.h"
 #include "http_probe.h"
 #include <SPI.h>
+#if HAS_WIFI
 #include "FS.h"
 #include "SPIFFS.h"
+#endif
 
 #if HAS_WEB_LOOKUP
 #include <WiFi.h>
@@ -55,7 +59,9 @@
 #include "tardata.h"
 #endif
 
+#if BOLTY_OTA_ENABLED
 #include "ota.h"
+#endif
 
 #if HAS_REST_SERVER
 #include <esp_wifi.h>
@@ -75,15 +81,14 @@
 // uncommment the next line for static wifi password
 //#define WIFI_AP_PASSWORD_STATIC "wango123"
 
+#if HAS_WIFI
 #define HTTP_CREDENTIAL_SIZE 16
-
-//if you change this do not exceed HTTP_CREDENTIAL_SIZE-1 chars!
 const char* http_default_username = "bolty";
 const char* http_default_password = "bolty";
-
 #define MAX_BOLT_DEVICES 5
 char charpool[] = {
     "qweertzunopaasdfghjkyxcvbnm-?234567890QWEERTYUOPAASDFGHJKLZXCVBNM"};
+#endif
 
 #if HAS_WIFI
 char *ap_ssid = "Bolty";
@@ -138,6 +143,7 @@ static bool deterministic_try_known_matches(BoltyNfcReader *nfc,
                                             const String &uri,
                                             DeterministicBoltcardMatch &match);
 
+#if HAS_WIFI
 struct sSettings {
   char essid[33];
   char password[65];
