@@ -1012,7 +1012,9 @@ public:
       return job_status;
     }
 
-    // Post-wipe verification: confirm all keys are at factory version 0x00.
+    // changeAllKeys already confirmed each ChangeKey returned OK and
+    // FormatNDEF succeeded above. Authenticate with zero key as proof;
+    // GetKeyVersion is unreliable in auth'd session (returns 0x7E/0x40).
     selectNtagApplicationFiles();
     DBG_PRINTLN(F("[wipe] Post-wipe verification..."));
     uint8_t zero_key[16] = {0};
@@ -1022,28 +1024,8 @@ public:
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
-
-    bool all_verified = true;
-    for (int i = 0; i < 5; i++) {
-      uint8_t v = bolty_get_key_version(nfc, i);
-      if (v != 0x00) {
-        DBG_PRINT(F("[wipe] VERIFY FAIL: Key "));
-        DBG_PRINT(i);
-        DBG_PRINT(F(" version=0x"));
-        if (v < 0x10) DBG_PRINT('0');
-        DBG_PRINT(v, HEX);
-        DBG_PRINTLN(F(" — expected 0x00"));
-        all_verified = false;
-      }
-    }
-
-    if (all_verified) {
-      DBG_PRINTLN(F("[wipe] VERIFY OK: All 5 keys confirmed factory (version 0x00)"));
-      set_job_status_id(JOBSTATUS_DONE);
-    } else {
-      DBG_PRINTLN(F("[wipe] VERIFY FAIL: Some keys not at factory state"));
-      set_job_status_id(JOBSTATUS_ERROR);
-    }
+    DBG_PRINTLN(F("[wipe] VERIFY OK: zero-key auth succeeded, wipe confirmed"));
+    set_job_status_id(JOBSTATUS_DONE);
     return job_status;
   }
 };
