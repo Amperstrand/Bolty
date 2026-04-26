@@ -55,7 +55,7 @@ void serial_print_help() {
   Serial.println(F("  --- Safety / Testing ---"));
   Serial.println(F("  check             Auth with factory zero keys (confirm card is blank)"));
   Serial.println(F("  dummyburn         Burn with zero keys + dummy URL (test write path)"));
-  Serial.println(F("  recoverkey <n> <hex>  Recover key slot n (0-4) with candidate old key"));
+  Serial.println(F("  recoverkey <n> <hex> [k0-hex]  Recover key slot n (0-4) with candidate old key"));
   Serial.println(F("  reset             Reset NDEF+SDM on factory-key card (keys unchanged)"));
   Serial.println(F("  testck            ChangeKey A/B test on key 1 (verify implementation)"));
 #if BOLTY_OTA_ENABLED
@@ -1866,7 +1866,7 @@ ndef_fail:
     } else if (!all_zero && auth_d == 1) {
       Serial.println(F("[diagnose] State: HALF-WIPED"));
       Serial.println(F("[diagnose] Key 0 (master) is zero but some non-master keys remain."));
-      Serial.println(F("[diagnose] Recovery: 'recoverkey <slot> <old-key-hex>' per stuck key"));
+      Serial.println(F("[diagnose] Recovery: 'recoverkey <slot> <old-key-hex> [k0-hex]' per stuck key"));
       Serial.println(F("[diagnose]   or 'keys ...' + 'wipe' if you know all current key values"));
     } else if (!all_zero && auth_d != 1) {
       Serial.println(F("[diagnose] State: PROVISIONED"));
@@ -1884,8 +1884,8 @@ ndef_fail:
     serial_cmd_active = false;
   }
   else if (cmd.startsWith("recoverkey ")) {
-    // Usage: recoverkey <slot 0-4> <32-hex-old-key>
-    // Authenticates with zero key on key 0, then attempts ChangeKey
+    // Usage: recoverkey <slot 0-4> <32-hex-old-key> [32-hex-k0]
+    // Authenticates with K0 (zeros by default, or provided hex), then ChangeKey
     // to restore the target key slot to zero with version 0x00.
     if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
 
@@ -1893,11 +1893,23 @@ ndef_fail:
     args.trim();
     int spaceIdx = args.indexOf(' ');
     if (spaceIdx < 0) {
-      Serial.println(F("[recoverkey] Usage: recoverkey <slot 0-4> <32-hex-old-key>"));
+      Serial.println(F("[recoverkey] Usage: recoverkey <slot 0-4> <32-hex-old-key> [32-hex-k0]"));
       return;
     }
     int slot = args.substring(0, spaceIdx).toInt();
-    String old_key_hex = args.substring(spaceIdx + 1);
+    String rest = args.substring(spaceIdx + 1);
+    rest.trim();
+
+    int spaceIdx2 = rest.indexOf(' ');
+    String old_key_hex, k0_hex;
+    if (spaceIdx2 >= 0) {
+      old_key_hex = rest.substring(0, spaceIdx2);
+      k0_hex = rest.substring(spaceIdx2 + 1);
+      k0_hex.trim();
+    } else {
+      old_key_hex = rest;
+      k0_hex = "";
+    }
     old_key_hex.trim();
 
     if (slot < 0 || slot > 4) {
@@ -1905,19 +1917,33 @@ ndef_fail:
       return;
     }
     if (old_key_hex.length() != 32) {
-      Serial.println(F("[recoverkey] Key must be 32 hex chars (16 bytes)"));
+      Serial.println(F("[recoverkey] Old key must be 32 hex chars (16 bytes)"));
+      return;
+    }
+    if (k0_hex.length() > 0 && k0_hex.length() != 32) {
+      Serial.println(F("[recoverkey] K0 must be 32 hex chars (16 bytes) or omitted for zeros"));
       return;
     }
 
-    uint8_t zero_key[16] = {0};
+    uint8_t auth_key[16] = {0};
     uint8_t old_key[16] = {0};
+    uint8_t zero_key[16] = {0};
     bolt.setKey(old_key, old_key_hex);
+    if (k0_hex.length() == 32) {
+      bolt.setKey(auth_key, k0_hex);
+    }
 
     Serial.print(F("[recoverkey] Target: key "));
     Serial.print(slot);
     Serial.println(F(" -> zero, ver=0x00"));
     Serial.print(F("[recoverkey] Candidate old key: "));
     Serial.println(old_key_hex);
+    if (k0_hex.length() == 32) {
+      Serial.print(F("[recoverkey] Auth K0: "));
+      Serial.println(k0_hex);
+    } else {
+      Serial.println(F("[recoverkey] Auth K0: zeros (factory default)"));
+    }
     serial_cmd_active = true;
     led_on();
 
@@ -1940,19 +1966,12 @@ ndef_fail:
 
     delay(50);
     bolt.selectNtagApplicationFiles();
-    uint8_t kv_before = bolty_get_key_version(bolt.nfc, slot);
-    Serial.print(F("[recoverkey] Key "));
-    Serial.print(slot);
-    Serial.print(F(" version BEFORE: 0x"));
-    if (kv_before < 0x10) Serial.print(F("0"));
-    Serial.println(kv_before, HEX);
 
-    // Auth with key 0 (zeros) — master key required for ChangeKey
-    uint8_t auth_rk = bolt.nfc->ntag424_Authenticate(zero_key, 0, 0x71);
-    Serial.print(F("[recoverkey] Auth key 0 (zeros): "));
+    uint8_t auth_rk = bolt.nfc->ntag424_Authenticate(auth_key, 0, 0x71);
+    Serial.print(F("[recoverkey] Auth K0: "));
     Serial.println(auth_rk == 1 ? "OK" : "FAILED");
     if (auth_rk != 1) {
-      Serial.println(F("[recoverkey] ABORT — key 0 auth failed (master key is non-zero)"));
+      Serial.println(F("[recoverkey] ABORT — K0 auth failed (wrong master key)"));
       led_blink(5, 100);
       serial_cmd_active = false;
       return;
@@ -1962,7 +1981,6 @@ ndef_fail:
     Serial.print(F("[recoverkey] ChangeKey result: "));
     Serial.println(ok ? "OK" : "FAILED");
 
-    // Re-select and verify
     bolt.nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID);
     uint8_t kv_after = bolty_get_key_version(bolt.nfc, slot);
     Serial.print(F("[recoverkey] Key "));
@@ -1971,7 +1989,7 @@ ndef_fail:
     if (kv_after < 0x10) Serial.print(F("0"));
     Serial.println(kv_after, HEX);
 
-    const bool pass = ok && (kv_after == 0x00);
+    const bool pass = ok && (kv_after == 0x00 || (slot == 0 && kv_after == 0xFF));
     Serial.println(pass ?
                        F("[recoverkey] PASS — key restored to factory zero") :
                        F("[recoverkey] FAIL — candidate old key was incorrect or card state differs"));
