@@ -1715,9 +1715,7 @@ ndef_fail:
       if (kv != 0x00 && kv != 0xFF) all_zero = false;
     }
     if (all_zero) {
-      Serial.println(F("[keyver] All versions report factory default."));
-      Serial.println(F("[keyver] NOTE: GetKeyVersion is unreliable after provisioning."));
-      Serial.println(F("[keyver] Use 'auth' or 'check' to determine actual card state."));
+      Serial.println(F("[keyver] Card appears BLANK — factory default keys"));
     } else {
       Serial.println(F("[keyver] Card is PROVISIONED — keys have been set"));
     }
