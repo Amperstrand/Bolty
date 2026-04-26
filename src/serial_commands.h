@@ -1706,22 +1706,18 @@ ndef_fail:
       if (kv == 0x00) {
         Serial.println(F(" (factory default)"));
       } else if (kv == 0xFF && k == 0) {
-        // K0 (App Master Key) returns 91-40 after being changed from factory
-        // default — this is normal NTAG424 behavior, not an error.
-        // Ref: NXP NT4H2421Gx datasheet Table 68, boltcard/boltcard DETERMINISTIC.md
-        Serial.println(F(" (protected — changed from factory)"));
+        Serial.println(F(" (protected — K0 changed from factory)"));
       } else if (kv == 0xFF) {
         Serial.println(F(" (ERROR: read failed)"));
       } else {
         Serial.println(F(" (changed)"));
       }
-      // Card state is determined by key 1 — key 0 is protected after change
-      // and cannot be read via plain GetKeyVersion.
-      // Ref: bolt-nfc-android-app checks only key 1 version.
-      if (k == 1 && kv != 0x00) all_zero = false;
+      if (kv != 0x00 && kv != 0xFF) all_zero = false;
     }
     if (all_zero) {
-      Serial.println(F("[keyver] Card is BLANK — factory default keys"));
+      Serial.println(F("[keyver] All versions report factory default."));
+      Serial.println(F("[keyver] NOTE: GetKeyVersion is unreliable after provisioning."));
+      Serial.println(F("[keyver] Use 'auth' or 'check' to determine actual card state."));
     } else {
       Serial.println(F("[keyver] Card is PROVISIONED — keys have been set"));
     }
