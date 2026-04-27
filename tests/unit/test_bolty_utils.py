@@ -202,3 +202,69 @@ def test_bcd_to_decimal(value: int, expected: int) -> None:
 )
 def test_decode_u24_le(buf: list[int], expected: int) -> None:
     assert decode_u24_le(buf) == expected
+
+
+class TestWriteHexToBuf:
+    """Tests for write_hex_to_buf — buffer-based hex conversion replacing convertIntToHex."""
+
+    def _write_hex_to_buf(self, buf, data):
+        """Python reimplementation of C++ write_hex_to_buf."""
+        hex_chars = "0123456789ABCDEF"
+        for i, b in enumerate(data):
+            buf[i * 2] = hex_chars[b >> 4]
+            buf[i * 2 + 1] = hex_chars[b & 0x0F]
+        buf[len(data) * 2] = '\0'
+        return ''.join(buf[:len(data) * 2])
+
+    def test_single_byte(self):
+        buf = ['\0'] * 10
+        result = self._write_hex_to_buf(buf, [0xAB])
+        assert result == "AB"
+
+    def test_zero_byte(self):
+        buf = ['\0'] * 10
+        result = self._write_hex_to_buf(buf, [0x00])
+        assert result == "00"
+
+    def test_empty_input(self):
+        buf = ['\0'] * 10
+        result = self._write_hex_to_buf(buf, [])
+        assert result == ""
+
+    def test_full_uid_7bytes(self):
+        uid = [0x04, 0x10, 0x65, 0xFA, 0x96, 0x73, 0x80]
+        buf = ['\0'] * 20
+        result = self._write_hex_to_buf(buf, uid)
+        assert result == "041065FA967380"
+
+    def test_full_uid_4bytes(self):
+        uid = [0xDE, 0xAD, 0xBE, 0xEF]
+        buf = ['\0'] * 10
+        result = self._write_hex_to_buf(buf, uid)
+        assert result == "DEADBEEF"
+
+    def test_all_zeros(self):
+        uid = [0x00, 0x00, 0x00, 0x00]
+        buf = ['\0'] * 10
+        result = self._write_hex_to_buf(buf, uid)
+        assert result == "00000000"
+
+    def test_all_ff(self):
+        uid = [0xFF, 0xFF, 0xFF, 0xFF]
+        buf = ['\0'] * 10
+        result = self._write_hex_to_buf(buf, uid)
+        assert result == "FFFFFFFF"
+
+    def test_16_byte_key(self):
+        key = [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+               0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11]
+        buf = ['\0'] * 34
+        result = self._write_hex_to_buf(buf, key)
+        assert result == "11111111111111111111111111111111"
+
+    def test_mixed_nibbles(self):
+        """Each nibble value 0-F appears."""
+        data = [0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF]
+        buf = ['\0'] * 20
+        result = self._write_hex_to_buf(buf, data)
+        assert result == "0123456789ABCDEF"

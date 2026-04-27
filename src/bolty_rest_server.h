@@ -132,11 +132,12 @@ static esp_err_t rest_get_uid(httpd_req_t *req) {
     serial_cmd_active = false;
     return _rest_error(req, "No card detected (10s timeout)");
   }
-  String uid_hex = convertIntToHex(uid, uid_len);
+  char uid_hex[25];  // max 12 bytes * 2 + 1
+  write_hex_to_buf(uid_hex, sizeof(uid_hex), uid, uid_len);
   bool is_ntag = (uid_len == 7 || uid_len == 4) && bolt.nfc->ntag424_isNTAG424();
   char json[192];
   snprintf(json, sizeof(json), "{\"ok\":true,\"uid\":\"%s\",\"ntag424\":%s}",
-    uid_hex.c_str(), is_ntag ? "true" : "false");
+    uid_hex, is_ntag ? "true" : "false");
   serial_cmd_active = false;
   return _rest_json(req, json);
 }
@@ -210,12 +211,13 @@ static esp_err_t rest_get_keyver(httpd_req_t *req) {
     serial_cmd_active = false;
     return _rest_error(req, "No card detected");
   }
-  String uid_hex = convertIntToHex(uid, uid_len);
+  char uid_hex[25];  // max 12 bytes * 2 + 1
+  write_hex_to_buf(uid_hex, sizeof(uid_hex), uid, uid_len);
   bolt.nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID);
 
   char json[320];
   int pos = snprintf(json, sizeof(json),
-    "{\"ok\":true,\"uid\":\"%s\",\"keys\":[", uid_hex.c_str());
+    "{\"ok\":true,\"uid\":\"%s\",\"keys\":[", uid_hex);
   bool all_zero = true;
   for (int k = 0; k < 5; k++) {
     uint8_t kv = bolty_get_key_version(bolt.nfc, k);

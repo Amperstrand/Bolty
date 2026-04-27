@@ -123,6 +123,25 @@ inline String convertIntToHex(const uint8_t *input, uint8_t len) {
   return ret;
 }
 
+// Convert byte array to uppercase hex string in a pre-allocated buffer.
+// Returns pointer to the null terminator (one past last written char).
+// Buffer must have at least (2*len + 1) bytes.
+// Use this instead of convertIntToHex() to avoid Arduino String heap allocation.
+inline char *write_hex_to_buf(char *buf, size_t buf_size, const uint8_t *data,
+                              uint8_t len) {
+  const size_t needed = (size_t)len * 2 + 1;
+  if (buf_size < needed) {
+    buf[0] = '\0';
+    return buf;
+  }
+  for (uint8_t i = 0; i < len; i++) {
+    buf[i * 2] = "0123456789ABCDEF"[data[i] >> 4];
+    buf[i * 2 + 1] = "0123456789ABCDEF"[data[i] & 0x0F];
+  }
+  buf[len * 2] = '\0';
+  return buf + len * 2;
+}
+
 inline uint8_t convertCharToHex(char ch) {
   const char upper = toupper(ch);
   if (upper >= '0' && upper <= '9') {
