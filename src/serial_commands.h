@@ -137,6 +137,9 @@ void handle_status() {
   serial_print_status();
 }
 
+// Authenticate with key 0 using zero (factory) key.
+// Tests zero-key EV2 authentication (INS 0x71) on the tapped card.
+// Ref: NT4H2421Gx datasheet §7.3.1 (AuthenticateEV2First)
 void handle_auth() {
   if (!begin_card_command(F("[auth]"))) return;
   bolt.setCurKeysFromHex(mBoltConfig.k0, mBoltConfig.k1, mBoltConfig.k2, mBoltConfig.k3, mBoltConfig.k4);
@@ -185,6 +188,9 @@ void handle_auth() {
 //
 // Sequence: SELECT AID (D2760000850101) → SELECT FILE (E104) →
 //           READ BINARY (offset=0, len=2) → READ BINARY (offset=2, len=nlen)
+// Read and display NDEF file content from the card.
+// Reads NDEF file (ID 0xE104) via ISO ReadBinary without requiring authentication.
+// Ref: NT4H2421Gx datasheet §8.6.4 (NDEF file), ISO 7816-4 (ReadBinary)
 void handle_ndef() {
   if (!begin_card_command(F("[ndef]"))) return;
   CardTapResult tap = wait_for_card(nullptr);
@@ -240,6 +246,10 @@ ndef_fail:
   }
 }
 
+// Decrypt SDM PICC data from card's NDEF URL using configured keys.
+// Extracts p= and c= query parameters, decrypts with K1, verifies CMAC with K2.
+// Ref: AN12196 §4.7 (SDM for Metro), NT4H2421Gx datasheet §8.7 (SDM),
+//      PiccData.h (PICC format constants), KeyDerivation.h (key derivation)
 void handle_picc() {
   if (!begin_card_command(F("[picc]"))) return;
 
@@ -1107,6 +1117,10 @@ void handle_wipe() {
   serial_cmd_active = false;
 }
 
+// Read key version for all 5 key slots via GetKeyVersion (PLAIN mode).
+// No authentication required — reads version bytes directly.
+// Version 0x00 = factory default, 0x01+ = provisioned, 0xFF = read error.
+// Ref: NT4H2421Gx datasheet §7.3.3 (GetKeyVersion), bolt.h (KEY_VER_* constants)
 void handle_keyver() {
   if (!begin_card_command(F("[keyver]"))) return;
   CardTapResult tap = wait_for_card(F("[keyver] TIMEOUT"), F("[keyver] UID: "), CARD_TAP_TIMEOUT_MS, true);
@@ -1138,6 +1152,9 @@ void handle_keyver() {
   serial_cmd_active = false;
 }
 
+// Quick card health check: authenticate with zero key and report success.
+// Minimal one-tap verification that the card responds to EV2 authentication.
+// Ref: NT4H2421Gx datasheet §7.3.1 (AuthenticateEV2First)
 void handle_check() {
   if (!begin_card_command(F("[check]"))) return;
   bolt.cur_keys = BoltcardKeys::allZeros();
@@ -1152,6 +1169,10 @@ void handle_check() {
   serial_cmd_active = false;
 }
 
+// Test burn workflow without actually changing keys.
+// Writes NDEF file and configures SDM but uses factory zero keys, allowing
+// the card to be re-tested without needing a wipe cycle.
+// Ref: NT4H2421Gx datasheet §8.7.2 (SDM configuration), NFC Forum NDEF §3.2
 void handle_dummyburn() {
   if (!begin_card_command(F("[dummyburn]"))) return;
   bolt.cur_keys = BoltcardKeys::allZeros();
@@ -1194,6 +1215,10 @@ void handle_reset() {
   serial_cmd_active = false;
 }
 
+// Diagnose card state by reading key versions and testing zero-key auth.
+// Classifies card as BLANK, PROVISIONED, HALF-WIPED, or INCONSISTENT based on
+// GetKeyVersion responses and authentication results.
+// Ref: NT4H2421Gx datasheet §7.3.1 (Authenticate), §7.3.3 (GetKeyVersion)
 void handle_diagnose() {
   if (!begin_card_command(F("[diagnose]"))) return;
 
@@ -1253,6 +1278,10 @@ void handle_diagnose() {
   serial_cmd_active = false;
 }
 
+// Recover a single key slot back to factory zero using ChangeKey.
+// Authenticates with K0 (or provided master key), then changes the target
+// key slot to zero with version 0x00. Usage: recoverkey &lt;slot&gt; &lt;old-key&gt; [k0]
+// Ref: NT4H2421Gx datasheet §7.3.2 (ChangeKey command, INS 0xC4)
 void handle_recoverkey() {
   const String &cmd = g_serial_command;
   // Usage: recoverkey <slot 0-4> <32-hex-old-key> [32-hex-k0]
@@ -1364,6 +1393,10 @@ static void testck_finish(uint8_t blinks) {
   serial_cmd_active = false;
 }
 
+// Round-trip ChangeKey test on key slot 1: zero→test→zero.
+// Verifies the ChangeKey implementation by setting key 1 to a test value
+// (version 0x01), reading the version, then restoring it to factory zero.
+// Ref: NT4H2421Gx datasheet §7.3.2 (ChangeKey), §7.3.3 (GetKeyVersion)
 void handle_testck() {
   if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
   Serial.println(F("[testck] ChangeKey A/B test — round-trip on key 1 (known zero)"));

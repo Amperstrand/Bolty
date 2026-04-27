@@ -120,6 +120,9 @@ inline uint8_t convertCharToHex(char ch) {
   return 0;
 }
 
+// Detect and read ISO 14443A passive target UID.
+// Abstracts MFRC522 vs PN532 backend differences for card detection.
+// Ref: ISO/IEC 14443-3 (Type A anti-collision and selection)
 inline bool bolty_read_passive_target(BoltyNfcReader *nfc, uint8_t *uid,
                                       uint8_t *uidLength) {
 #if BOLTY_NFC_BACKEND_MFRC522
@@ -159,6 +162,10 @@ inline void bolty_print_hex(BoltyNfcReader *nfc, const uint8_t *data,
 // ISO SELECT (CLA=0x00) desyncs cmd_counter — the card doesn't count ISO
 // commands but our process_response() does. Solution: only ISO SELECT when
 // the session is not yet authenticated. See issue #8.
+// Read key version byte for a given key slot without authentication.
+// Selects NTAG424 AID first if not already in an authenticated session,
+// since ISO SELECT during auth'd sessions desyncs the command counter.
+// Ref: NT4H2421Gx datasheet §7.3.3 (GetKeyVersion), §6.4 (AID selection)
 inline uint8_t bolty_get_key_version(BoltyNfcReader *nfc, uint8_t keyno) {
   if (!nfc->ntag424_Session.authenticated) {
     if (!nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID)) {
@@ -172,11 +179,16 @@ inline uint8_t bolty_get_key_version(BoltyNfcReader *nfc, uint8_t keyno) {
   return KEY_VER_READ_FAILED;
 }
 
+// Authenticate via ISO 7816 standard command (not EV2).
+// Used for legacy compatibility with non-EV2 authentication flows.
+// Ref: NT4H2421Gx datasheet §7.3.1, ISO 7816-4 (INTERNAL AUTHENTICATE)
 inline bool bolty_iso_authenticate(BoltyNfcReader *nfc, uint8_t *key,
                                    uint8_t keyno) {
   return nfc->ntag424_ISOAuthenticate(key, keyno) == 1;
 }
 
+// Write data to NDEF file via ISO 7816 UpdateBinary command.
+// Ref: NT4H2421Gx datasheet §8.6.4 (NDEF file), ISO 7816-4 (UPDATE BINARY)
 inline bool bolty_iso_write_ndef_file(BoltyNfcReader *nfc, uint8_t *data,
                                       size_t length) {
   if (data == nullptr || length == 0 || length > 0xFF) {
@@ -305,11 +317,17 @@ public:
   }
 #endif
 
+  // Load current keys as zeros (factory) and new keys from config for burn.
+  // Current keys must be zero for factory-state authentication; new keys
+  // are the target provisioned keys written by changeAllKeys.
   void loadKeysForBurn(const sBoltConfig &config) {
     cur_keys = BoltcardKeys::allZeros();
     new_keys = BoltcardKeys::fromHexStrings(config.k0, config.k1, config.k2, config.k3, config.k4);
   }
 
+  // Load current keys from config and target keys as zeros for wipe.
+  // Current keys are the provisioned keys used to authenticate; new keys
+  // are zeros to restore the card to factory state.
   void loadKeysForWipe(const sBoltConfig &config) {
     cur_keys = BoltcardKeys::fromHexStrings(config.k0, config.k1, config.k2, config.k3, config.k4);
     new_keys = BoltcardKeys::allZeros();
@@ -319,6 +337,10 @@ public:
     cur_keys = BoltcardKeys::fromHexStrings(k0, k1, k2, k3, k4);
   }
 
+  // Select the NTAG424 application, capability container, and NDEF file.
+  // Three-step selection: AID (DFN) → CC file → NDEF file by ID (0xE104).
+  // Must be called before any application-level command (auth, read, write).
+  // Ref: NT4H2421Gx datasheet §6.4 (AID), §8.6 (CC file), §8.6.4 (NDEF file)
   bool selectNtagApplicationFiles() {
     return nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID) &&
            nfc->ntag424_ISOSelectCCFile() &&

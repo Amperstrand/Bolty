@@ -161,6 +161,11 @@ static void derive_deterministic_boltcard_keys(BoltyNfcReader *nfc,
   keyderivation_boltcard_keys(issuer_key, uid, version, out_keys);
 }
 
+// Decrypt SDM PICC data (p= parameter) using derived K1 (encryption key).
+// Validates PICC format byte (0xC7) and UID match. Extracts read counter.
+// Returns false if decryption fails or UID doesn't match.
+// Ref: AN12196 §4.7 (SDM for Metro), NT4H2421Gx datasheet §8.7.2 (PICC data),
+//      PiccData.h (PICC_FORMAT_BOLTCARD, PICC_FLAG_* constants)
 static bool deterministic_decrypt_p(BoltyNfcReader *nfc,
                                     const uint8_t k1[AES_KEY_LEN],
                                     const uint8_t p[AES_KEY_LEN],
@@ -177,6 +182,11 @@ static bool deterministic_decrypt_p(BoltyNfcReader *nfc,
   return true;
 }
 
+// Verify SDM MAC (c= parameter) using derived K2 (authentication key).
+// Derives session key via SV2 (AES-CMAC of K2 with UID+counter), then computes
+// CMAC of empty data and compares odd bytes with the expected 8-byte MAC.
+// Ref: AN12196 §4.7 (SDM MAC verification), NT4H2421Gx datasheet §8.7.2,
+//      PiccData.h (sdm_build_sv2 helper, SV2_HEADER constants)
 static bool deterministic_verify_cmac(BoltyNfcReader *nfc,
                                       const uint8_t k2[AES_KEY_LEN],
                                       const uint8_t uid[7],
@@ -199,6 +209,13 @@ static bool deterministic_verify_cmac(BoltyNfcReader *nfc,
   return crypto_memcmp(computed_c, expected_c, sizeof(computed_c));
 }
 
+// Try all known issuer keys against card's SDM p=/c= parameters.
+// For each issuer key: derives K0-K4, attempts K1 decryption of p=, then K2
+// CMAC verification of c=. Tests version candidates 0 and 1. Returns full
+// match with derived keys if both K1 and K2 checks pass.
+// Ref: boltcard SPEC (deterministic key derivation),
+//      KeyDerivation.h (derivation constants KEYDET_TAG_*),
+//      AN12196 §6 (CMAC verification)
 static bool deterministic_try_known_matches(BoltyNfcReader *nfc,
                                             const uint8_t *uid,
                                             uint8_t uid_len,
