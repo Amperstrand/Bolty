@@ -127,7 +127,7 @@ static esp_err_t rest_get_uid(httpd_req_t *req) {
   serial_cmd_active = true;
   uint8_t uid[12] = {0};
   uint8_t uid_len = 0;
-  bool found = _rest_wait_card(uid, &uid_len, 10000);
+  bool found = _rest_wait_card(uid, &uid_len, REST_CARD_WAIT_MS);
   if (!found) {
     serial_cmd_active = false;
     return _rest_error(req, "No card detected (10s timeout)");
@@ -206,7 +206,7 @@ static esp_err_t rest_get_keyver(httpd_req_t *req) {
 
   uint8_t uid[12] = {0};
   uint8_t uid_len = 0;
-  if (!_rest_wait_card(uid, &uid_len, 10000)) {
+  if (!_rest_wait_card(uid, &uid_len, REST_CARD_WAIT_MS)) {
     serial_cmd_active = false;
     return _rest_error(req, "No card detected");
   }
@@ -243,7 +243,7 @@ static esp_err_t rest_get_check(httpd_req_t *req) {
 
   uint8_t uid[12] = {0};
   uint8_t uid_len = 0;
-  if (!_rest_wait_card(uid, &uid_len, 10000)) {
+  if (!_rest_wait_card(uid, &uid_len, REST_CARD_WAIT_MS)) {
     serial_cmd_active = false;
     return _rest_error(req, "No card detected");
   }
@@ -274,7 +274,7 @@ static esp_err_t rest_post_burn(httpd_req_t *req) {
   uint32_t t0 = millis();
   do {
     result = bolt.burn(String(mBoltConfig.url));
-    if (millis() - t0 > 30000) {
+    if (millis() - t0 > REST_OP_TIMEOUT_MS) {
       serial_cmd_active = false;
       return _rest_error(req, "Timeout (30s)");
     }
@@ -307,7 +307,7 @@ static esp_err_t rest_post_wipe(httpd_req_t *req) {
   uint32_t t0 = millis();
   do {
     result = bolt.wipe();
-    if (millis() - t0 > 30000) {
+    if (millis() - t0 > REST_OP_TIMEOUT_MS) {
       serial_cmd_active = false;
       return _rest_error(req, "Timeout (30s)");
     }
@@ -336,7 +336,7 @@ static esp_err_t rest_get_ndef(httpd_req_t *req) {
 
   uint8_t uid[12] = {0};
   uint8_t uid_len = 0;
-  if (!_rest_wait_card(uid, &uid_len, 10000)) {
+  if (!_rest_wait_card(uid, &uid_len, REST_CARD_WAIT_MS)) {
     serial_cmd_active = false;
     return _rest_error(req, "No card detected");
   }

@@ -49,6 +49,19 @@ static const uint8_t MAX_UID_LEN = 12;
 static const unsigned long CARD_TAP_TIMEOUT_MS = 15000;
 static const unsigned long CARD_TAP_TIMEOUT_LONG_MS = 30000;
 
+// REST API timeout constants
+static const unsigned long REST_CARD_WAIT_MS = 10000;    // 10s card scan timeout for REST endpoints
+static const unsigned long REST_OP_TIMEOUT_MS = 30000;   // 30s operation timeout for REST burn/wipe
+
+// HTTP/network timeout constants
+static const unsigned long HTTP_TIMEOUT_MS = 10000;      // Default HTTP connection/transfer timeout
+static const unsigned long WEB_LOOKUP_TIMEOUT_MS = 5000; // Web key server lookup timeout
+
+// Assessment & WiFi timeout constants
+static const unsigned long ASSESSMENT_TIMEOUT_MS = 5000; // Card assessment scan timeout
+static const unsigned long WIFI_RETRY_MS = 10000;        // WiFi reconnection retry interval
+static const unsigned long NTP_TIMEOUT_MS = 15000;       // NTP time sync timeout
+
 // NDEF
 static const uint16_t NDEF_MAX_LEN = 256;
 static const uint8_t NDEF_WRITE_CHUNK = 47;

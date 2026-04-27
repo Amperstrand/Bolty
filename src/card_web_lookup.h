@@ -65,7 +65,7 @@ static bool web_lookup_and_match(BoltyNfcReader *nfc,
   char url[NDEF_MAX_LEN];
   snprintf(url, sizeof(url), "%s?uid=%s", web_lookup_url, uid_hex);
   http.begin(url);
-  http.setTimeout(5000);
+  http.setTimeout(WEB_LOOKUP_TIMEOUT_MS);
   int code = http.GET();
   if (code != 200) {
     Serial.print(F("[web] HTTP "));

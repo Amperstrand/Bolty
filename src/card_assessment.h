@@ -173,7 +173,7 @@ static bool assess_current_card(CardAssessment &assessment) {
   bool found = false;
   do {
     found = bolty_read_passive_target(bolt.nfc, uid, &uid_len);
-    if (millis() - t0 > 5000) {
+    if (millis() - t0 > ASSESSMENT_TIMEOUT_MS) {
       return false;
     }
   } while (!found);

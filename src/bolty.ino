@@ -482,7 +482,7 @@ sAppHandler mAppHandler[APPS];
 #if HAS_WIFI
 void saveSettings() {
   char path[20];
-  sprintf(path, "/settings.dat");
+  snprintf(path, sizeof(path), "/settings.dat");
   fs::File myFile = SPIFFS.open(path, FILE_WRITE);
   if (!myFile) { Serial.println(F("[error] Failed to open settings for write")); return; }
   myFile.write((byte *)&mSettings, sizeof(sSettings));
@@ -535,7 +535,7 @@ int checkFsVersion(){
 
 void loadSettings() {
   char path[20];
-  sprintf(path, "/settings.dat");
+  snprintf(path, sizeof(path), "/settings.dat");
   Serial.print(path);
   if (SPIFFS.exists(path) == 1) {
     Serial.println(" found");
@@ -562,7 +562,7 @@ void loadSettings() {}
 
 void saveBoltConfig(uint8_t slot) {
   char path[20];
-  sprintf(path, "/config%02x.dat", slot);
+  snprintf(path, sizeof(path), "/config%02x.dat", slot);
   SPIFFS.begin(true);
   // Never persist keys to flash — write a sanitized copy with zeroed key fields.
   sBoltConfig sanitized = mBoltConfig;
@@ -589,7 +589,7 @@ testurl)); bolt.nfc->PrintHexChar(testurl, 56);
 
 void loadBoltConfig(uint8_t slot) {
   char path[20];
-  sprintf(path, "/config%02x.dat", slot);
+  snprintf(path, sizeof(path), "/config%02x.dat", slot);
   SPIFFS.begin(true);
   Serial.print(path);
   Serial.println(sizeof(((sBoltConfig *)0)->url));
@@ -604,9 +604,9 @@ void loadBoltConfig(uint8_t slot) {
     myFile.close();
   } else {
     Serial.println(" not found");
-    strcpy(mBoltConfig.card_name, "*new*");
+    safe_strcpy(mBoltConfig.card_name, "*new*", sizeof(mBoltConfig.card_name));
     mBoltConfig.url[0] = 0;
-    strcpy(mBoltConfig.card_mode, "withdraw");
+    safe_strcpy(mBoltConfig.card_mode, "withdraw", sizeof(mBoltConfig.card_mode));
     mBoltConfig.uid[0] = 0;
     mBoltConfig.k0[0] = 0;
     mBoltConfig.k1[0] = 0;
@@ -617,12 +617,12 @@ void loadBoltConfig(uint8_t slot) {
     mBoltConfig.wallet_url[0] = 0;
     mBoltConfig.wallet_host[0] = 0;
     mBoltConfig.reset_url[0] = 0;
-    strcpy(mBoltConfig.wifi_ssid, "Tollgate");
+    safe_strcpy(mBoltConfig.wifi_ssid, "Tollgate", sizeof(mBoltConfig.wifi_ssid));
     mBoltConfig.wifi_password[0] = 0;
     mBoltConfig.wifi_probe_enabled = false;
   }
   if (mBoltConfig.card_mode[0] == '\0') {
-    strcpy(mBoltConfig.card_mode, "withdraw");
+    safe_strcpy(mBoltConfig.card_mode, "withdraw", sizeof(mBoltConfig.card_mode));
   }
   dumpconfig();
 }
@@ -1636,7 +1636,7 @@ void setup(void) {
     Serial.println(WiFi.localIP());
     configTime(0, 0, "pool.ntp.org");
     uint32_t ntp_start = millis();
-    while (time(nullptr) < 1700000000 && millis() - ntp_start < 15000) {
+    while (time(nullptr) < 1700000000 && millis() - ntp_start < NTP_TIMEOUT_MS) {
       delay(500);
       Serial.print(".");
     }
@@ -1729,7 +1729,7 @@ void loop(void) {
   // Reconnect WiFi if dropped (critical for REST availability)
   if (WiFi.status() != WL_CONNECTED) {
     static unsigned long _last_wifi_attempt = 0;
-    if (millis() - _last_wifi_attempt > 10000) {  // retry every 10s
+    if (millis() - _last_wifi_attempt > WIFI_RETRY_MS) {  // retry every 10s
       _last_wifi_attempt = millis();
       Serial.println("[rest] WiFi lost, reconnecting...");
       WiFi.disconnect();

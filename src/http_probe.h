@@ -25,7 +25,7 @@ static inline size_t http_probe_read_body_preview(HTTPClient &http,
   truncated = false;
   unsigned long last_data_ms = millis();
 
-  while (http.connected() && (millis() - last_data_ms) < 10000UL) {
+  while (http.connected() && (millis() - last_data_ms) < HTTP_TIMEOUT_MS) {
     led_notify_activity();
     led_tick();
 
@@ -98,7 +98,7 @@ static inline bool http_probe_url(const String &url) {
   WiFi.begin(mBoltConfig.wifi_ssid, mBoltConfig.wifi_password);
 
   const unsigned long wifi_start_ms = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - wifi_start_ms) < 10000UL) {
+  while (WiFi.status() != WL_CONNECTED && (millis() - wifi_start_ms) < HTTP_TIMEOUT_MS) {
     led_notify_activity();
     led_tick();
     delay(100);
@@ -116,8 +116,8 @@ static inline bool http_probe_url(const String &url) {
 
   HTTPClient http;
   http.useHTTP10(true);
-  http.setConnectTimeout(10000);
-  http.setTimeout(10000);
+  http.setConnectTimeout(HTTP_TIMEOUT_MS);
+  http.setTimeout(HTTP_TIMEOUT_MS);
   http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
 
   if (!http.begin(http_url)) {
