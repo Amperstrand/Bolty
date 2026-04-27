@@ -5,7 +5,6 @@
 #include "debug.h"
 
 #include "bolt.h"
-#include "debug.h"
 
 inline const char *ntag424_error_name(uint8_t sw1, uint8_t sw2) {
   if (sw1 == 0x91) {

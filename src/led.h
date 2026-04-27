@@ -2,13 +2,11 @@
 #define BOLTY_LED_H
 
 #include "hardware_config.h"
-#include "debug.h"
 #include <Arduino.h>
 #include "debug.h"
 
 #if HAS_LED_MATRIX
 #include <M5Unified.h>
-#include "debug.h"
 #endif
 
 #if HAS_LED_MATRIX

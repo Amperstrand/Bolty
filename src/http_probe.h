@@ -4,13 +4,10 @@
 #include <Arduino.h>
 #include "debug.h"
 #include "bolt.h"
-#include "debug.h"
 
 #if HAS_HTTP_PROBE
 #include <HTTPClient.h>
-#include "debug.h"
 #include <WiFi.h>
-#include "debug.h"
 
 extern sBoltConfig mBoltConfig;
 

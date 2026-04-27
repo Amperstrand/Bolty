@@ -23,11 +23,9 @@
 #define PICC_DATA_H
 
 #include <stdint.h>
-#include "debug.h"
 #include <string.h>
 #include "debug.h"
 #include "ntag424_crypto.h"
-#include "debug.h"
 
 struct PiccData {
   bool valid;

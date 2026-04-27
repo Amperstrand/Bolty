@@ -251,12 +251,6 @@ private:
     return true;
   }
 
-  static uint8_t convertCharToHex(char ch) {
-    const char upper = toupper(ch);
-    if (upper >= '0' && upper <= '9') return upper - '0';
-    if (upper >= 'A' && upper <= 'F') return upper - 'A' + 10;
-    return 0;
-  }
 };
 
 class BoltDevice {

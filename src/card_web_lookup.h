@@ -16,20 +16,12 @@ extern bool has_issuer_key;
 extern CardAssessment g_last_assessment;
 
 #if HAS_WEB_LOOKUP
-// Parse a hex char to nibble value
-static uint8_t hex_nibble(char c) {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-  return 0;
-}
-
 // Parse 32-char hex string to 16 bytes. Returns false on bad format.
 static bool parse_hex_32(const char *hex, uint8_t out[AES_KEY_LEN]) {
   for (int i = 0; i < AES_KEY_LEN; i++) {
     char hi = hex[i * 2], lo = hex[i * 2 + 1];
     if (!isxdigit(hi) || !isxdigit(lo)) return false;
-    out[i] = (hex_nibble(hi) << 4) | hex_nibble(lo);
+    out[i] = (convertCharToHex(hi) << 4) | convertCharToHex(lo);
   }
   return true;
 }

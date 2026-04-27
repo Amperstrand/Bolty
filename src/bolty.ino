@@ -475,16 +475,6 @@ void saveSettings() {
 void extractfiles(){
     Serial.println("Extracting files");
     Stream *HTMLTarStream = new TarStream(data_tar, (size_t) data_tar_len);
-    //TarUnpacker *TARUnpacker = new TarUnpacker();
-    //TARUnpacker->haltOnError(true);                                                            // stop on fail (manual restart/reset required)
-    //TARUnpacker->setTarVerify(true);                                                           // true = enables health checks but slows down the overall process
-    //TARUnpacker->setupFSCallbacks(targzTotalBytesFn, targzFreeBytesFn);                        // prevent the partition from exploding, recommended
-    //TARGZUnpacker->setGzProgressCallback(BaseUnpacker::defaultProgressCallback ); // targzNullProgressCallback or defaultProgressCallback
-    //TARUnpacker->setLoggerCallback(BaseUnpacker::targzPrintLoggerCallback);                    // gz log verbosity
-    //TARUnpacker->setTarProgressCallback(BaseUnpacker::defaultProgressCallback);                // prints the untarring progress for each individual file
-    //TARUnpacker->setTarStatusProgressCallback(BaseUnpacker::defaultTarStatusProgressCallback); // print the filenames as they're expanded
-    //TARUnpacker->setTarMessageCallback(BaseUnpacker::targzPrintLoggerCallback);                // tar log verbosity  
-    //if (!TARUnpacker->tarStreamExpander(HTMLTarStream, data_tar_len, tarGzFS, "/")){
     TarGzUnpacker *TARGZUnpacker = new TarGzUnpacker();
     TARGZUnpacker->haltOnError( true ); // stop on fail (manual restart/reset required)
     TARGZUnpacker->setTarVerify( true ); // true = enables health checks but slows down the overall process
@@ -750,7 +740,6 @@ void app_keysetup_loop() {
 
 #if HAS_WIFI
 String web_keysetup_processor(const String &var) {
-  // Serial.println("web_keysetup_loop");
   if (var == "wallet_name")
     return mBoltConfig.wallet_name;
   if (var == "wallet_host")
@@ -776,7 +765,6 @@ uint32_t previousMillis;
 uint32_t Interval = 100;
 
 void APP_BOLTBURN_loop() {
-  // Serial.println("APP_BOLTBURN_loop");
   // set the keys
   if (millis() - previousMillis < Interval) {
     return;
@@ -844,10 +832,6 @@ String processor_default(const String &var){
         if (mSettings.wifimode == WIFIMODE_STA)
                 return String(mSettings.essid);
 #endif
-  /*if (var == "essid")
-    //if (mSettings.wifimode == WIFIMODE_STA)
-    return String(mSettings.essid);
-   */
   return String();
 }
 
@@ -864,7 +848,6 @@ void APP_BOLTBURN_end() { Serial.println("APP_BOLTBURN_end"); }
 void APP_BOLTWIPE_start() { Serial.println("APP_BOLTWIPE_start"); }
 
 void APP_BOLTWIPE_loop() {
-  // Serial.println("APP_BOLTWIPE_loop");
   if (millis() - previousMillis < Interval) {
     return;
   }
@@ -1393,12 +1376,9 @@ void setup(void) {
         web_keysetup_processor); // Sends File with cross-origin-header
     response->addHeader("Access-Control-Allow-Origin", "*");
     request->send(response);
-    // request->send(SPIFFS, "/setup.html", String(), false,
-    // web_keysetup_processor);
   });
   // Route for root / web page
   server.on("/wipe", HTTP_GET, [](AsyncWebServerRequest *request) {
-    // Serial.println("request wipe");
     app_next = APP_BOLTWIPE;
     checkparams(request);
     request->send(SPIFFS, "/wipe.html", String(), false,
@@ -1446,7 +1426,6 @@ void setup(void) {
 
   AsyncCallbackJsonWebHandler *handler = new AsyncCallbackJsonWebHandler(
       "/status", [](AsyncWebServerRequest *request, JsonVariant &json) {
-        // Serial.println(bolt.get_job_status());
         request->send(200, "application/json",
                       "{\"status\":\"" + bolt.get_job_status() +
                           "\",\"app\":\"" + app_active + "\",\"cnn\":\"" +
@@ -1457,7 +1436,6 @@ void setup(void) {
 
   AsyncCallbackJsonWebHandler *handler_uid = new AsyncCallbackJsonWebHandler(
       "/uid", [](AsyncWebServerRequest *request, JsonVariant &json) {
-        // Serial.println(bolt.get_job_status());
         request->send(200, "application/json",
                       "{\"uid\":\"" + bolt.getScannedUid() + "\"}");
       });
