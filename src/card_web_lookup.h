@@ -44,7 +44,15 @@ static const char* find_key_hex(const char *json, const char *key_name,
   return close_q + 1;
 }
 
-// Fetch keysets from web API, try each K1 against p=, return matched keys.
+// Fetch card keys from a web key server and match against card's SDM data.
+//
+// Queries the configured key server with the card's UID, receives JSON keysets
+// containing K0-K4 hex values, and tests each K1 against the card's SDM-encrypted
+// PICC data (p= parameter) using deterministic_decrypt_p(). Returns the first
+// matching keyset with the decrypted data and read counter.
+//
+// Ref: boltcard SPEC (web key lookup protocol), NT4H2421Gx datasheet §8.7 (SDM),
+//      card_key_matching.h (deterministic_decrypt_p for K1 decryption)
 static bool web_lookup_and_match(BoltyNfcReader *nfc,
                                   const char *uid_hex,
                                   const uint8_t *p_bytes, const uint8_t *uid,

@@ -58,6 +58,14 @@ static inline size_t http_probe_read_body_preview(HTTPClient &http,
 }
 #endif
 
+// Probe a bolt card's LNURL endpoint by connecting to WiFi and fetching the URL.
+//
+// Converts lnurlw:// and lnurlp:// schemes to https://, connects to the configured
+// WiFi SSID, performs an HTTP GET, and logs the response body preview. Used for
+// verifying that a provisioned card's URL is reachable and returns valid data.
+// Returns true if the probe was attempted (even on failure), false if disabled.
+//
+// Ref: LUD-01 (LNURL scheme spec), boltcard SPEC (lnurlw:// URL format)
 static inline bool http_probe_url(const String &url) {
 #if HAS_HTTP_PROBE
   if (url.length() == 0) return false;

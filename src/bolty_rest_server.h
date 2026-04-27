@@ -118,6 +118,8 @@ static esp_err_t rest_get_status(httpd_req_t *req) {
 
 // ── GET /api/uid ──
 
+// GET /api/uid — Read card UID and detect NTAG424 via GetVersion.
+// Ref: ISO/IEC 14443-3 (anti-collision), NT4H2421Gx datasheet §7.1 (GetVersion)
 static esp_err_t rest_get_uid(httpd_req_t *req) {
   if (!_rest_check_read_auth(req)) return ESP_FAIL;
   if (!bolty_hw_ready) return _rest_error(req, "NFC not ready");
@@ -194,6 +196,8 @@ static esp_err_t rest_post_url(httpd_req_t *req) {
 
 // ── GET /api/keyver ──
 
+// GET /api/keyver — Read all 5 key version bytes via GetKeyVersion (PLAIN mode).
+// Ref: NT4H2421Gx datasheet §7.3.3 (GetKeyVersion), bolt.h (KEY_VER_* constants)
 static esp_err_t rest_get_keyver(httpd_req_t *req) {
   if (!_rest_check_read_auth(req)) return ESP_FAIL;
   if (!bolty_hw_ready) return _rest_error(req, "NFC not ready");
@@ -215,10 +219,10 @@ static esp_err_t rest_get_keyver(httpd_req_t *req) {
   bool all_zero = true;
   for (int k = 0; k < 5; k++) {
     uint8_t kv = bolty_get_key_version(bolt.nfc, k);
-    if (kv != 0x00) all_zero = false;
+    if (kv != KEY_VER_FACTORY) all_zero = false;
     pos += snprintf(json + pos, sizeof(json) - pos,
       "%s{\"slot\":%d,\"version\":\"0x%02X\",\"factory\":%s}",
-      k > 0 ? "," : "", k, kv, kv == 0x00 ? "true" : "false");
+      k > 0 ? "," : "", k, kv, kv == KEY_VER_FACTORY ? "true" : "false");
   }
   pos += snprintf(json + pos, sizeof(json) - pos,
     "],\"state\":\"%s\"}", all_zero ? "blank" : "provisioned");
@@ -229,6 +233,8 @@ static esp_err_t rest_get_keyver(httpd_req_t *req) {
 
 // ── GET /api/check ──
 
+// GET /api/check — Quick card health check via zero-key EV2 authentication.
+// Ref: NT4H2421Gx datasheet §7.3.1 (AuthenticateEV2First)
 static esp_err_t rest_get_check(httpd_req_t *req) {
   if (!_rest_check_read_auth(req)) return ESP_FAIL;
   if (!bolty_hw_ready) return _rest_error(req, "NFC not ready");
@@ -242,8 +248,7 @@ static esp_err_t rest_get_check(httpd_req_t *req) {
     return _rest_error(req, "No card detected");
   }
 
-  uint8_t zero_key[16] = {0};
-  uint8_t result = bolt.nfc->ntag424_Authenticate(zero_key, 0, 0x71);
+  uint8_t result = bolt.nfc->ntag424_Authenticate((uint8_t *)ZERO_KEY, 0, AUTH_CMD_EV2_FIRST);
   serial_cmd_active = false;
 
   char json[128];
@@ -254,6 +259,8 @@ static esp_err_t rest_get_check(httpd_req_t *req) {
 
 // ── POST /api/burn ──
 
+// POST /api/burn — Provision card as bolt card (NDEF write + SDM config + key change).
+// Ref: bolt.h burn() method, NT4H2421Gx datasheet §7.3.2, §8.7.2, NFC Forum NDEF §3.2
 static esp_err_t rest_post_burn(httpd_req_t *req) {
   if (!_rest_check_write_auth(req)) return ESP_FAIL;
   if (!bolty_hw_ready) return _rest_error(req, "NFC not ready");
@@ -286,6 +293,8 @@ static esp_err_t rest_post_burn(httpd_req_t *req) {
 
 // ── POST /api/wipe ──
 
+// POST /api/wipe — Reset provisioned card to factory defaults (all keys to zero).
+// Ref: bolt.h wipe() method, NT4H2421Gx datasheet §7.3.2, §8.7.2
 static esp_err_t rest_post_wipe(httpd_req_t *req) {
   if (!_rest_check_write_auth(req)) return ESP_FAIL;
   if (!bolty_hw_ready) return _rest_error(req, "NFC not ready");
@@ -317,6 +326,8 @@ static esp_err_t rest_post_wipe(httpd_req_t *req) {
 
 // ── GET /api/ndef ──
 
+// GET /api/ndef — Read raw NDEF file content from card (no auth required).
+// Ref: NT4H2421Gx datasheet §8.6.4 (NDEF file), ISO 7816-4 (ReadBinary)
 static esp_err_t rest_get_ndef(httpd_req_t *req) {
   if (!_rest_check_read_auth(req)) return ESP_FAIL;
   if (!bolty_hw_ready) return _rest_error(req, "NFC not ready");
