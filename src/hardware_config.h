@@ -46,6 +46,7 @@
 #define MFRC522_I2C_ADDRESS (0x28)
 #define MFRC522_I2C_FREQUENCY (400000)
 #define NFC_RESET_PIN (-1)
+#define M5_ATOM_BTN_PIN (39)
 #elif BOLTY_NFC_BACKEND_PN532_UART
 // ESP32-DevKitC V4 + PN532 via UART (HSU) — 4 wires only
 //

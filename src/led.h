@@ -172,7 +172,7 @@ static inline void led_setup() {
   DBG_PRINTLN(bolty_led_internal::supported ? "yes" : "no");
   if (!bolty_led_internal::supported) return;
 
-  pinMode(39, INPUT);
+  pinMode(M5_ATOM_BTN_PIN, INPUT);
   M5.Led.setBrightness(1);
   M5.Led.setAllColor(0, 0, 0);
   M5.Led.display();
