@@ -311,6 +311,51 @@ public:
 
   bool selectNdefFileOnly() { return nfc->ntag424_ISOSelectNDEFFile(); }
 
+  bool scanAndValidate(uint8_t *uid, uint8_t *uidLength) {
+    if (*uidLength == 0 && !bolty_read_passive_target(nfc, uid, uidLength)) {
+      return false;
+    }
+
+    DBG_PRINTLN("Found an ISO14443A tag");
+    DBG_PRINT("  UID Length: ");
+    DBG_PRINT(*uidLength, DEC);
+    DBG_PRINTLN(" bytes");
+    DBG_PRINT("  UID Value: ");
+    bolty_print_hex(nfc, uid, *uidLength);
+    DBG_PRINTLN("");
+
+    if (!(((*uidLength == 7) || (*uidLength == 4)) && nfc->ntag424_isNTAG424())) {
+      DBG_PRINTLN("This doesn't seem to be an NTAG424 tag. (UUID length != 7 bytes and UUID length != 4)!");
+      return false;
+    }
+
+    return true;
+  }
+
+  bool authenticateK0(const uint8_t *key, const char *context) {
+    if (nfc->ntag424_Authenticate(const_cast<uint8_t *>(key), 0, AUTH_CMD_EV2_FIRST) == 1) {
+      return true;
+    }
+
+    uint8_t chk_uid[MAX_UID_LEN] = {0};
+    uint8_t chk_uid_len = 0;
+    const bool card_present = bolty_read_passive_target(nfc, chk_uid, &chk_uid_len);
+    if (strcmp(context, "Post-verify K0 re-auth FAILED") == 0) {
+      if (card_present) {
+        DBG_PRINTLN(F("Post-verify K0 re-auth FAILED — card present but key rejected"));
+      } else {
+        DBG_PRINTLN(F("Post-verify K0 re-auth FAILED — card removed during verify"));
+      }
+    } else {
+      if (card_present) {
+        DBG_PRINTLN(F("Auth FAILED — card is present but key was rejected (wrong key?)"));
+      } else {
+        DBG_PRINTLN(F("Auth FAILED — card no longer detected (removed during operation?)"));
+      }
+    }
+    return false;
+  }
+
   // Change all 5 application keys in reverse order (4→0) so the auth key
   // (K0) is changed last. Continues through individual failures to avoid
   // leaving the card in a partial-wipe state.
@@ -569,16 +614,8 @@ public:
     }
 
     set_job_status_id(JOBSTATUS_PROVISIONING);
-    DBG_PRINTLN("Found an ISO14443A tag");
-    DBG_PRINT("  UID Length: ");
-    DBG_PRINT(uidLength, DEC);
-    DBG_PRINTLN(" bytes");
-    DBG_PRINT("  UID Value: ");
-    bolty_print_hex(nfc, uid, uidLength);
-    DBG_PRINTLN("");
 
-    if (!(((uidLength == 7) || (uidLength == 4)) && nfc->ntag424_isNTAG424())) {
-      DBG_PRINTLN("This doesn't seem to be an NTAG424 tag. (UUID length != 7 bytes and UUID length != 4)!");
+    if (!scanAndValidate(uid, &uidLength)) {
       return job_status;
     }
 
@@ -604,15 +641,7 @@ public:
 
     // Native AuthenticateEV2First: cmd=0x71 (NT4H2421Gx §7.3.1.1).
     // Using cur_keys.keys[0] (factory zero key) with key number 0.
-    const uint8_t auth_result = nfc->ntag424_Authenticate(cur_keys.keys[0], 0, AUTH_CMD_EV2_FIRST);
-    if (auth_result != 1) {
-      uint8_t chk_uid[MAX_UID_LEN] = {0};
-      uint8_t chk_uid_len = 0;
-      if (bolty_read_passive_target(nfc, chk_uid, &chk_uid_len)) {
-        DBG_PRINTLN(F("Auth FAILED — card is present but key was rejected (wrong key?)"));
-      } else {
-        DBG_PRINTLN(F("Auth FAILED — card no longer detected (removed during operation?)"));
-      }
+    if (!authenticateK0(cur_keys.keys[0], "Auth FAILED")) {
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
@@ -842,6 +871,8 @@ public:
   // Authenticate every key slot to prove we know all keys before wiping.
   // For K3/K4, if the explicit key fails, probes K3=K1 (LNBits) and zeros.
   // Updates cur_keys.keys[] if probing finds a working key.
+  // This mutation is intentional: wipe uses the discovered working key set,
+  // and callers must honor vr.all_verified before doing any destructive work.
   KeyVerifyResult verify_all_keys() {
     KeyVerifyResult vr = {};
     memset(vr.key_versions, KEY_VER_READ_FAILED, 5);
@@ -949,16 +980,8 @@ public:
     }
 
     set_job_status_id(JOBSTATUS_WIPING);
-    DBG_PRINTLN("Found an ISO14443A tag");
-    DBG_PRINT("  UID Length: ");
-    DBG_PRINT(uidLength, DEC);
-    DBG_PRINTLN(" bytes");
-    DBG_PRINT("  UID Value: ");
-    bolty_print_hex(nfc, uid, uidLength);
-    DBG_PRINTLN("");
 
-    if (!(((uidLength == 7) || (uidLength == 4)) && nfc->ntag424_isNTAG424())) {
-      DBG_PRINTLN("This doesn't seem to be an NTAG424 tag. (UUID length != 7 bytes and UUID length != 4)!");
+    if (!scanAndValidate(uid, &uidLength)) {
       return job_status;
     }
 
@@ -976,14 +999,7 @@ public:
 
     // Re-auth K0 for wipe ops (verify cycle may have left non-K0 session active).
     selectNtagApplicationFiles();
-    if (nfc->ntag424_Authenticate(cur_keys.keys[0], 0, AUTH_CMD_EV2_FIRST) != 1) {
-      uint8_t chk_uid[MAX_UID_LEN] = {0};
-      uint8_t chk_uid_len = 0;
-      if (bolty_read_passive_target(nfc, chk_uid, &chk_uid_len)) {
-        DBG_PRINTLN(F("Post-verify K0 re-auth FAILED — card present but key rejected"));
-      } else {
-        DBG_PRINTLN(F("Post-verify K0 re-auth FAILED — card removed during verify"));
-      }
+    if (!authenticateK0(cur_keys.keys[0], "Post-verify K0 re-auth FAILED")) {
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
