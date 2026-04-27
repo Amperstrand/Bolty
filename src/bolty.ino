@@ -307,8 +307,7 @@ static void print_card_assessment(const CardAssessment &assessment) {
     Serial.print(F("[assess] Key "));
     Serial.print(i);
     Serial.print(F(" ver=0x"));
-    if (assessment.key_versions[i] < 0x10) Serial.print(F("0"));
-    Serial.print(assessment.key_versions[i], HEX);
+    serial_print_hex_byte(assessment.key_versions[i]);
     Serial.print(F(" confidence="));
     switch (assessment.key_confidence[i]) {
       case KeyConfidence::high: Serial.println(F("high")); break;
@@ -1672,8 +1671,7 @@ void loop(void) {
         if (found) {
           Serial.print("[nfc] card detected: ");
           for (uint8_t i = 0; i < poll_len; i++) {
-            if (poll_uid[i] < 0x10) Serial.print("0");
-            Serial.print(poll_uid[i], HEX);
+            serial_print_hex_byte(poll_uid[i]);
           }
           Serial.println();
           signal_idle_card_kind(classify_idle_card(poll_uid, poll_len));

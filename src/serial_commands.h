@@ -457,6 +457,15 @@ static bool inspect_load_keys(uint8_t keys[5][AES_KEY_LEN]) {
   return true;
 }
 
+// Test current issuer key against card's SDM-encrypted PICC data.
+//
+// Derives K0-K4 from issuer key + UID using boltcard deterministic spec,
+// then attempts K1 decryption of p= parameter and K2 CMAC verification of c=.
+// If full match found, auto-loads derived keys for wipe/burn. Tests all
+// version candidates (0,1,2,3) per boltcard spec.
+//
+// Ref: boltcard SPEC (deterministic key derivation), NT4H2421Gx datasheet §8.7 (SDM),
+//      AN12196 §6 (CMAC verification), KeyDerivation.h (derivation constants)
 static bool inspect_match_issuer(const CardTapResult &tap,
                                   const uint8_t p_bytes[AES_KEY_LEN],
                                   const uint8_t c_bytes[8],
@@ -522,10 +531,17 @@ static bool inspect_match_issuer(const CardTapResult &tap,
   return false;
 }
 
+// Fetch card keys from a web key server and verify against SDM data.
+//
+// Connects to configured key server with card UID, receives K0-K4 hex keys,
+// then validates by authenticating K0 and verifying SDM p=/c= parameters.
+// Falls back gracefully if WiFi or server is unavailable.
+//
+// Ref: boltcard SPEC (web key lookup protocol), NT4H2421Gx datasheet §8.7 (SDM)
 static bool inspect_match_web(const CardTapResult &tap,
-                               const uint8_t p_bytes[AES_KEY_LEN],
-                               const uint8_t c_bytes[8],
-                               bool p_ok, bool c_ok) {
+                                const uint8_t p_bytes[AES_KEY_LEN],
+                                const uint8_t c_bytes[8],
+                                bool p_ok, bool c_ok) {
   #if !HAS_WEB_LOOKUP
   (void)tap; (void)p_bytes; (void)c_bytes; (void)p_ok; (void)c_ok;
   return false;
@@ -648,6 +664,15 @@ static void inspect_ndef_content(const CardTapResult &tap) {
   }
 }
 
+// Perform comprehensive read-only card inspection.
+//
+// Multi-phase inspection: card presence/type → key versions → file settings →
+// NDEF content → issuer key matching → web key lookup. All operations are
+// non-destructive (no authentication required for version/settings reads).
+// Auto-loads matched keys for subsequent wipe/burn operations.
+//
+// Ref: NT4H2421Gx datasheet §7.1 (GetVersion), §7.3.3 (GetKeyVersion),
+//      §7.6.1 (GetFileSettings), ISO 7816-4 (ReadBinary for NDEF)
 void handle_inspect() {
   if (!begin_card_command(F("[inspect]"))) return;
 
@@ -675,6 +700,15 @@ void handle_inspect() {
   serial_cmd_active = false;
 }
 
+// Derive and display deterministic boltcard keys from card's NDEF data.
+//
+// Reads card NDEF, extracts p= (encrypted PICC data) and c= (CMAC), then
+// attempts deterministic key derivation using all known issuer keys and version
+// candidates. Displays derived K0-K4 and CardID if a match is found.
+//
+// Ref: boltcard SPEC (deterministic key derivation),
+//      NT4H2421Gx datasheet §8.7 (SDM data structure),
+//      AN12196 §6.3 (key derivation and CMAC)
 void handle_derivekeys() {
   if (!begin_card_command(F("[derivekeys]"))) return;
 
@@ -1083,8 +1117,7 @@ void handle_keyver() {
     Serial.print(F("[keyver] Key "));
     Serial.print(k);
     Serial.print(F(" version: 0x"));
-    if (kv < 0x10) Serial.print(F("0"));
-    Serial.print(kv, HEX);
+    serial_print_hex_byte(kv);
     if (kv == KEY_VER_FACTORY) {
       Serial.println(F(" (factory default)"));
     } else if (kv == KEY_VER_READ_FAILED && k == 0) {
@@ -1177,18 +1210,16 @@ void handle_diagnose() {
     Serial.print(F("[diagnose]   Key "));
     Serial.print(k);
     Serial.print(F(" version: 0x"));
-    if (kv[k] < 0x10) Serial.print(F("0"));
-    Serial.print(kv[k], HEX);
+    serial_print_hex_byte(kv[k]);
     if (kv[k] == KEY_VER_FACTORY) Serial.println(F(" (default)"));
     else if (kv[k] == KEY_VER_READ_FAILED) { Serial.println(F(" (READ ERROR)")); any_error = true; }
     else Serial.println(F(" (changed)"));
     if (kv[k] != KEY_VER_FACTORY) all_zero = false;
   }
-
+  
   // Test zero-key authentication on key 0 (master)
   bolt.selectNtagApplicationFiles();
-  uint8_t zero_key[AES_KEY_LEN] = {0};
-  uint8_t auth_d = bolt.nfc->ntag424_Authenticate(zero_key, 0, AUTH_CMD_EV2_FIRST);
+  uint8_t auth_d = bolt.nfc->ntag424_Authenticate((uint8_t *)ZERO_KEY, 0, AUTH_CMD_EV2_FIRST);
   Serial.print(F("[diagnose] Zero-key auth (key 0): "));
   Serial.println(auth_d == 1 ? "OK" : "FAILED");
 
@@ -1267,7 +1298,6 @@ void handle_recoverkey() {
 
   uint8_t auth_key[AES_KEY_LEN] = {0};
   uint8_t old_key[AES_KEY_LEN] = {0};
-  uint8_t zero_key[AES_KEY_LEN] = {0};
   bolt.setKey(old_key, old_key_hex);
   if (k0_hex.length() == HEX_KEY_LEN) {
     bolt.setKey(auth_key, k0_hex);
@@ -1301,7 +1331,7 @@ void handle_recoverkey() {
     return;
   }
 
-  bool ok = bolt.nfc->ntag424_ChangeKey(old_key, zero_key, slot, KEY_VER_FACTORY);
+  bool ok = bolt.nfc->ntag424_ChangeKey(old_key, (uint8_t *)ZERO_KEY, slot, KEY_VER_FACTORY);
   Serial.print(F("[recoverkey] ChangeKey result: "));
   Serial.println(ok ? "OK" : "FAILED");
 
@@ -1310,8 +1340,8 @@ void handle_recoverkey() {
   Serial.print(F("[recoverkey] Key "));
   Serial.print(slot);
   Serial.print(F(" version AFTER: 0x"));
-  if (kv_after < 0x10) Serial.print(F("0"));
-  Serial.println(kv_after, HEX);
+  serial_print_hex_byte(kv_after);
+  Serial.println();
 
   const bool pass = ok &&
                     (kv_after == KEY_VER_FACTORY ||
@@ -1325,8 +1355,8 @@ void handle_recoverkey() {
 
 static void testck_print_version(const __FlashStringHelper *label, uint8_t kv) {
   Serial.print(label);
-  if (kv < 0x10) Serial.print(F("0"));
-  Serial.println(kv, HEX);
+  serial_print_hex_byte(kv);
+  Serial.println();
 }
 
 static void testck_finish(uint8_t blinks) {
@@ -1343,7 +1373,6 @@ void handle_testck() {
   CardTapResult tap = wait_for_card(F("[testck] TIMEOUT"), F("[testck] UID: "), CARD_TAP_TIMEOUT_MS, true);
   if (!tap.found) return;
 
-  uint8_t zero_key[AES_KEY_LEN] = {0};
   uint8_t test_key[AES_KEY_LEN] = {0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44,
                           0x55, 0x66, 0x77, 0x88, 0x99, 0x00, 0xEE, 0xFF};
 
@@ -1351,7 +1380,7 @@ void handle_testck() {
   testck_print_version(F("[testck] Key 1 version BEFORE: 0x"), kv_before);
 
   bolt.selectNtagApplicationFiles();
-  uint8_t auth1 = bolt.nfc->ntag424_Authenticate(zero_key, 0, AUTH_CMD_EV2_FIRST);
+  uint8_t auth1 = bolt.nfc->ntag424_Authenticate((uint8_t *)ZERO_KEY, 0, AUTH_CMD_EV2_FIRST);
   Serial.print(F("[testck] Auth key 0 (zeros): "));
   Serial.println(auth1 == 1 ? "OK" : "FAILED");
   if (auth1 != 1) {
@@ -1362,7 +1391,7 @@ void handle_testck() {
 
   if (kv_before == KEY_VER_PROVISIONED) {
     Serial.println(F("[testck] Recovery mode — restoring key 1 from test value to zero"));
-    bool recovered = bolt.nfc->ntag424_ChangeKey(test_key, zero_key, 1, KEY_VER_FACTORY);
+    bool recovered = bolt.nfc->ntag424_ChangeKey(test_key, (uint8_t *)ZERO_KEY, 1, KEY_VER_FACTORY);
     Serial.print(F("[testck]   Result: "));
     Serial.println(recovered ? "OK" : "FAILED");
 
@@ -1386,7 +1415,7 @@ void handle_testck() {
 
   // Step 1: ChangeKey key 1 from zero → test value, version 0x01
   Serial.println(F("[testck] Step 1: ChangeKey(1, zero→test, ver=0x01)"));
-  bool ck1 = bolt.nfc->ntag424_ChangeKey(zero_key, test_key, 1, KEY_VER_PROVISIONED);
+  bool ck1 = bolt.nfc->ntag424_ChangeKey((uint8_t *)ZERO_KEY, test_key, 1, KEY_VER_PROVISIONED);
   Serial.print(F("[testck]   Result: "));
   Serial.println(ck1 ? "OK" : "FAILED");
 
@@ -1410,7 +1439,7 @@ void handle_testck() {
 
   // Step 2: Re-auth (key 0 still zero), change key 1 back
   bolt.selectNtagApplicationFiles();
-  uint8_t auth2 = bolt.nfc->ntag424_Authenticate(zero_key, 0, AUTH_CMD_EV2_FIRST);
+  uint8_t auth2 = bolt.nfc->ntag424_Authenticate((uint8_t *)ZERO_KEY, 0, AUTH_CMD_EV2_FIRST);
   Serial.print(F("[testck] Re-auth key 0: "));
   Serial.println(auth2 == 1 ? "OK" : "FAILED");
   if (auth2 != 1) {
@@ -1420,7 +1449,7 @@ void handle_testck() {
   }
 
   Serial.println(F("[testck] Step 2: ChangeKey(1, test→zero, ver=0x00)"));
-  bool ck2 = bolt.nfc->ntag424_ChangeKey(test_key, zero_key, 1, KEY_VER_FACTORY);
+  bool ck2 = bolt.nfc->ntag424_ChangeKey(test_key, (uint8_t *)ZERO_KEY, 1, KEY_VER_FACTORY);
   Serial.print(F("[testck]   Result: "));
   Serial.println(ck2 ? "OK" : "FAILED");
 

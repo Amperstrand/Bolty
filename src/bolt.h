@@ -71,6 +71,8 @@ static const uint8_t SDM_ACCESS_FREE = 0xFF;              // SDMAccessRights: fr
 static const uint8_t SDM_COUNTER_RETR = 0x12;             // SDMCounterRetr: retrieve read counter
 static const uint8_t FILE_ACCESS_STANDARD = 0xE0;         // Write=K0, Read=free (bits: W=0xE=K0, R=0x0=free)
 static const uint8_t FILE_SETTINGS_NO_SDM[] = {0x00, 0x00, FILE_ACCESS_STANDARD};
+// Factory default key — all zeros. Used for blank/unprovisioned cards.
+static const uint8_t ZERO_KEY[AES_KEY_LEN] = {0};
 
 static String boltstatustext[7] = {
     "idle",          "waiting for nfc-tag..",  "provisioning data..",
@@ -325,6 +327,13 @@ public:
 
   bool selectNdefFileOnly() { return nfc->ntag424_ISOSelectNDEFFile(); }
 
+  // Validate card type and UID for NTAG424 DNA operations.
+  //
+  // Checks UID length (4 or 7 bytes) and confirms the card responds as NTAG424 DNA
+  // via GetVersion. Returns false if the card is not a compatible NTAG424 tag.
+  // Must be called before any operation that requires NTAG424-specific commands.
+  //
+  // Ref: NT4H2421Gx datasheet §7.1 (GetVersion command), AN12196 §3.1 (AID selection)
   bool scanAndValidate(uint8_t *uid, uint8_t *uidLength) {
     if (*uidLength == 0 && !bolty_read_passive_target(nfc, uid, uidLength)) {
       return false;
@@ -370,6 +379,15 @@ public:
     return false;
   }
 
+  // Change all 5 application keys (K0-K4) in reverse order with abort-on-failure.
+  //
+  // Keys are changed 4→3→2→1→0 to avoid losing the master key (K0) before
+  // subordinate keys are updated. If any ChangeKey fails, remaining keys are
+  // skipped and the function returns false. Sets new_keys from cur_keys
+  // plus the target version.
+  //
+  // Ref: NT4H2421Gx datasheet §7.3.2 (ChangeKey command format),
+  //      AN12196 §6.3 (key management), boltcard SPEC (key slot purposes)
   // Change all 5 application keys in reverse order (4→0) so the auth key
   // (K0) is changed last. Continues through individual failures to avoid
   // leaving the card in a partial-wipe state.
@@ -607,6 +625,17 @@ public:
   // + 61 (SDM "?p=32hex&c=16hex"). Plus 2 for NLEN. Max url_len = 256 - 70 = 186.
   static const int MAX_URL_LENGTH = 186;
 
+  // Provision a blank NTAG424 DNA card as a bolt card.
+  //
+  // Complete burn workflow: guard check (factory keys) → authenticate K0 →
+  // write NDEF record with LNURL + SDM placeholders → configure SDM file settings
+  // (UID mirror, read counter, encrypted PICC data, CMAC) → change all 5 keys
+  // from factory zeros to derived keys → verify new-key authentication.
+  // Card must be in factory state (all keys at version 0x00).
+  //
+  // Ref: NT4H2421Gx datasheet §7.3.1 (Authenticate), §7.3.2 (ChangeKey),
+  //      §7.6.2 (ChangeFileSettings), §8.7.2 (SDM configuration),
+  //      NFC Forum NDEF §3.2 (record format), boltcard SPEC (LNURL/SDM URL format)
   uint8_t burn(String lnurl) {
     if ((int)lnurl.length() > MAX_URL_LENGTH) {
       DBG_PRINT(F("[burn] URL too long: "));
@@ -805,6 +834,14 @@ public:
     return job_status;
   }
 
+  // Reset NDEF file and SDM configuration without changing keys.
+  //
+  // Disables SDM mirroring on file 2, then formats the NDEF file back to default.
+  // Requires factory keys (K0 version = 0x00). Use 'wipe' instead to also reset keys.
+  // Useful for clearing bolt card URL data while keeping the key set intact.
+  //
+  // Ref: NT4H2421Gx datasheet §7.6.2 (ChangeFileSettings), §8.6.4 (NDEF file),
+  //      §8.7.2 (SDM disable), NFC Forum NDEF §3.2 (record format)
   uint8_t resetNdefOnly() {
     uint8_t uid[MAX_UID_LEN] = {0};
     uint8_t uidLength = 0;
@@ -844,8 +881,7 @@ public:
     DBG_PRINTLN(F("Pre-reset check OK — key 0 is factory default"));
     selectNtagApplicationFiles();
 
-    uint8_t zero_key[AES_KEY_LEN] = {0};
-    if (nfc->ntag424_Authenticate(zero_key, 0, AUTH_CMD_EV2_FIRST) != 1) {
+    if (nfc->ntag424_Authenticate((uint8_t *)ZERO_KEY, 0, AUTH_CMD_EV2_FIRST) != 1) {
       DBG_PRINTLN(F("Authentication with zero key FAILED."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
@@ -862,7 +898,7 @@ public:
                                     (uint8_t)NTAG424_COMM_MODE_FULL);
 
     selectNtagApplicationFiles();
-    nfc->ntag424_Authenticate(zero_key, 0, AUTH_CMD_EV2_FIRST);
+    nfc->ntag424_Authenticate((uint8_t *)ZERO_KEY, 0, AUTH_CMD_EV2_FIRST);
     if (nfc->ntag424_FormatNDEF()) {
       DBG_PRINTLN(F("NDEF formatted OK."));
     } else {
@@ -871,7 +907,7 @@ public:
     job_perc = 100;
 
     selectNtagApplicationFiles();
-    const uint8_t verify_auth = nfc->ntag424_Authenticate(zero_key, 0, AUTH_CMD_EV2_FIRST);
+    const uint8_t verify_auth = nfc->ntag424_Authenticate((uint8_t *)ZERO_KEY, 0, AUTH_CMD_EV2_FIRST);
     if (verify_auth == 1) {
       DBG_PRINTLN(F("Verify auth OK — keys unchanged."));
     } else {
@@ -882,6 +918,16 @@ public:
     return job_status;
   }
 
+  // Authenticate every key slot to prove ownership before destructive operations.
+  //
+  // Reads key versions via GetKeyVersion (no auth required), then authenticates
+  // each slot with the known key. For K3/K4, falls back to LNBits pattern (K3=K1,
+  // K4=K2) and then zero key, since some implementations don't set unique K3/K4.
+  // Mutates cur_keys.keys[] with discovered working keys.
+  // Caller must check vr.all_verified before proceeding with wipe.
+  //
+  // Ref: NT4H2421Gx datasheet §7.3.1 (Authenticate), §7.3.3 (GetKeyVersion),
+  //      AN12196 §6.3 (key verification), boltcard SPEC (K0-K4 slot purposes)
   // Authenticate every key slot to prove we know all keys before wiping.
   // For K3/K4, if the explicit key fails, probes K3=K1 (LNBits) and zeros.
   // Updates cur_keys.keys[] if probing finds a working key.
@@ -890,7 +936,6 @@ public:
   KeyVerifyResult verify_all_keys() {
     KeyVerifyResult vr = {};
     memset(vr.key_versions, KEY_VER_READ_FAILED, 5);
-    uint8_t zero_key[AES_KEY_LEN] = {0};
 
     DBG_PRINTLN(F("[verify] Reading key versions..."));
     for (int i = 0; i < 5; i++) {
@@ -919,7 +964,7 @@ public:
       DBG_PRINT(vr.key_versions[i], HEX);
 
       if (vr.key_versions[i] == KEY_VER_FACTORY) {
-        if (nfc->ntag424_Authenticate(zero_key, i, AUTH_CMD_EV2_FIRST) == 1) {
+        if (nfc->ntag424_Authenticate((uint8_t *)ZERO_KEY, i, AUTH_CMD_EV2_FIRST) == 1) {
           vr.verified[i] = true;
           DBG_PRINTLN(F(" FACTORY-OK"));
         } else {
@@ -952,7 +997,7 @@ public:
           continue;
         }
         selectNtagApplicationFiles();
-        if (nfc->ntag424_Authenticate(zero_key, i, AUTH_CMD_EV2_FIRST) == 1) {
+        if (nfc->ntag424_Authenticate((uint8_t *)ZERO_KEY, i, AUTH_CMD_EV2_FIRST) == 1) {
           DBG_PRINTLN(F(" zeros OK"));
           memset(cur_keys.keys[i], 0, AES_KEY_LEN);
           vr.verified[i] = true;
@@ -984,6 +1029,17 @@ public:
     return vr;
   }
 
+  // Reset a provisioned bolt card back to factory defaults.
+  //
+  // Complete wipe workflow: verify_all_keys (prove ownership) → re-auth K0 →
+  // disable SDM on file 2 → change all 5 keys back to factory zeros →
+  // re-authenticate with zero key → format NDEF → verify zero-key auth.
+  // Card must have all keys verified (vr.all_verified) before wipe proceeds.
+  // Blank cards (all factory) are rejected by guard check.
+  //
+  // Ref: NT4H2421Gx datasheet §7.3.2 (ChangeKey, session termination on K0 change),
+  //      §7.6.2 (ChangeFileSettings), §8.7 (SDM state reset), §8.7.2 (SDM disable),
+  //      boltcard SPEC (factory state requirements)
   uint8_t wipe() {
     uint8_t uid[MAX_UID_LEN] = {0};
     uint8_t uidLength = 0;
@@ -1067,8 +1123,7 @@ public:
     // GetKeyVersion is unreliable in auth'd session (returns 0x7E/0x40).
     selectNtagApplicationFiles();
     DBG_PRINTLN(F("[wipe] Post-wipe verification..."));
-    uint8_t zero_key[AES_KEY_LEN] = {0};
-    const uint8_t authed = nfc->ntag424_Authenticate(zero_key, 0, AUTH_CMD_EV2_FIRST);
+    const uint8_t authed = nfc->ntag424_Authenticate((uint8_t *)ZERO_KEY, 0, AUTH_CMD_EV2_FIRST);
     if (authed != 1) {
       DBG_PRINTLN(F("[wipe] VERIFY FAIL: zero-key auth failed — wipe did not succeed"));
       set_job_status_id(JOBSTATUS_ERROR);

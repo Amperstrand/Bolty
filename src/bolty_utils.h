@@ -326,4 +326,12 @@ inline void write_u32_le(uint32_t value, uint8_t out[4]) {
   out[3] = (uint8_t)((value >> 24) & 0xFF);
 }
 
+// Print a single hex byte to Serial with leading-zero prefix.
+// Used for user-facing key version and status output (NOT debug output).
+// For debug output, use print_hex_byte_prefixed() above instead.
+inline void serial_print_hex_byte(uint8_t value) {
+  if (value < 0x10) Serial.print(F("0"));
+  Serial.print(value, HEX);
+}
+
 #endif

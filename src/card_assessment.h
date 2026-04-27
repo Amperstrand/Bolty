@@ -12,6 +12,14 @@ extern bool bolty_hw_ready;
 extern bool has_issuer_key;
 extern CardAssessment g_last_assessment;
 
+// Test all hardcoded issuer keys against card's SDM p=/c= parameters.
+//
+// Iterates through known issuer keys (BOLTCARD_ISSUER_KEYS[]), derives K0-K4
+// for each, and attempts K1 decryption + K2 CMAC verification. Reports
+// matches with key version, decrypted UID, and read counter.
+//
+// Ref: boltcard SPEC (deterministic key derivation from issuer key + UID),
+//      NT4H2421Gx datasheet §8.7 (SDM), AN12196 §6 (CMAC verification)
 static void print_deterministic_boltcard_check(BoltyNfcReader *nfc,
                                                const uint8_t *uid,
                                                uint8_t uid_len,
@@ -145,6 +153,16 @@ static void print_deterministic_boltcard_check(BoltyNfcReader *nfc,
   }
 }
 
+// Perform full read-only card state assessment.
+//
+// Multi-phase assessment: detect card type (NTAG424 check) → read key versions
+// (factory vs provisioned) → authenticate K0 with zero key → read NDEF content →
+// attempt deterministic key matching → attempt web key lookup. Populates
+// CardAssessment struct with all findings. No destructive operations performed.
+//
+// Ref: NT4H2421Gx datasheet §7.1 (GetVersion), §7.3.1 (Authenticate),
+//      §7.3.3 (GetKeyVersion), §7.6.1 (GetFileSettings), §8.7 (SDM),
+//      boltcard SPEC (deterministic key derivation), AN12196 §6 (CMAC)
 static bool assess_current_card(CardAssessment &assessment) {
   reset_card_assessment(assessment);
   if (!bolty_hw_ready) return false;
@@ -187,9 +205,8 @@ static bool assess_current_card(CardAssessment &assessment) {
 
   if (all_key_versions_read && all_zero) {
     bolt.selectNtagApplicationFiles();
-    uint8_t zero_key[AES_KEY_LEN] = {0};
     assessment.zero_key_auth_ok =
-        (bolt.nfc->ntag424_Authenticate(zero_key, 0, AUTH_CMD_EV2_FIRST) == 1);
+        (bolt.nfc->ntag424_Authenticate((uint8_t *)ZERO_KEY, 0, AUTH_CMD_EV2_FIRST) == 1);
   }
 
   uint8_t ndef[NDEF_MAX_LEN] = {0};
