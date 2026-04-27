@@ -77,7 +77,7 @@ struct sBoltConfig {
   bool wifi_probe_enabled;
 };
 
-inline String convertIntToHex(uint8_t *input, uint8_t len) {
+inline String convertIntToHex(const uint8_t *input, uint8_t len) {
   String ret = "";
   for (uint8_t i = 0; i < len; i++) {
     char hexChar[3];

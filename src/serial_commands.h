@@ -981,18 +981,12 @@ void handle_decodebolt11() {
   }
 }
 
-void handle_inspect() {
-  if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
-  Serial.println(F("[inspect] Tap card now..."));
-  serial_cmd_active = true;
-  led_on();
+struct InspectCardInfo {
+  uint8_t version_ok;
+};
 
-  CardTapResult tap = wait_for_card(F("[inspect] TIMEOUT"));
-  if (!tap.found) {
-    serial_cmd_active = false;
-    led_blink(5, 100);
-    return;
-  }
+static InspectCardInfo inspect_card_info(const CardTapResult &tap) {
+  InspectCardInfo info = {};
 
   Serial.println(F("[inspect] --- Card Presence ---"));
   Serial.print(F("[inspect] UID length: "));
@@ -1004,10 +998,10 @@ void handle_inspect() {
   delay(50);
 
   Serial.println(F("[inspect] --- Version / Type ---"));
-  const uint8_t version_ok = bolt.nfc->ntag424_GetVersion();
+  info.version_ok = bolt.nfc->ntag424_GetVersion();
   Serial.print(F("[inspect] GetVersion: "));
-  Serial.println(version_ok ? F("OK") : F("FAIL"));
-  if (version_ok) {
+  Serial.println(info.version_ok ? F("OK") : F("FAIL"));
+  if (info.version_ok) {
     Serial.print(F("[inspect] NTAG424 HWType: 0x"));
     print_hex_byte_prefixed(bolt.nfc->ntag424_VersionInfo.HWType);
     Serial.println();
@@ -1022,17 +1016,26 @@ void handle_inspect() {
     Serial.println();
   }
   Serial.print(F("[inspect] isNTAG424: "));
-  Serial.println(version_ok && bolt.nfc->ntag424_VersionInfo.HWType == 0x04 ? F("YES") : F("NO / UNKNOWN"));
+  Serial.println(info.version_ok && bolt.nfc->ntag424_VersionInfo.HWType == 0x04 ? F("YES") : F("NO / UNKNOWN"));
 
-  Serial.println(F("[inspect] --- Key Versions (read-only) ---"));
-  bool all_zero = true;
-  bool any_keyver_error = false;
+  return info;
+}
+
+struct InspectKeyVersions {
+  bool all_zero;
+  bool any_error;
+};
+
+static InspectKeyVersions inspect_key_versions() {
+  InspectKeyVersions result = {true, false};
   uint8_t key_versions[5] = {KEY_VER_READ_FAILED, KEY_VER_READ_FAILED,
                              KEY_VER_READ_FAILED, KEY_VER_READ_FAILED,
                              KEY_VER_READ_FAILED};
+
+  Serial.println(F("[inspect] --- Key Versions (read-only) ---"));
   if (!bolt.nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID)) {
     Serial.println(F("[inspect] Failed to select NTAG424 application for key version reads"));
-    any_keyver_error = true;
+    result.any_error = true;
   } else {
     for (int k = 0; k < 5; k++) {
       const bool ok = bolt.nfc->ntag424_GetKeyVersion(k, &key_versions[k]);
@@ -1041,19 +1044,19 @@ void handle_inspect() {
       Serial.print(F(" version: "));
       if (!ok) {
         Serial.println(F("READ ERROR"));
-        any_keyver_error = true;
+        result.any_error = true;
         continue;
       }
       Serial.print(F("0x"));
       print_hex_byte_prefixed(key_versions[k]);
       if (key_versions[k] == KEY_VER_FACTORY) Serial.println(F(" (factory default)"));
       else Serial.println(F(" (changed)"));
-      if (key_versions[k] != KEY_VER_FACTORY) all_zero = false;
+      if (key_versions[k] != KEY_VER_FACTORY) result.all_zero = false;
     }
   }
 
   // Detect inconsistent states (mixed factory + changed keys)
-  if (!all_zero && !any_keyver_error) {
+  if (!result.all_zero && !result.any_error) {
     bool all_changed = true;
     for (int k = 0; k < 5; k++) { if (key_versions[k] == KEY_VER_FACTORY) all_changed = false; }
     if (!all_changed) {
@@ -1070,6 +1073,10 @@ void handle_inspect() {
     }
   }
 
+  return result;
+}
+
+static void inspect_file_settings() {
   Serial.println(F("[inspect] --- NDEF File Settings ---"));
   uint8_t fs[32] = {0};
   const uint8_t fs_len = bolt.nfc->ntag424_GetFileSettings(2, fs, NTAG424_COMM_MODE_PLAIN);
@@ -1112,7 +1119,137 @@ void handle_inspect() {
   } else {
     Serial.println(F("[inspect] GetFileSettings failed"));
   }
+}
 
+static bool inspect_load_keys(uint8_t keys[5][AES_KEY_LEN]) {
+  strncpy(mBoltConfig.k0, convertIntToHex(keys[0], AES_KEY_LEN).c_str(), 33);
+  strncpy(mBoltConfig.k1, convertIntToHex(keys[1], AES_KEY_LEN).c_str(), 33);
+  strncpy(mBoltConfig.k2, convertIntToHex(keys[2], AES_KEY_LEN).c_str(), 33);
+  strncpy(mBoltConfig.k3, convertIntToHex(keys[3], AES_KEY_LEN).c_str(), 33);
+  strncpy(mBoltConfig.k4, convertIntToHex(keys[4], AES_KEY_LEN).c_str(), 33);
+  return true;
+}
+
+static bool inspect_match_issuer(const CardTapResult &tap,
+                                  const uint8_t p_bytes[AES_KEY_LEN],
+                                  const uint8_t c_bytes[8],
+                                  bool p_ok, bool c_ok) {
+  if (!has_issuer_key || tap.uid_len != 7 || !p_ok) return false;
+
+  Serial.println(F("[inspect] --- Current Issuer Key Check ---"));
+  bool issuer_k1_match = false;
+  uint32_t issuer_counter = 0;
+  uint8_t issuer_decrypted[AES_KEY_LEN] = {0};
+  uint8_t issuer_matched_keys[5][AES_KEY_LEN] = {{0}};
+  int issuer_matched_version = -1;
+
+  // Try all version candidates
+  for (int vi = 0; vi < 4 && !issuer_k1_match; vi++) {
+    uint32_t try_ver = BOLTCARD_VERSION_CANDIDATES[vi];
+    uint8_t try_keys[5][AES_KEY_LEN] = {{0}};
+    derive_deterministic_boltcard_keys(bolt.nfc, current_issuer_key, tap.uid, try_ver, try_keys);
+    issuer_k1_match = deterministic_decrypt_p(bolt.nfc, try_keys[1], p_bytes, tap.uid, issuer_decrypted, issuer_counter);
+    if (issuer_k1_match) {
+      memcpy(issuer_matched_keys, try_keys, sizeof(issuer_matched_keys));
+      issuer_matched_version = (int)try_ver;
+    }
+  }
+
+  Serial.print(F("[inspect] Issuer key "));
+  Serial.print(convertIntToHex(current_issuer_key, AES_KEY_LEN));
+  Serial.print(F(" -> K1 decrypt: "));
+  Serial.println(issuer_k1_match ? F("MATCH") : F("NO MATCH"));
+
+  if (!issuer_k1_match) return false;
+
+  Serial.print(F("[inspect]   PICCData header: 0x"));
+  print_hex_byte_prefixed(issuer_decrypted[0]);
+  Serial.println();
+  Serial.print(F("[inspect]   Decrypted UID: "));
+  print_hex_bytes_spaced(issuer_decrypted + 1, 7);
+  Serial.println();
+  Serial.print(F("[inspect]   Read counter: "));
+  Serial.println(issuer_counter);
+
+  // Try K2/CMAC verification
+  if (c_ok) {
+    bool issuer_cmac_ok = deterministic_verify_cmac(bolt.nfc, issuer_matched_keys[2], tap.uid, issuer_counter, c_bytes);
+    Serial.print(F("[inspect]   K2/CMAC check (version "));
+    Serial.print(issuer_matched_version);
+    Serial.print(F("): "));
+    Serial.println(issuer_cmac_ok ? F("MATCH") : F("NO MATCH"));
+
+    if (issuer_cmac_ok) {
+      Serial.println(F("[inspect]   Card matches current issuer key!"));
+      led_signal_key_local();
+      inspect_load_keys(issuer_matched_keys);
+      Serial.println(F("[inspect]   Keys auto-loaded. Ready for wipe/burn."));
+      return true;
+    }
+  } else {
+    Serial.println(F("[inspect]   c= missing — cannot verify K2/CMAC."));
+    inspect_load_keys(issuer_matched_keys);
+    Serial.println(F("[inspect]   Keys auto-loaded (K1 only, no CMAC proof)."));
+    return true;
+  }
+  return false;
+}
+
+static bool inspect_match_web(const CardTapResult &tap,
+                               const uint8_t p_bytes[AES_KEY_LEN],
+                               const uint8_t c_bytes[8],
+                               bool p_ok, bool c_ok) {
+  #if !HAS_WEB_LOOKUP
+  (void)tap; (void)p_bytes; (void)c_bytes; (void)p_ok; (void)c_ok;
+  return false;
+  #else
+  if (tap.uid_len != 7 || !p_ok) return false;
+
+  Serial.println(F("[inspect] --- Web Key Lookup ---"));
+  char uid_hex[15] = {0};
+  for (int i = 0; i < tap.uid_len; i++) {
+    snprintf(uid_hex + i * 2, 3, "%02X", tap.uid[i]);
+  }
+  uint8_t web_keys[5][AES_KEY_LEN] = {{0}};
+  uint32_t web_counter = 0;
+  uint8_t web_decrypted[AES_KEY_LEN] = {0};
+
+  if (web_lookup_and_match(bolt.nfc, uid_hex, p_bytes, tap.uid, web_keys, web_counter, web_decrypted)) {
+    Serial.print(F("[inspect]   Web match! Counter: "));
+    Serial.println(web_counter);
+    Serial.print(F("[inspect]   Decrypted UID: "));
+    print_hex_bytes_spaced(web_decrypted + 1, 7);
+    Serial.println();
+
+    // Try K2/CMAC verification
+    if (c_ok) {
+      bool web_cmac_ok = deterministic_verify_cmac(bolt.nfc, web_keys[2], tap.uid, web_counter, c_bytes);
+      Serial.print(F("[inspect]   K2/CMAC check: "));
+      Serial.println(web_cmac_ok ? F("MATCH") : F("NO MATCH"));
+      if (web_cmac_ok) {
+        Serial.println(F("[inspect]   Card matched via web lookup!"));
+        led_signal_key_online();
+        inspect_load_keys(web_keys);
+        Serial.println(F("[inspect]   Keys auto-loaded from web. Ready for wipe/burn."));
+        return true;
+      }
+    } else {
+      Serial.println(F("[inspect]   c= missing — loading web keys without CMAC proof."));
+      led_signal_key_online();
+      inspect_load_keys(web_keys);
+      Serial.println(F("[inspect]   Keys auto-loaded from web (K1 only)."));
+      return true;
+    }
+  } else if (!wifi_connected) {
+    Serial.println(F("[inspect]   WiFi not connected — skipping web lookup."));
+  } else {
+    Serial.println(F("[inspect]   No matching keyset found online."));
+  }
+  return false;
+  #endif
+}
+
+static void inspect_ndef_content(const CardTapResult &tap) {
   Serial.println(F("[inspect] --- NDEF Read ---"));
   uint8_t ndef[NDEF_MAX_LEN] = {0};
   int ndef_len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
@@ -1141,169 +1278,73 @@ void handle_inspect() {
   }
   if (ndef_len < 0) {
     Serial.println(F("[inspect] NDEF read failed"));
-  } else if (ndef_len == 0) {
+    return;
+  }
+  if (ndef_len == 0) {
     Serial.println(F("[inspect] No NDEF data (NLEN=0)"));
-  } else {
-    Serial.print(F("[inspect] NDEF bytes: "));
-    Serial.println(ndef_len);
-    Serial.print(F("[inspect] NDEF hex: "));
-    bolty_print_hex(bolt.nfc, ndef, ndef_len > 128 ? 128 : ndef_len);
-    Serial.print(F("[inspect] NDEF ASCII: "));
-    print_ndef_ascii(ndef, ndef_len);
-
-    String uri;
-    if (ndef_extract_uri(ndef, ndef_len, uri)) {
-      Serial.print(F("[inspect] URI: "));
-      Serial.println(uri);
-    } else {
-      Serial.println(F("[inspect] URI: not found / non-URI NDEF"));
-    }
-    print_boltcard_heuristics(uri);
-
-    // --- Key Matching (issuer → web → hardcoded) ---
-    // Parse p= and c= once for all key matching attempts
-    String p_hex, c_hex;
-    const bool has_p = uri_get_query_param(uri, "p", p_hex);
-    const bool has_c = uri_get_query_param(uri, "c", c_hex);
-    uint8_t p_bytes[AES_KEY_LEN] = {0};
-    uint8_t c_bytes[8] = {0};
-    bool p_ok = false, c_ok = false;
-    if (has_p) p_ok = parse_hex_fixed(p_hex, p_bytes, AES_KEY_LEN);
-    if (has_c) c_ok = parse_hex_fixed(c_hex, c_bytes, 8);
-    bool keys_auto_loaded = false;
-
-    // --- 1. Current Issuer Key Check ---
-    if (has_issuer_key && tap.uid_len == 7 && has_p && p_ok) {
-      Serial.println(F("[inspect] --- Current Issuer Key Check ---"));
-      bool issuer_k1_match = false;
-      uint32_t issuer_counter = 0;
-      uint8_t issuer_decrypted[AES_KEY_LEN] = {0};
-      uint8_t issuer_matched_keys[5][AES_KEY_LEN] = {{0}};
-      int issuer_matched_version = -1;
-
-      // Try all version candidates
-      for (int vi = 0; vi < 4 && !issuer_k1_match; vi++) {
-        uint32_t try_ver = BOLTCARD_VERSION_CANDIDATES[vi];
-        uint8_t try_keys[5][AES_KEY_LEN] = {{0}};
-        derive_deterministic_boltcard_keys(bolt.nfc, current_issuer_key, tap.uid, try_ver, try_keys);
-        issuer_k1_match = deterministic_decrypt_p(bolt.nfc, try_keys[1], p_bytes, tap.uid, issuer_decrypted, issuer_counter);
-        if (issuer_k1_match) {
-          memcpy(issuer_matched_keys, try_keys, sizeof(issuer_matched_keys));
-          issuer_matched_version = (int)try_ver;
-        }
-      }
-
-      Serial.print(F("[inspect] Issuer key "));
-      Serial.print(convertIntToHex(current_issuer_key, AES_KEY_LEN));
-      Serial.print(F(" -> K1 decrypt: "));
-      Serial.println(issuer_k1_match ? F("MATCH") : F("NO MATCH"));
-
-      if (issuer_k1_match) {
-        Serial.print(F("[inspect]   PICCData header: 0x"));
-        print_hex_byte_prefixed(issuer_decrypted[0]);
-        Serial.println();
-        Serial.print(F("[inspect]   Decrypted UID: "));
-        print_hex_bytes_spaced(issuer_decrypted + 1, 7);
-        Serial.println();
-        Serial.print(F("[inspect]   Read counter: "));
-        Serial.println(issuer_counter);
-
-        // Try K2/CMAC verification
-        if (c_ok) {
-          bool issuer_cmac_ok = deterministic_verify_cmac(bolt.nfc, issuer_matched_keys[2], tap.uid, issuer_counter, c_bytes);
-          Serial.print(F("[inspect]   K2/CMAC check (version "));
-          Serial.print(issuer_matched_version);
-          Serial.print(F("): "));
-          Serial.println(issuer_cmac_ok ? F("MATCH") : F("NO MATCH"));
-
-          if (issuer_cmac_ok) {
-            Serial.println(F("[inspect]   Card matches current issuer key!"));
-            led_signal_key_local();
-            strncpy(mBoltConfig.k0, convertIntToHex(issuer_matched_keys[0], AES_KEY_LEN).c_str(), 33);
-            strncpy(mBoltConfig.k1, convertIntToHex(issuer_matched_keys[1], AES_KEY_LEN).c_str(), 33);
-            strncpy(mBoltConfig.k2, convertIntToHex(issuer_matched_keys[2], AES_KEY_LEN).c_str(), 33);
-            strncpy(mBoltConfig.k3, convertIntToHex(issuer_matched_keys[3], AES_KEY_LEN).c_str(), 33);
-            strncpy(mBoltConfig.k4, convertIntToHex(issuer_matched_keys[4], AES_KEY_LEN).c_str(), 33);
-            Serial.println(F("[inspect]   Keys auto-loaded. Ready for wipe/burn."));
-            keys_auto_loaded = true;
-          }
-        } else {
-          Serial.println(F("[inspect]   c= missing — cannot verify K2/CMAC."));
-          strncpy(mBoltConfig.k0, convertIntToHex(issuer_matched_keys[0], AES_KEY_LEN).c_str(), 33);
-          strncpy(mBoltConfig.k1, convertIntToHex(issuer_matched_keys[1], AES_KEY_LEN).c_str(), 33);
-          strncpy(mBoltConfig.k2, convertIntToHex(issuer_matched_keys[2], AES_KEY_LEN).c_str(), 33);
-          strncpy(mBoltConfig.k3, convertIntToHex(issuer_matched_keys[3], AES_KEY_LEN).c_str(), 33);
-          strncpy(mBoltConfig.k4, convertIntToHex(issuer_matched_keys[4], AES_KEY_LEN).c_str(), 33);
-          Serial.println(F("[inspect]   Keys auto-loaded (K1 only, no CMAC proof)."));
-          keys_auto_loaded = true;
-        }
-      }
-    }
-
-    // --- 2. Web Lookup ---
-    #if HAS_WEB_LOOKUP
-    if (!keys_auto_loaded && tap.uid_len == 7 && has_p && p_ok) {
-      Serial.println(F("[inspect] --- Web Key Lookup ---"));
-      char uid_hex[15] = {0};
-      for (int i = 0; i < tap.uid_len; i++) {
-        snprintf(uid_hex + i * 2, 3, "%02X", tap.uid[i]);
-      }
-      uint8_t web_keys[5][AES_KEY_LEN] = {{0}};
-      uint32_t web_counter = 0;
-      uint8_t web_decrypted[AES_KEY_LEN] = {0};
-
-      if (web_lookup_and_match(bolt.nfc, uid_hex, p_bytes, tap.uid, web_keys, web_counter, web_decrypted)) {
-        Serial.print(F("[inspect]   Web match! Counter: "));
-        Serial.println(web_counter);
-        Serial.print(F("[inspect]   Decrypted UID: "));
-        print_hex_bytes_spaced(web_decrypted + 1, 7);
-        Serial.println();
-
-        // Try K2/CMAC verification
-        if (c_ok) {
-          bool web_cmac_ok = deterministic_verify_cmac(bolt.nfc, web_keys[2], tap.uid, web_counter, c_bytes);
-          Serial.print(F("[inspect]   K2/CMAC check: "));
-          Serial.println(web_cmac_ok ? F("MATCH") : F("NO MATCH"));
-          if (web_cmac_ok) {
-            Serial.println(F("[inspect]   Card matched via web lookup!"));
-            led_signal_key_online();
-            strncpy(mBoltConfig.k0, convertIntToHex(web_keys[0], AES_KEY_LEN).c_str(), 33);
-            strncpy(mBoltConfig.k1, convertIntToHex(web_keys[1], AES_KEY_LEN).c_str(), 33);
-            strncpy(mBoltConfig.k2, convertIntToHex(web_keys[2], AES_KEY_LEN).c_str(), 33);
-            strncpy(mBoltConfig.k3, convertIntToHex(web_keys[3], AES_KEY_LEN).c_str(), 33);
-            strncpy(mBoltConfig.k4, convertIntToHex(web_keys[4], AES_KEY_LEN).c_str(), 33);
-            Serial.println(F("[inspect]   Keys auto-loaded from web. Ready for wipe/burn."));
-            keys_auto_loaded = true;
-          }
-        } else {
-          Serial.println(F("[inspect]   c= missing — loading web keys without CMAC proof."));
-          led_signal_key_online();
-          strncpy(mBoltConfig.k0, convertIntToHex(web_keys[0], AES_KEY_LEN).c_str(), 33);
-          strncpy(mBoltConfig.k1, convertIntToHex(web_keys[1], AES_KEY_LEN).c_str(), 33);
-          strncpy(mBoltConfig.k2, convertIntToHex(web_keys[2], AES_KEY_LEN).c_str(), 33);
-          strncpy(mBoltConfig.k3, convertIntToHex(web_keys[3], AES_KEY_LEN).c_str(), 33);
-          strncpy(mBoltConfig.k4, convertIntToHex(web_keys[4], AES_KEY_LEN).c_str(), 33);
-          Serial.println(F("[inspect]   Keys auto-loaded from web (K1 only)."));
-          keys_auto_loaded = true;
-        }
-      } else if (!wifi_connected) {
-        Serial.println(F("[inspect]   WiFi not connected — skipping web lookup."));
-      } else {
-        Serial.println(F("[inspect]   No matching keyset found online."));
-      }
-    }
-    #endif
-
-    // --- 3. Hardcoded Issuer Keys ---
-    print_deterministic_boltcard_check(bolt.nfc, tap.uid, tap.uid_len, uri);
+    return;
   }
 
+  Serial.print(F("[inspect] NDEF bytes: "));
+  Serial.println(ndef_len);
+  Serial.print(F("[inspect] NDEF hex: "));
+  bolty_print_hex(bolt.nfc, ndef, ndef_len > 128 ? 128 : ndef_len);
+  Serial.print(F("[inspect] NDEF ASCII: "));
+  print_ndef_ascii(ndef, ndef_len);
+
+  String uri;
+  if (ndef_extract_uri(ndef, ndef_len, uri)) {
+    Serial.print(F("[inspect] URI: "));
+    Serial.println(uri);
+  } else {
+    Serial.println(F("[inspect] URI: not found / non-URI NDEF"));
+  }
+  print_boltcard_heuristics(uri);
+
+  // Parse p= and c= once for all key matching attempts
+  String p_hex, c_hex;
+  const bool has_p = uri_get_query_param(uri, "p", p_hex);
+  const bool has_c = uri_get_query_param(uri, "c", c_hex);
+  uint8_t p_bytes[AES_KEY_LEN] = {0};
+  uint8_t c_bytes[8] = {0};
+  bool p_ok = false, c_ok = false;
+  if (has_p) p_ok = parse_hex_fixed(p_hex, p_bytes, AES_KEY_LEN);
+  if (has_c) c_ok = parse_hex_fixed(c_hex, c_bytes, 8);
+
+  // Key matching cascade: issuer → web → hardcoded
+  bool keys_auto_loaded = inspect_match_issuer(tap, p_bytes, c_bytes, p_ok, c_ok);
+  if (!keys_auto_loaded) {
+    keys_auto_loaded = inspect_match_web(tap, p_bytes, c_bytes, p_ok, c_ok);
+  }
+  if (!keys_auto_loaded) {
+    print_deterministic_boltcard_check(bolt.nfc, tap.uid, tap.uid_len, uri);
+  }
+}
+
+void handle_inspect() {
+  if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
+  Serial.println(F("[inspect] Tap card now..."));
+  serial_cmd_active = true;
+  led_on();
+
+  CardTapResult tap = wait_for_card(F("[inspect] TIMEOUT"));
+  if (!tap.found) {
+    serial_cmd_active = false;
+    led_blink(5, 100);
+    return;
+  }
+
+  InspectCardInfo card_info = inspect_card_info(tap);
+  InspectKeyVersions key_info = inspect_key_versions();
+  inspect_file_settings();
+  inspect_ndef_content(tap);
+
   Serial.println(F("[inspect] --- Safe Summary ---"));
-  if (!version_ok) {
+  if (!card_info.version_ok) {
     Serial.println(F("[inspect] Could not confirm NTAG424 via GetVersion."));
-  } else if (any_keyver_error) {
+  } else if (key_info.any_error) {
     Serial.println(F("[inspect] Card responded, but some read-only NTAG424 reads failed."));
-  } else if (all_zero) {
+  } else if (key_info.all_zero) {
     Serial.println(F("[inspect] Card looks blank or unprovisioned from key versions alone."));
   } else {
     Serial.println(F("[inspect] Card has non-default key versions; likely provisioned or previously modified."));
