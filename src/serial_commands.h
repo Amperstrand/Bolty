@@ -22,7 +22,7 @@ extern bool bolty_hw_ready;
 extern bool has_issuer_key;
 extern CardAssessment g_last_assessment;
 
-static uint8_t current_issuer_key[16] = {0};
+static uint8_t current_issuer_key[AES_KEY_LEN] = {0};
 
 void serial_print_help() {
   Serial.println();
@@ -79,7 +79,7 @@ void serial_print_status() {
   Serial.print(F("  k4: ")); Serial.println(mBoltConfig.k4);
   Serial.print(F("  Issuer key: "));
   if (has_issuer_key) {
-    Serial.println(convertIntToHex(current_issuer_key, 16));
+    Serial.println(convertIntToHex(current_issuer_key, AES_KEY_LEN));
   } else {
     Serial.println(F("(none)"));
   }
@@ -100,38 +100,38 @@ void serial_print_status() {
 
 // ntag424_getKeyVersion moved to bolt.h for use by burn/wipe guards
 
-static const uint8_t BOLTCARD_ISSUER_KEY_ZERO[16] = {0};
-static const uint8_t BOLTCARD_ISSUER_KEY_DEV[16] = {
+static const uint8_t BOLTCARD_ISSUER_KEY_ZERO[AES_KEY_LEN] = {0};
+static const uint8_t BOLTCARD_ISSUER_KEY_DEV[AES_KEY_LEN] = {
   0x00, 0x00, 0x00, 0x00,
   0x00, 0x00, 0x00, 0x00,
   0x00, 0x00, 0x00, 0x00,
   0x00, 0x00, 0x00, 0x01,
 };
-static const uint8_t BOLTCARD_ISSUER_KEY_BOLTPOC[16] = {
+static const uint8_t BOLTCARD_ISSUER_KEY_BOLTPOC[AES_KEY_LEN] = {
   0xB0, 0x73, 0x39, 0x59,
   0x68, 0x6C, 0x5D, 0xA2,
   0x74, 0x12, 0x30, 0x84,
   0xB5, 0xC0, 0x78, 0x20,
 };
-static const uint8_t BOLTCARD_ISSUER_KEY_BOLTPOC2[16] = {
+static const uint8_t BOLTCARD_ISSUER_KEY_BOLTPOC2[AES_KEY_LEN] = {
   0x0A, 0x27, 0x62, 0x06,
   0xCC, 0xAE, 0x41, 0x73,
   0x9B, 0x35, 0x41, 0xE2,
   0x85, 0x22, 0x3E, 0xEE,
 };
-static const uint8_t BOLTCARD_ISSUER_KEY_PROXY[16] = {
+static const uint8_t BOLTCARD_ISSUER_KEY_PROXY[AES_KEY_LEN] = {
   0x55, 0x73, 0x45, 0x71,
   0xCE, 0x72, 0xED, 0x36,
   0x49, 0x94, 0xCF, 0x2F,
   0x20, 0x91, 0x40, 0x92,
 };
-static const uint8_t BOLTCARD_ISSUER_KEY_PROXY2[16] = {
+static const uint8_t BOLTCARD_ISSUER_KEY_PROXY2[AES_KEY_LEN] = {
   0x43, 0x71, 0xF0, 0x15,
   0x9A, 0x98, 0xA8, 0x50,
   0x09, 0xFF, 0x2B, 0xCF,
   0x21, 0xC5, 0xB3, 0x01,
 };
-static const uint8_t BOLTCARD_ISSUER_KEY_PROXY3[16] = {
+static const uint8_t BOLTCARD_ISSUER_KEY_PROXY3[AES_KEY_LEN] = {
   0xCE, 0x20, 0xDA, 0x28,
   0x08, 0x11, 0x14, 0x4B,
   0x0A, 0xAD, 0x13, 0xFD,
@@ -162,36 +162,37 @@ struct DeterministicBoltcardMatch {
   bool full_match;
   uint32_t counter;
   uint32_t version;
-  uint8_t issuer_key[16];
-  uint8_t decrypted[16];
-  uint8_t keys[5][16];
+  uint8_t issuer_key[AES_KEY_LEN];
+  uint8_t decrypted[AES_KEY_LEN];
+  uint8_t keys[5][AES_KEY_LEN];
 };
 
 static void derive_deterministic_card_key(BoltyNfcReader *nfc,
-                                          const uint8_t issuer_key[16],
+                                          const uint8_t issuer_key[AES_KEY_LEN],
                                           const uint8_t uid[7],
                                           uint32_t version,
-                                          uint8_t out_card_key[16]) {
+                                          uint8_t out_card_key[AES_KEY_LEN]) {
   (void)nfc;
   keyderivation_card_key(issuer_key, uid, version, out_card_key);
 }
 
 static void derive_deterministic_boltcard_keys(BoltyNfcReader *nfc,
-                                               const uint8_t issuer_key[16],
+                                               const uint8_t issuer_key[AES_KEY_LEN],
                                                const uint8_t uid[7],
                                                uint32_t version,
-                                               uint8_t out_keys[5][16]) {
+                                               uint8_t out_keys[5][AES_KEY_LEN]) {
   (void)nfc;
   keyderivation_boltcard_keys(issuer_key, uid, version, out_keys);
 }
 
 static bool deterministic_decrypt_p(BoltyNfcReader *nfc,
-                                    const uint8_t k1[16],
-                                    const uint8_t p[16],
+                                    const uint8_t k1[AES_KEY_LEN],
+                                    const uint8_t p[AES_KEY_LEN],
                                     const uint8_t uid[7],
-                                    uint8_t decrypted[16],
+                                    uint8_t decrypted[AES_KEY_LEN],
                                     uint32_t &counter_out) {
-  if (!nfc->ntag424_decrypt((uint8_t *)k1, 16, (uint8_t *)p, decrypted)) {
+  if (!nfc->ntag424_decrypt((uint8_t *)k1, AES_KEY_LEN, (uint8_t *)p,
+                            decrypted)) {
     return false;
   }
   if (decrypted[0] != 0xC7) return false;
@@ -201,21 +202,21 @@ static bool deterministic_decrypt_p(BoltyNfcReader *nfc,
 }
 
 static bool deterministic_verify_cmac(BoltyNfcReader *nfc,
-                                      const uint8_t k2[16],
+                                      const uint8_t k2[AES_KEY_LEN],
                                       const uint8_t uid[7],
                                       uint32_t counter,
                                       const uint8_t expected_c[8]) {
   (void)nfc;
-  uint8_t sv2[16] = {0x3C, 0xC3, 0x00, 0x01, 0x00, 0x80};
+  uint8_t sv2[AES_KEY_LEN] = {0x3C, 0xC3, 0x00, 0x01, 0x00, 0x80};
   memcpy(sv2 + 6, uid, 7);
   sv2[13] = (uint8_t)(counter & 0xFF);
   sv2[14] = (uint8_t)((counter >> 8) & 0xFF);
   sv2[15] = (uint8_t)((counter >> 16) & 0xFF);
 
-  uint8_t session_key[16] = {0};
+  uint8_t session_key[AES_KEY_LEN] = {0};
   AES128_CMAC(k2, sv2, sizeof(sv2), session_key);
 
-  uint8_t full_cmac[16] = {0};
+  uint8_t full_cmac[AES_KEY_LEN] = {0};
   AES128_CMAC(session_key, nullptr, 0, full_cmac);
 
   uint8_t computed_c[8] = {0};
@@ -236,7 +237,7 @@ static bool deterministic_try_known_matches(BoltyNfcReader *nfc,
   String p_hex;
   if (!uri_get_query_param(uri, "p", p_hex)) return false;
 
-  uint8_t p_bytes[16] = {0};
+  uint8_t p_bytes[AES_KEY_LEN] = {0};
   if (!parse_hex_fixed(p_hex, p_bytes, sizeof(p_bytes))) return false;
 
   String c_hex;
@@ -247,10 +248,10 @@ static bool deterministic_try_known_matches(BoltyNfcReader *nfc,
   for (int candidate = 0; candidate < 7; candidate++) {
     const uint8_t *issuer_key = BOLTCARD_ISSUER_KEYS[candidate];
 
-    uint8_t keys_v1[5][16] = {{0}};
+    uint8_t keys_v1[5][AES_KEY_LEN] = {{0}};
     derive_deterministic_boltcard_keys(nfc, issuer_key, uid, 1, keys_v1);
 
-    uint8_t decrypted[16] = {0};
+    uint8_t decrypted[AES_KEY_LEN] = {0};
     uint32_t counter = 0;
     const bool k1_match = deterministic_decrypt_p(nfc, keys_v1[1], p_bytes, uid, decrypted, counter);
     if (!k1_match) continue;
@@ -266,7 +267,7 @@ static bool deterministic_try_known_matches(BoltyNfcReader *nfc,
 
     for (int version_idx = 0; version_idx < 2; version_idx++) {
       const uint32_t version = BOLTCARD_VERSION_CANDIDATES[version_idx];
-      uint8_t derived_keys[5][16] = {{0}};
+      uint8_t derived_keys[5][AES_KEY_LEN] = {{0}};
       derive_deterministic_boltcard_keys(nfc, issuer_key, uid, version, derived_keys);
       if (!deterministic_verify_cmac(nfc, derived_keys[2], uid, counter, c_bytes)) continue;
 
@@ -292,8 +293,8 @@ static uint8_t hex_nibble(char c) {
 }
 
 // Parse 32-char hex string to 16 bytes. Returns false on bad format.
-static bool parse_hex_32(const char *hex, uint8_t out[16]) {
-  for (int i = 0; i < 16; i++) {
+static bool parse_hex_32(const char *hex, uint8_t out[AES_KEY_LEN]) {
+  for (int i = 0; i < AES_KEY_LEN; i++) {
     char hi = hex[i * 2], lo = hex[i * 2 + 1];
     if (!isxdigit(hi) || !isxdigit(lo)) return false;
     out[i] = (hex_nibble(hi) << 4) | hex_nibble(lo);
@@ -303,7 +304,9 @@ static bool parse_hex_32(const char *hex, uint8_t out[16]) {
 
 // Find a key value like "k0":"<hex32>" starting from search_pos.
 // Returns pointer past the closing quote, or nullptr if not found.
-static const char* find_key_hex(const char *json, const char *key_name, const char *search_from, uint8_t out[16]) {
+static const char* find_key_hex(const char *json, const char *key_name,
+                                const char *search_from,
+                                uint8_t out[AES_KEY_LEN]) {
   const char *p = strstr(search_from, key_name);
   if (!p) return nullptr;
   const char *colon = strchr(p, ':');
@@ -312,7 +315,7 @@ static const char* find_key_hex(const char *json, const char *key_name, const ch
   if (!open_q) return nullptr;
   const char *val = open_q + 1;
   const char *close_q = strchr(val, '"');
-  if (!close_q || (close_q - val) != 32) return nullptr;
+  if (!close_q || (close_q - val) != HEX_KEY_LEN) return nullptr;
   if (!parse_hex_32(val, out)) return nullptr;
   return close_q + 1;
 }
@@ -321,12 +324,13 @@ static const char* find_key_hex(const char *json, const char *key_name, const ch
 static bool web_lookup_and_match(BoltyNfcReader *nfc,
                                   const char *uid_hex,
                                   const uint8_t *p_bytes, const uint8_t *uid,
-                                  uint8_t matched_keys[5][16],
-                                  uint32_t &out_counter, uint8_t out_decrypted[16]) {
+                                  uint8_t matched_keys[5][AES_KEY_LEN],
+                                  uint32_t &out_counter,
+                                  uint8_t out_decrypted[AES_KEY_LEN]) {
   if (!wifi_connected) return false;
 
   HTTPClient http;
-  char url[256];
+  char url[NDEF_MAX_LEN];
   snprintf(url, sizeof(url), "%s?uid=%s", web_lookup_url, uid_hex);
   http.begin(url);
   http.setTimeout(5000);
@@ -349,7 +353,7 @@ static bool web_lookup_and_match(BoltyNfcReader *nfc,
     const char *k0_pos = strstr(search_from, "\"k0\"");
     if (!k0_pos) break;
 
-    uint8_t try_keys[5][16] = {{0}};
+    uint8_t try_keys[5][AES_KEY_LEN] = {{0}};
     const char *key_names[] = {"\"k0\"", "\"k1\"", "\"k2\"", "\"k3\"", "\"k4\""};
     bool all_found = true;
     const char *after = k0_pos;
@@ -367,14 +371,14 @@ static bool web_lookup_and_match(BoltyNfcReader *nfc,
     Serial.println(keyset_idx);
 
     uint32_t counter = 0;
-    uint8_t decrypted[16] = {0};
+    uint8_t decrypted[AES_KEY_LEN] = {0};
     if (deterministic_decrypt_p(nfc, try_keys[1], p_bytes, uid, decrypted, counter)) {
       Serial.print(F("[web] Keyset #"));
       Serial.print(keyset_idx);
       Serial.println(F(" K1 MATCH!"));
       memcpy(matched_keys, try_keys, sizeof(try_keys));
       out_counter = counter;
-      memcpy(out_decrypted, decrypted, 16);
+      memcpy(out_decrypted, decrypted, AES_KEY_LEN);
       return true;
     }
 
@@ -408,7 +412,7 @@ static void print_deterministic_boltcard_check(BoltyNfcReader *nfc,
     return;
   }
 
-  uint8_t p_bytes[16] = {0};
+  uint8_t p_bytes[AES_KEY_LEN] = {0};
   if (!parse_hex_fixed(p_hex, p_bytes, sizeof(p_bytes))) {
     Serial.println(F("[inspect] FAIL — p= is not valid 16-byte hex."));
     return;
@@ -427,14 +431,14 @@ static void print_deterministic_boltcard_check(BoltyNfcReader *nfc,
     const __FlashStringHelper *issuer_label = BOLTCARD_ISSUER_KEY_LABELS[candidate];
 
     // K1 is derived from issuer_key only (version-independent), but try all versions anyway
-    uint8_t decrypted[16] = {0};
+  uint8_t decrypted[AES_KEY_LEN] = {0};
     uint32_t counter = 0;
     bool k1_match = false;
     uint32_t k1_matched_version = 0;
 
     for (int vi = 0; vi < 4 && !k1_match; vi++) {
       uint32_t try_version = BOLTCARD_VERSION_CANDIDATES[vi];
-      uint8_t keys_try[5][16] = {{0}};
+      uint8_t keys_try[5][AES_KEY_LEN] = {{0}};
       derive_deterministic_boltcard_keys(nfc, issuer_key, uid, try_version, keys_try);
       k1_match = deterministic_decrypt_p(nfc, keys_try[1], p_bytes, uid, decrypted, counter);
       if (k1_match) k1_matched_version = try_version;
@@ -472,10 +476,10 @@ static void print_deterministic_boltcard_check(BoltyNfcReader *nfc,
     }
 
     int matched_version = -1;
-    uint8_t matched_keys[5][16] = {{0}};
+    uint8_t matched_keys[5][AES_KEY_LEN] = {{0}};
     for (int version_idx = 0; version_idx < 4; version_idx++) {
       const uint32_t version = BOLTCARD_VERSION_CANDIDATES[version_idx];
-      uint8_t derived_keys[5][16] = {{0}};
+      uint8_t derived_keys[5][AES_KEY_LEN] = {{0}};
       derive_deterministic_boltcard_keys(nfc, issuer_key, uid, version, derived_keys);
       const bool cmac_match = deterministic_verify_cmac(nfc, derived_keys[2], uid, counter, c_bytes);
       Serial.print(F("[inspect]   Deterministic K2/c= check (version "));
@@ -498,15 +502,15 @@ static void print_deterministic_boltcard_check(BoltyNfcReader *nfc,
       Serial.println(F("[inspect]   It is still not a guarantee that authenticate or wipe will succeed on this tag."));
       Serial.println(F("[inspect]   Suggested keys command:"));
       Serial.print(F("[inspect]   keys "));
-      Serial.print(convertIntToHex(matched_keys[0], 16));
+      Serial.print(convertIntToHex(matched_keys[0], AES_KEY_LEN));
       Serial.print(F(" "));
-      Serial.print(convertIntToHex(matched_keys[1], 16));
+      Serial.print(convertIntToHex(matched_keys[1], AES_KEY_LEN));
       Serial.print(F(" "));
-      Serial.print(convertIntToHex(matched_keys[2], 16));
+      Serial.print(convertIntToHex(matched_keys[2], AES_KEY_LEN));
       Serial.print(F(" "));
-      Serial.print(convertIntToHex(matched_keys[3], 16));
+      Serial.print(convertIntToHex(matched_keys[3], AES_KEY_LEN));
       Serial.print(F(" "));
-      Serial.println(convertIntToHex(matched_keys[4], 16));
+      Serial.println(convertIntToHex(matched_keys[4], AES_KEY_LEN));
     } else {
       Serial.println(F("[inspect]   K1 matched, but tested deterministic K2 versions did not validate c=."));
       Serial.println(F("[inspect]   This is still a strong indicator that we probably know the issuer key and can likely recover the card more easily."));
@@ -524,7 +528,7 @@ static bool assess_current_card(CardAssessment &assessment) {
   reset_card_assessment(assessment);
   if (!bolty_hw_ready) return false;
 
-  uint8_t uid[12] = {0};
+  uint8_t uid[MAX_UID_LEN] = {0};
   uint8_t uid_len = 0;
   unsigned long t0 = millis();
   bool found = false;
@@ -549,10 +553,10 @@ static bool assess_current_card(CardAssessment &assessment) {
   for (int k = 0; k < 5; k++) {
     const uint8_t kv = bolty_get_key_version(bolt.nfc, k);
     assessment.key_versions[k] = kv;
-    if (kv == 0xFF) {
+    if (kv == KEY_VER_READ_FAILED) {
       all_key_versions_read = false;
       assessment.key_confidence[k] = KeyConfidence::unknown;
-    } else if (kv == 0x00) {
+    } else if (kv == KEY_VER_FACTORY) {
       assessment.key_confidence[k] = KeyConfidence::high;
     } else {
       assessment.key_confidence[k] = KeyConfidence::unknown;
@@ -562,11 +566,12 @@ static bool assess_current_card(CardAssessment &assessment) {
 
   if (all_key_versions_read && all_zero) {
     bolt.selectNtagApplicationFiles();
-    uint8_t zero_key[16] = {0};
-    assessment.zero_key_auth_ok = (bolt.nfc->ntag424_Authenticate(zero_key, 0, 0x71) == 1);
+    uint8_t zero_key[AES_KEY_LEN] = {0};
+    assessment.zero_key_auth_ok =
+        (bolt.nfc->ntag424_Authenticate(zero_key, 0, AUTH_CMD_EV2_FIRST) == 1);
   }
 
-  uint8_t ndef[256] = {0};
+  uint8_t ndef[NDEF_MAX_LEN] = {0};
   const int ndef_len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
   assessment.has_ndef = ndef_len > 0;
   if (ndef_len > 0) {
@@ -585,13 +590,13 @@ static bool assess_current_card(CardAssessment &assessment) {
       // Try current issuer key first (if set)
       bool issuer_matched = false;
       if (has_issuer_key && uid_len == 7 && has_p) {
-        uint8_t p_bytes[16] = {0};
-        if (parse_hex_fixed(p_hex, p_bytes, 16)) {
+        uint8_t p_bytes[AES_KEY_LEN] = {0};
+        if (parse_hex_fixed(p_hex, p_bytes, AES_KEY_LEN)) {
           for (int vi = 0; vi < 4 && !issuer_matched; vi++) {
             uint32_t try_ver = BOLTCARD_VERSION_CANDIDATES[vi];
-            uint8_t try_keys[5][16] = {{0}};
+            uint8_t try_keys[5][AES_KEY_LEN] = {{0}};
             derive_deterministic_boltcard_keys(bolt.nfc, current_issuer_key, uid, try_ver, try_keys);
-            uint8_t dec[16] = {0};
+            uint8_t dec[AES_KEY_LEN] = {0};
             uint32_t ctr = 0;
             if (deterministic_decrypt_p(bolt.nfc, try_keys[1], p_bytes, uid, dec, ctr)) {
               // K1 matched — check CMAC if available
@@ -620,15 +625,15 @@ static bool assess_current_card(CardAssessment &assessment) {
       // Try web lookup if no issuer match and WiFi connected
       #if HAS_WEB_LOOKUP
       if (!issuer_matched && wifi_connected && uid_len == 7 && has_p) {
-        uint8_t p_bytes[16] = {0};
-        if (parse_hex_fixed(p_hex, p_bytes, 16)) {
+        uint8_t p_bytes[AES_KEY_LEN] = {0};
+        if (parse_hex_fixed(p_hex, p_bytes, AES_KEY_LEN)) {
           char uid_hex[15] = {0};
           for (int i = 0; i < uid_len; i++) {
             snprintf(uid_hex + i*2, 3, "%02X", uid[i]);
           }
-          uint8_t web_keys[5][16] = {{0}};
+          uint8_t web_keys[5][AES_KEY_LEN] = {{0}};
           uint32_t web_counter = 0;
-          uint8_t web_decrypted[16] = {0};
+          uint8_t web_decrypted[AES_KEY_LEN] = {0};
           if (web_lookup_and_match(bolt.nfc, uid_hex, p_bytes, uid, web_keys, web_counter, web_decrypted)) {
             // K1 matched from web — check CMAC
             bool cmac_ok = false;
@@ -649,11 +654,11 @@ static bool assess_current_card(CardAssessment &assessment) {
               led_signal_key_online();
               Serial.println(F("[assess] Web key lookup match!"));
               // Auto-load into mBoltConfig for wipe/burn
-              strncpy(mBoltConfig.k0, convertIntToHex(web_keys[0], 16).c_str(), 33);
-              strncpy(mBoltConfig.k1, convertIntToHex(web_keys[1], 16).c_str(), 33);
-              strncpy(mBoltConfig.k2, convertIntToHex(web_keys[2], 16).c_str(), 33);
-              strncpy(mBoltConfig.k3, convertIntToHex(web_keys[3], 16).c_str(), 33);
-              strncpy(mBoltConfig.k4, convertIntToHex(web_keys[4], 16).c_str(), 33);
+              strncpy(mBoltConfig.k0, convertIntToHex(web_keys[0], AES_KEY_LEN).c_str(), 33);
+              strncpy(mBoltConfig.k1, convertIntToHex(web_keys[1], AES_KEY_LEN).c_str(), 33);
+              strncpy(mBoltConfig.k2, convertIntToHex(web_keys[2], AES_KEY_LEN).c_str(), 33);
+              strncpy(mBoltConfig.k3, convertIntToHex(web_keys[3], AES_KEY_LEN).c_str(), 33);
+              strncpy(mBoltConfig.k4, convertIntToHex(web_keys[4], AES_KEY_LEN).c_str(), 33);
             }
           }
         }
@@ -734,7 +739,7 @@ void handle_serial_command(String cmd) {
     led_on();
     bolt.setCurKeysFromHex(mBoltConfig.k0, mBoltConfig.k1, mBoltConfig.k2, mBoltConfig.k3, mBoltConfig.k4);
     Serial.print(F("[auth] Trying k0: "));
-    for (int i = 0; i < 16; i++) { if (bolt.cur_keys.keys[0][i] < 0x10) Serial.print("0"); Serial.print(bolt.cur_keys.keys[0][i], HEX); }
+    for (int i = 0; i < AES_KEY_LEN; i++) { if (bolt.cur_keys.keys[0][i] < 0x10) Serial.print("0"); Serial.print(bolt.cur_keys.keys[0][i], HEX); }
     Serial.println();
     Serial.print(F("[auth] k0 bytes: "));
     for (int i = 0; i < 16; i++) {
@@ -745,18 +750,18 @@ void handle_serial_command(String cmd) {
     unsigned long t0 = millis();
     bool found = false;
     do {
-      uint8_t uid[12] = {0};
+      uint8_t uid[MAX_UID_LEN] = {0};
       uint8_t uidLen;
       found = bolty_read_passive_target(bolt.nfc, uid, &uidLen);
       if (found) {
         Serial.print(F("[auth] UID: "));
         bolty_print_hex(bolt.nfc, uid, uidLen);
       }
-      if (millis() - t0 > 15000) { Serial.println(F("[auth] TIMEOUT")); serial_cmd_active = false; return; }
+      if (millis() - t0 > CARD_TAP_TIMEOUT_MS) { Serial.println(F("[auth] TIMEOUT")); serial_cmd_active = false; return; }
     } while (!found);
     delay(50);
     Serial.println(F("[auth] About to authenticate..."));
-    uint8_t result = bolt.nfc->ntag424_Authenticate(bolt.cur_keys.keys[0], 0, 0x71);
+    uint8_t result = bolt.nfc->ntag424_Authenticate(bolt.cur_keys.keys[0], 0, AUTH_CMD_EV2_FIRST);
     Serial.print(F("[auth] ntag424_Authenticate returned: "));
     Serial.println(result);
     Serial.print(F("[auth] Session authenticated: "));
@@ -794,28 +799,28 @@ void handle_serial_command(String cmd) {
      Serial.println(F("[ndef] Tap card now..."));
      serial_cmd_active = true;
      led_on();
-      uint8_t uid[12] = {0};
+       uint8_t uid[MAX_UID_LEN] = {0};
       uint8_t uid_len = 0;
       unsigned long t0_ndef = millis();
       bool found_ndef = false;
       do {
         found_ndef = bolty_read_passive_target(bolt.nfc, uid, &uid_len);
-        if (millis() - t0_ndef > 15000) break;
+        if (millis() - t0_ndef > CARD_TAP_TIMEOUT_MS) break;
        } while (!found_ndef);
       if (found_ndef) {
-          uint8_t ndef[256] = {0};
+          uint8_t ndef[NDEF_MAX_LEN] = {0};
            int len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
-           if (len < 0 && strlen(mBoltConfig.k3) == 32) {
+           if (len < 0 && strlen(mBoltConfig.k3) == HEX_KEY_LEN) {
             // PLAIN ISO read failed. SDM mirroring causes ISO ReadBinary to return
             // unexpected data on provisioned cards. Re-detect card to reset ISO-DEP
             // state, authenticate with key 3, then read via native DESFire ReadData.
             Serial.println(F("[ndef] PLAIN read failed, re-detecting for k3 auth..."));
-            uint8_t redet_uid[12] = {0};
+            uint8_t redet_uid[MAX_UID_LEN] = {0};
             uint8_t redet_uid_len = 0;
             if (bolty_read_passive_target(bolt.nfc, redet_uid, &redet_uid_len)) {
-              uint8_t k3_bytes[16] = {0};
+              uint8_t k3_bytes[AES_KEY_LEN] = {0};
               bolt.setKey(k3_bytes, String(mBoltConfig.k3));
-              if (bolt.nfc->ntag424_Authenticate(k3_bytes, 3, 0x71) == 1) {
+              if (bolt.nfc->ntag424_Authenticate(k3_bytes, 3, AUTH_CMD_EV2_FIRST) == 1) {
                 uint8_t raw[64] = {0};
                 uint8_t rlen = bolt.nfc->ntag424_ReadData(raw, 2, 0, sizeof(raw));
                 if (rlen >= 4) {
@@ -855,7 +860,7 @@ ndef_fail:
     }
     else if (cmd == "picc") {
       if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
-      if (strlen(mBoltConfig.k1) != 32 || strlen(mBoltConfig.k2) != 32) {
+      if (strlen(mBoltConfig.k1) != HEX_KEY_LEN || strlen(mBoltConfig.k2) != HEX_KEY_LEN) {
         Serial.println(F("[picc] Set k1 and k2 first (keys command)"));
         return;
       }
@@ -863,13 +868,13 @@ ndef_fail:
       serial_cmd_active = true;
       led_on();
 
-      uint8_t uid[12] = {0};
+      uint8_t uid[MAX_UID_LEN] = {0};
       uint8_t uid_len = 0;
       unsigned long t0_picc = millis();
       bool found_picc = false;
       do {
         found_picc = bolty_read_passive_target(bolt.nfc, uid, &uid_len);
-        if (millis() - t0_picc > 15000) break;
+        if (millis() - t0_picc > CARD_TAP_TIMEOUT_MS) break;
       } while (!found_picc);
 
       if (!found_picc) {
@@ -880,7 +885,7 @@ ndef_fail:
       }
 
       {
-        uint8_t ndef[256] = {0};
+        uint8_t ndef[NDEF_MAX_LEN] = {0};
         int len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
         if (len <= 0) {
           Serial.println(F("[picc] NDEF read failed"));
@@ -901,9 +906,9 @@ ndef_fail:
         Serial.println(uri);
 
         // Parse k1 and k2 from config
-        uint8_t k1[16], k2[16];
-        if (picc_hex_to_bytes(mBoltConfig.k1, k1, 16) != 16 ||
-            picc_hex_to_bytes(mBoltConfig.k2, k2, 16) != 16) {
+        uint8_t k1[AES_KEY_LEN], k2[AES_KEY_LEN];
+        if (picc_hex_to_bytes(mBoltConfig.k1, k1, AES_KEY_LEN) != AES_KEY_LEN ||
+            picc_hex_to_bytes(mBoltConfig.k2, k2, AES_KEY_LEN) != AES_KEY_LEN) {
           Serial.println(F("[picc] Invalid k1/k2 hex"));
           led_blink(5, 100);
           serial_cmd_active = false;
@@ -945,13 +950,13 @@ ndef_fail:
       serial_cmd_active = true;
       led_on();
 
-      uint8_t uid[12] = {0};
+      uint8_t uid[MAX_UID_LEN] = {0};
       uint8_t uid_len = 0;
       unsigned long t0_inspect = millis();
       bool found = false;
       do {
         found = bolty_read_passive_target(bolt.nfc, uid, &uid_len);
-        if (millis() - t0_inspect > 15000) {
+        if (millis() - t0_inspect > CARD_TAP_TIMEOUT_MS) {
           Serial.println(F("[inspect] TIMEOUT"));
           serial_cmd_active = false;
           return;
@@ -991,7 +996,9 @@ ndef_fail:
       Serial.println(F("[inspect] --- Key Versions (read-only) ---"));
       bool all_zero = true;
       bool any_keyver_error = false;
-      uint8_t key_versions[5] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+      uint8_t key_versions[5] = {KEY_VER_READ_FAILED, KEY_VER_READ_FAILED,
+                                 KEY_VER_READ_FAILED, KEY_VER_READ_FAILED,
+                                 KEY_VER_READ_FAILED};
       if (!bolt.nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID)) {
         Serial.println(F("[inspect] Failed to select NTAG424 application for key version reads"));
         any_keyver_error = true;
@@ -1008,21 +1015,21 @@ ndef_fail:
           }
           Serial.print(F("0x"));
           print_hex_byte_prefixed(key_versions[k]);
-          if (key_versions[k] == 0x00) Serial.println(F(" (factory default)"));
+          if (key_versions[k] == KEY_VER_FACTORY) Serial.println(F(" (factory default)"));
           else Serial.println(F(" (changed)"));
-          if (key_versions[k] != 0x00) all_zero = false;
+          if (key_versions[k] != KEY_VER_FACTORY) all_zero = false;
         }
       }
 
       // Detect inconsistent states (mixed factory + changed keys)
       if (!all_zero && !any_keyver_error) {
         bool all_changed = true;
-        for (int k = 0; k < 5; k++) { if (key_versions[k] == 0x00) all_changed = false; }
+        for (int k = 0; k < 5; k++) { if (key_versions[k] == KEY_VER_FACTORY) all_changed = false; }
         if (!all_changed) {
           Serial.println(F("[inspect] *** INCONSISTENT STATE DETECTED ***"));
           Serial.print(F("[inspect] Partial burn/wipe: keys "));
           for (int k = 0; k < 5; k++) {
-            if (key_versions[k] == 0x00) {
+            if (key_versions[k] == KEY_VER_FACTORY) {
               Serial.print(F("K")); Serial.print(k); Serial.print(F("=factory "));
             }
           }
@@ -1076,17 +1083,17 @@ ndef_fail:
       }
 
       Serial.println(F("[inspect] --- NDEF Read ---"));
-      uint8_t ndef[256] = {0};
+      uint8_t ndef[NDEF_MAX_LEN] = {0};
       int ndef_len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
-      if (ndef_len < 0 && strlen(mBoltConfig.k3) == 32) {
+      if (ndef_len < 0 && strlen(mBoltConfig.k3) == HEX_KEY_LEN) {
          // PLAIN ISO read failed — re-detect card to reset ISO-DEP state,
          // auth with key 3, then read NDEF via native DESFire ReadData.
-         uint8_t redet_uid[12] = {0};
+         uint8_t redet_uid[MAX_UID_LEN] = {0};
          uint8_t redet_uid_len = 0;
          if (bolty_read_passive_target(bolt.nfc, redet_uid, &redet_uid_len)) {
-           uint8_t k3_bytes[16] = {0};
+           uint8_t k3_bytes[AES_KEY_LEN] = {0};
            bolt.setKey(k3_bytes, String(mBoltConfig.k3));
-           if (bolt.nfc->ntag424_Authenticate(k3_bytes, 3, 0x71) == 1) {
+            if (bolt.nfc->ntag424_Authenticate(k3_bytes, 3, AUTH_CMD_EV2_FIRST) == 1) {
              uint8_t raw[64] = {0};
              uint8_t rlen = bolt.nfc->ntag424_ReadData(raw, 2, 0, sizeof(raw));
              if (rlen >= 4) {
@@ -1127,10 +1134,10 @@ ndef_fail:
         String p_hex, c_hex;
         const bool has_p = uri_get_query_param(uri, "p", p_hex);
         const bool has_c = uri_get_query_param(uri, "c", c_hex);
-        uint8_t p_bytes[16] = {0};
+        uint8_t p_bytes[AES_KEY_LEN] = {0};
         uint8_t c_bytes[8] = {0};
         bool p_ok = false, c_ok = false;
-        if (has_p) p_ok = parse_hex_fixed(p_hex, p_bytes, 16);
+        if (has_p) p_ok = parse_hex_fixed(p_hex, p_bytes, AES_KEY_LEN);
         if (has_c) c_ok = parse_hex_fixed(c_hex, c_bytes, 8);
         bool keys_auto_loaded = false;
 
@@ -1139,14 +1146,14 @@ ndef_fail:
           Serial.println(F("[inspect] --- Current Issuer Key Check ---"));
           bool issuer_k1_match = false;
           uint32_t issuer_counter = 0;
-          uint8_t issuer_decrypted[16] = {0};
-          uint8_t issuer_matched_keys[5][16] = {{0}};
+          uint8_t issuer_decrypted[AES_KEY_LEN] = {0};
+          uint8_t issuer_matched_keys[5][AES_KEY_LEN] = {{0}};
           int issuer_matched_version = -1;
 
           // Try all version candidates
           for (int vi = 0; vi < 4 && !issuer_k1_match; vi++) {
             uint32_t try_ver = BOLTCARD_VERSION_CANDIDATES[vi];
-            uint8_t try_keys[5][16] = {{0}};
+            uint8_t try_keys[5][AES_KEY_LEN] = {{0}};
             derive_deterministic_boltcard_keys(bolt.nfc, current_issuer_key, uid, try_ver, try_keys);
             issuer_k1_match = deterministic_decrypt_p(bolt.nfc, try_keys[1], p_bytes, uid, issuer_decrypted, issuer_counter);
             if (issuer_k1_match) {
@@ -1156,7 +1163,7 @@ ndef_fail:
           }
 
           Serial.print(F("[inspect] Issuer key "));
-          Serial.print(convertIntToHex(current_issuer_key, 16));
+          Serial.print(convertIntToHex(current_issuer_key, AES_KEY_LEN));
           Serial.print(F(" -> K1 decrypt: "));
           Serial.println(issuer_k1_match ? F("MATCH") : F("NO MATCH"));
 
@@ -1181,21 +1188,21 @@ ndef_fail:
               if (issuer_cmac_ok) {
                 Serial.println(F("[inspect]   Card matches current issuer key!"));
                 led_signal_key_local();
-                strncpy(mBoltConfig.k0, convertIntToHex(issuer_matched_keys[0], 16).c_str(), 33);
-                strncpy(mBoltConfig.k1, convertIntToHex(issuer_matched_keys[1], 16).c_str(), 33);
-                strncpy(mBoltConfig.k2, convertIntToHex(issuer_matched_keys[2], 16).c_str(), 33);
-                strncpy(mBoltConfig.k3, convertIntToHex(issuer_matched_keys[3], 16).c_str(), 33);
-                strncpy(mBoltConfig.k4, convertIntToHex(issuer_matched_keys[4], 16).c_str(), 33);
+                strncpy(mBoltConfig.k0, convertIntToHex(issuer_matched_keys[0], AES_KEY_LEN).c_str(), 33);
+                strncpy(mBoltConfig.k1, convertIntToHex(issuer_matched_keys[1], AES_KEY_LEN).c_str(), 33);
+                strncpy(mBoltConfig.k2, convertIntToHex(issuer_matched_keys[2], AES_KEY_LEN).c_str(), 33);
+                strncpy(mBoltConfig.k3, convertIntToHex(issuer_matched_keys[3], AES_KEY_LEN).c_str(), 33);
+                strncpy(mBoltConfig.k4, convertIntToHex(issuer_matched_keys[4], AES_KEY_LEN).c_str(), 33);
                 Serial.println(F("[inspect]   Keys auto-loaded. Ready for wipe/burn."));
                 keys_auto_loaded = true;
               }
             } else {
               Serial.println(F("[inspect]   c= missing — cannot verify K2/CMAC."));
-              strncpy(mBoltConfig.k0, convertIntToHex(issuer_matched_keys[0], 16).c_str(), 33);
-              strncpy(mBoltConfig.k1, convertIntToHex(issuer_matched_keys[1], 16).c_str(), 33);
-              strncpy(mBoltConfig.k2, convertIntToHex(issuer_matched_keys[2], 16).c_str(), 33);
-              strncpy(mBoltConfig.k3, convertIntToHex(issuer_matched_keys[3], 16).c_str(), 33);
-              strncpy(mBoltConfig.k4, convertIntToHex(issuer_matched_keys[4], 16).c_str(), 33);
+              strncpy(mBoltConfig.k0, convertIntToHex(issuer_matched_keys[0], AES_KEY_LEN).c_str(), 33);
+              strncpy(mBoltConfig.k1, convertIntToHex(issuer_matched_keys[1], AES_KEY_LEN).c_str(), 33);
+              strncpy(mBoltConfig.k2, convertIntToHex(issuer_matched_keys[2], AES_KEY_LEN).c_str(), 33);
+              strncpy(mBoltConfig.k3, convertIntToHex(issuer_matched_keys[3], AES_KEY_LEN).c_str(), 33);
+              strncpy(mBoltConfig.k4, convertIntToHex(issuer_matched_keys[4], AES_KEY_LEN).c_str(), 33);
               Serial.println(F("[inspect]   Keys auto-loaded (K1 only, no CMAC proof)."));
               keys_auto_loaded = true;
             }
@@ -1210,9 +1217,9 @@ ndef_fail:
           for (int i = 0; i < uid_len; i++) {
             snprintf(uid_hex + i*2, 3, "%02X", uid[i]);
           }
-          uint8_t web_keys[5][16] = {{0}};
+          uint8_t web_keys[5][AES_KEY_LEN] = {{0}};
           uint32_t web_counter = 0;
-          uint8_t web_decrypted[16] = {0};
+          uint8_t web_decrypted[AES_KEY_LEN] = {0};
 
           if (web_lookup_and_match(bolt.nfc, uid_hex, p_bytes, uid, web_keys, web_counter, web_decrypted)) {
             Serial.print(F("[inspect]   Web match! Counter: "));
@@ -1229,22 +1236,22 @@ ndef_fail:
               if (web_cmac_ok) {
                 Serial.println(F("[inspect]   Card matched via web lookup!"));
                 led_signal_key_online();
-                strncpy(mBoltConfig.k0, convertIntToHex(web_keys[0], 16).c_str(), 33);
-                strncpy(mBoltConfig.k1, convertIntToHex(web_keys[1], 16).c_str(), 33);
-                strncpy(mBoltConfig.k2, convertIntToHex(web_keys[2], 16).c_str(), 33);
-                strncpy(mBoltConfig.k3, convertIntToHex(web_keys[3], 16).c_str(), 33);
-                strncpy(mBoltConfig.k4, convertIntToHex(web_keys[4], 16).c_str(), 33);
+                strncpy(mBoltConfig.k0, convertIntToHex(web_keys[0], AES_KEY_LEN).c_str(), 33);
+                strncpy(mBoltConfig.k1, convertIntToHex(web_keys[1], AES_KEY_LEN).c_str(), 33);
+                strncpy(mBoltConfig.k2, convertIntToHex(web_keys[2], AES_KEY_LEN).c_str(), 33);
+                strncpy(mBoltConfig.k3, convertIntToHex(web_keys[3], AES_KEY_LEN).c_str(), 33);
+                strncpy(mBoltConfig.k4, convertIntToHex(web_keys[4], AES_KEY_LEN).c_str(), 33);
                 Serial.println(F("[inspect]   Keys auto-loaded from web. Ready for wipe/burn."));
                 keys_auto_loaded = true;
               }
             } else {
               Serial.println(F("[inspect]   c= missing — loading web keys without CMAC proof."));
               led_signal_key_online();
-              strncpy(mBoltConfig.k0, convertIntToHex(web_keys[0], 16).c_str(), 33);
-              strncpy(mBoltConfig.k1, convertIntToHex(web_keys[1], 16).c_str(), 33);
-              strncpy(mBoltConfig.k2, convertIntToHex(web_keys[2], 16).c_str(), 33);
-              strncpy(mBoltConfig.k3, convertIntToHex(web_keys[3], 16).c_str(), 33);
-              strncpy(mBoltConfig.k4, convertIntToHex(web_keys[4], 16).c_str(), 33);
+              strncpy(mBoltConfig.k0, convertIntToHex(web_keys[0], AES_KEY_LEN).c_str(), 33);
+              strncpy(mBoltConfig.k1, convertIntToHex(web_keys[1], AES_KEY_LEN).c_str(), 33);
+              strncpy(mBoltConfig.k2, convertIntToHex(web_keys[2], AES_KEY_LEN).c_str(), 33);
+              strncpy(mBoltConfig.k3, convertIntToHex(web_keys[3], AES_KEY_LEN).c_str(), 33);
+              strncpy(mBoltConfig.k4, convertIntToHex(web_keys[4], AES_KEY_LEN).c_str(), 33);
               Serial.println(F("[inspect]   Keys auto-loaded from web (K1 only)."));
               keys_auto_loaded = true;
             }
@@ -1282,13 +1289,13 @@ ndef_fail:
     serial_cmd_active = true;
     led_on();
 
-    uint8_t uid[12] = {0};
+    uint8_t uid[MAX_UID_LEN] = {0};
     uint8_t uid_len = 0;
     unsigned long t0_derive = millis();
     bool found = false;
     do {
       found = bolty_read_passive_target(bolt.nfc, uid, &uid_len);
-      if (millis() - t0_derive > 15000) {
+      if (millis() - t0_derive > CARD_TAP_TIMEOUT_MS) {
         Serial.println(F("[derivekeys] TIMEOUT"));
         serial_cmd_active = false;
         return;
@@ -1298,7 +1305,7 @@ ndef_fail:
     Serial.print(F("[derivekeys] UID: "));
     bolty_print_hex(bolt.nfc, uid, uid_len);
 
-    uint8_t ndef[256] = {0};
+    uint8_t ndef[NDEF_MAX_LEN] = {0};
     const int ndef_len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
     if (ndef_len <= 0) {
       Serial.println(F("[derivekeys] FAIL — could not read NDEF."));
@@ -1368,7 +1375,7 @@ ndef_fail:
   else if (cmd == "ver") {
     if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
     serial_cmd_active = true;
-    uint8_t uid[12] = {0};
+    uint8_t uid[MAX_UID_LEN] = {0};
     uint8_t uidLen;
     uint8_t ok = bolty_read_passive_target(bolt.nfc, uid, &uidLen);
     Serial.print(F("[ver] Card detected: "));
@@ -1390,7 +1397,7 @@ ndef_fail:
     // Show current issuer key
     if (has_issuer_key) {
       Serial.print(F("[issuer] Current issuer key: "));
-      Serial.println(convertIntToHex(current_issuer_key, 16));
+      Serial.println(convertIntToHex(current_issuer_key, AES_KEY_LEN));
     } else {
       Serial.println(F("[issuer] No issuer key set"));
     }
@@ -1398,7 +1405,7 @@ ndef_fail:
   else if (cmd.startsWith("issuer ")) {
     String hex = cmd.substring(7);
     hex.trim();
-    if (hex.length() != 32) {
+    if (hex.length() != HEX_KEY_LEN) {
       Serial.println(F("[error] Issuer key must be exactly 32 hex chars"));
       return;
     }
@@ -1410,12 +1417,12 @@ ndef_fail:
         return;
       }
     }
-    uint8_t tmp[16] = {0};
-    if (!parse_hex_fixed(hex, tmp, 16)) {
+    uint8_t tmp[AES_KEY_LEN] = {0};
+    if (!parse_hex_fixed(hex, tmp, AES_KEY_LEN)) {
       Serial.println(F("[error] Failed to parse issuer key hex"));
       return;
     }
-    memcpy(current_issuer_key, tmp, 16);
+    memcpy(current_issuer_key, tmp, AES_KEY_LEN);
     has_issuer_key = true;
     Serial.print(F("[issuer] Issuer key set: "));
     Serial.println(hex);
@@ -1436,8 +1443,9 @@ ndef_fail:
     String k2 = args.substring(s2 + 1, s3);
     String k3 = args.substring(s3 + 1, s4);
     String k4 = args.substring(s4 + 1);
-    if (k0.length() != 32 || k1.length() != 32 || k2.length() != 32 ||
-        k3.length() != 32 || k4.length() != 32) {
+    if (k0.length() != HEX_KEY_LEN || k1.length() != HEX_KEY_LEN ||
+        k2.length() != HEX_KEY_LEN || k3.length() != HEX_KEY_LEN ||
+        k4.length() != HEX_KEY_LEN) {
       Serial.println(F("[error] Each key must be exactly 32 hex chars"));
       return;
     }
@@ -1527,7 +1535,7 @@ ndef_fail:
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid.c_str(), pass.c_str());
     unsigned long t0 = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) {
+    while (WiFi.status() != WL_CONNECTED && millis() - t0 < CARD_TAP_TIMEOUT_MS) {
       delay(500);
     }
     if (WiFi.status() == WL_CONNECTED) {
@@ -1601,7 +1609,7 @@ ndef_fail:
     do {
       while (Serial.available()) Serial.read();
       result = bolt.burn(String(mBoltConfig.url));
-      if (millis() - t0 > 30000) {
+      if (millis() - t0 > CARD_TAP_TIMEOUT_LONG_MS) {
         Serial.println(F("[burn] TIMEOUT — no card detected in 30s"));
         serial_cmd_active = false;
         return;
@@ -1618,16 +1626,16 @@ ndef_fail:
       if (result == JOBSTATUS_DONE) {
         // Post-burn verify: auth with new key 0 to confirm key change worked,
         // then read NDEF to verify the URL was written correctly.
-        const uint8_t v_auth0 = bolt.nfc->ntag424_Authenticate(bolt.new_keys.keys[0], 0, 0x71);
+        const uint8_t v_auth0 = bolt.nfc->ntag424_Authenticate(bolt.new_keys.keys[0], 0, AUTH_CMD_EV2_FIRST);
         Serial.print(F("[burn] VERIFY — AUTH k0: "));
         Serial.println(v_auth0 == 1 ? F("OK") : F("FAIL"));
         if (v_auth0 == 1) {
           // Re-detect card (auth may have left ISO-DEP in odd state),
           // then try PLAIN ISO NDEF read (works now that WriteData offset bug is fixed).
-          uint8_t v_uid[12] = {0};
+          uint8_t v_uid[MAX_UID_LEN] = {0};
           uint8_t v_uid_len = 0;
           if (bolty_read_passive_target(bolt.nfc, v_uid, &v_uid_len)) {
-            uint8_t vbuf[256] = {0};
+            uint8_t vbuf[NDEF_MAX_LEN] = {0};
             const int16_t vlen = bolt.nfc->ntag424_ReadNDEFMessage(vbuf, sizeof(vbuf));
             if (vlen > 0) {
               Serial.print(F("[burn] VERIFY — NDEF read OK ("));
@@ -1660,7 +1668,7 @@ ndef_fail:
     do {
       while (Serial.available()) Serial.read();
       result = bolt.wipe();
-      if (millis() - t0 > 30000) {
+      if (millis() - t0 > CARD_TAP_TIMEOUT_LONG_MS) {
         Serial.println(F("[wipe] TIMEOUT — no card detected in 30s"));
         serial_cmd_active = false;
         return;
@@ -1685,14 +1693,14 @@ ndef_fail:
     unsigned long t0 = millis();
     bool found = false;
     do {
-      uint8_t uid[12] = {0};
+      uint8_t uid[MAX_UID_LEN] = {0};
       uint8_t uidLen;
       found = bolty_read_passive_target(bolt.nfc, uid, &uidLen);
       if (found) {
         Serial.print(F("[keyver] UID: "));
         bolty_print_hex(bolt.nfc, uid, uidLen);
       }
-      if (millis() - t0 > 15000) { Serial.println(F("[keyver] TIMEOUT")); serial_cmd_active = false; return; }
+      if (millis() - t0 > CARD_TAP_TIMEOUT_MS) { Serial.println(F("[keyver] TIMEOUT")); serial_cmd_active = false; return; }
     } while (!found);
     delay(50);
     bool all_zero = true;
@@ -1703,16 +1711,16 @@ ndef_fail:
       Serial.print(F(" version: 0x"));
       if (kv < 0x10) Serial.print(F("0"));
       Serial.print(kv, HEX);
-      if (kv == 0x00) {
+      if (kv == KEY_VER_FACTORY) {
         Serial.println(F(" (factory default)"));
-      } else if (kv == 0xFF && k == 0) {
+      } else if (kv == KEY_VER_READ_FAILED && k == 0) {
         Serial.println(F(" (protected — K0 changed from factory)"));
-      } else if (kv == 0xFF) {
+      } else if (kv == KEY_VER_READ_FAILED) {
         Serial.println(F(" (ERROR: read failed)"));
       } else {
         Serial.println(F(" (changed)"));
       }
-      if (kv != 0x00 && kv != 0xFF) all_zero = false;
+      if (kv != KEY_VER_FACTORY && kv != KEY_VER_READ_FAILED) all_zero = false;
     }
     if (all_zero) {
       Serial.println(F("[keyver] Card appears BLANK — factory default keys"));
@@ -1729,22 +1737,22 @@ ndef_fail:
     led_on();
     bolt.cur_keys = BoltcardKeys::allZeros();
     Serial.print(F("[check] Using zero key: "));
-    for (int i = 0; i < 16; i++) { if (bolt.cur_keys.keys[0][i] < 0x10) Serial.print("0"); Serial.print(bolt.cur_keys.keys[0][i], HEX); }
+    for (int i = 0; i < AES_KEY_LEN; i++) { if (bolt.cur_keys.keys[0][i] < 0x10) Serial.print("0"); Serial.print(bolt.cur_keys.keys[0][i], HEX); }
     Serial.println();
     unsigned long t0 = millis();
     bool found = false;
     do {
-      uint8_t uid[12] = {0};
+      uint8_t uid[MAX_UID_LEN] = {0};
       uint8_t uidLen;
       found = bolty_read_passive_target(bolt.nfc, uid, &uidLen);
       if (found) {
         Serial.print(F("[check] UID: "));
         bolty_print_hex(bolt.nfc, uid, uidLen);
       }
-      if (millis() - t0 > 15000) { Serial.println(F("[check] TIMEOUT")); serial_cmd_active = false; return; }
+      if (millis() - t0 > CARD_TAP_TIMEOUT_MS) { Serial.println(F("[check] TIMEOUT")); serial_cmd_active = false; return; }
     } while (!found);
     delay(50);
-    uint8_t result = bolt.nfc->ntag424_Authenticate(bolt.cur_keys.keys[0], 0, 0x71);
+    uint8_t result = bolt.nfc->ntag424_Authenticate(bolt.cur_keys.keys[0], 0, AUTH_CMD_EV2_FIRST);
     Serial.println(result == 1 ? F("[check] SUCCESS — card has factory zero keys") : F("[check] FAILED — card does NOT have factory keys"));
     led_blink(result == 1 ? 3 : 5, 100);
     serial_cmd_active = false;
@@ -1762,7 +1770,7 @@ ndef_fail:
     do {
       while (Serial.available()) Serial.read();
       result = bolt.burn(lnurl);
-      if (millis() - t0 > 30000) {
+      if (millis() - t0 > CARD_TAP_TIMEOUT_LONG_MS) {
         Serial.println(F("[dummyburn] TIMEOUT — no card detected in 30s"));
         serial_cmd_active = false;
         return;
@@ -1787,7 +1795,7 @@ ndef_fail:
     do {
       while (Serial.available()) Serial.read();
       result = bolt.resetNdefOnly();
-      if (millis() - t0 > 30000) {
+      if (millis() - t0 > CARD_TAP_TIMEOUT_LONG_MS) {
         Serial.println(F("[reset] TIMEOUT — no card detected in 30s"));
         serial_cmd_active = false;
         return;
@@ -1810,7 +1818,7 @@ ndef_fail:
     serial_cmd_active = true;
     led_on();
 
-    uint8_t uid_d[12] = {0};
+    uint8_t uid_d[MAX_UID_LEN] = {0};
     uint8_t uidLen_d;
     unsigned long t0_d = millis();
     bool found_d = false;
@@ -1820,7 +1828,7 @@ ndef_fail:
         Serial.print(F("[diagnose] UID: "));
         bolty_print_hex(bolt.nfc, uid_d, uidLen_d);
       }
-      if (millis() - t0_d > 15000) {
+      if (millis() - t0_d > CARD_TAP_TIMEOUT_MS) {
         Serial.println(F("[diagnose] TIMEOUT"));
         serial_cmd_active = false;
         return;
@@ -1841,16 +1849,16 @@ ndef_fail:
       Serial.print(F(" version: 0x"));
       if (kv[k] < 0x10) Serial.print(F("0"));
       Serial.print(kv[k], HEX);
-      if (kv[k] == 0x00) Serial.println(F(" (default)"));
-      else if (kv[k] == 0xFF) { Serial.println(F(" (READ ERROR)")); any_error = true; }
+      if (kv[k] == KEY_VER_FACTORY) Serial.println(F(" (default)"));
+      else if (kv[k] == KEY_VER_READ_FAILED) { Serial.println(F(" (READ ERROR)")); any_error = true; }
       else Serial.println(F(" (changed)"));
-      if (kv[k] != 0x00) all_zero = false;
+      if (kv[k] != KEY_VER_FACTORY) all_zero = false;
     }
 
     // Test zero-key authentication on key 0 (master)
     bolt.selectNtagApplicationFiles();
-    uint8_t zero_key[16] = {0};
-    uint8_t auth_d = bolt.nfc->ntag424_Authenticate(zero_key, 0, 0x71);
+    uint8_t zero_key[AES_KEY_LEN] = {0};
+    uint8_t auth_d = bolt.nfc->ntag424_Authenticate(zero_key, 0, AUTH_CMD_EV2_FIRST);
     Serial.print(F("[diagnose] Zero-key auth (key 0): "));
     Serial.println(auth_d == 1 ? "OK" : "FAILED");
 
@@ -1916,20 +1924,20 @@ ndef_fail:
       Serial.println(F("[recoverkey] Slot must be 0-4"));
       return;
     }
-    if (old_key_hex.length() != 32) {
+    if (old_key_hex.length() != HEX_KEY_LEN) {
       Serial.println(F("[recoverkey] Old key must be 32 hex chars (16 bytes)"));
       return;
     }
-    if (k0_hex.length() > 0 && k0_hex.length() != 32) {
+    if (k0_hex.length() > 0 && k0_hex.length() != HEX_KEY_LEN) {
       Serial.println(F("[recoverkey] K0 must be 32 hex chars (16 bytes) or omitted for zeros"));
       return;
     }
 
-    uint8_t auth_key[16] = {0};
-    uint8_t old_key[16] = {0};
-    uint8_t zero_key[16] = {0};
+    uint8_t auth_key[AES_KEY_LEN] = {0};
+    uint8_t old_key[AES_KEY_LEN] = {0};
+    uint8_t zero_key[AES_KEY_LEN] = {0};
     bolt.setKey(old_key, old_key_hex);
-    if (k0_hex.length() == 32) {
+    if (k0_hex.length() == HEX_KEY_LEN) {
       bolt.setKey(auth_key, k0_hex);
     }
 
@@ -1938,7 +1946,7 @@ ndef_fail:
     Serial.println(F(" -> zero, ver=0x00"));
     Serial.print(F("[recoverkey] Candidate old key: "));
     Serial.println(old_key_hex);
-    if (k0_hex.length() == 32) {
+    if (k0_hex.length() == HEX_KEY_LEN) {
       Serial.print(F("[recoverkey] Auth K0: "));
       Serial.println(k0_hex);
     } else {
@@ -1947,7 +1955,7 @@ ndef_fail:
     serial_cmd_active = true;
     led_on();
 
-    uint8_t uid_rk[12] = {0};
+    uint8_t uid_rk[MAX_UID_LEN] = {0};
     uint8_t uidLen_rk;
     unsigned long t0_rk = millis();
     bool found_rk = false;
@@ -1957,7 +1965,7 @@ ndef_fail:
         Serial.print(F("[recoverkey] UID: "));
         bolty_print_hex(bolt.nfc, uid_rk, uidLen_rk);
       }
-      if (millis() - t0_rk > 15000) {
+      if (millis() - t0_rk > CARD_TAP_TIMEOUT_MS) {
         Serial.println(F("[recoverkey] TIMEOUT"));
         serial_cmd_active = false;
         return;
@@ -1967,7 +1975,7 @@ ndef_fail:
     delay(50);
     bolt.selectNtagApplicationFiles();
 
-    uint8_t auth_rk = bolt.nfc->ntag424_Authenticate(auth_key, 0, 0x71);
+    uint8_t auth_rk = bolt.nfc->ntag424_Authenticate(auth_key, 0, AUTH_CMD_EV2_FIRST);
     Serial.print(F("[recoverkey] Auth K0: "));
     Serial.println(auth_rk == 1 ? "OK" : "FAILED");
     if (auth_rk != 1) {
@@ -1977,7 +1985,7 @@ ndef_fail:
       return;
     }
 
-    bool ok = bolt.nfc->ntag424_ChangeKey(old_key, zero_key, slot, 0x00);
+    bool ok = bolt.nfc->ntag424_ChangeKey(old_key, zero_key, slot, KEY_VER_FACTORY);
     Serial.print(F("[recoverkey] ChangeKey result: "));
     Serial.println(ok ? "OK" : "FAILED");
 
@@ -1989,7 +1997,9 @@ ndef_fail:
     if (kv_after < 0x10) Serial.print(F("0"));
     Serial.println(kv_after, HEX);
 
-    const bool pass = ok && (kv_after == 0x00 || (slot == 0 && kv_after == 0xFF));
+    const bool pass = ok &&
+                      (kv_after == KEY_VER_FACTORY ||
+                       (slot == 0 && kv_after == KEY_VER_READ_FAILED));
     Serial.println(pass ?
                        F("[recoverkey] PASS — key restored to factory zero") :
                        F("[recoverkey] FAIL — candidate old key was incorrect or card state differs"));
@@ -2009,7 +2019,7 @@ ndef_fail:
     led_on();
 
     // Detect card
-    uint8_t uid_ck[12] = {0};
+    uint8_t uid_ck[MAX_UID_LEN] = {0};
     uint8_t uidLen_ck;
     unsigned long t0_ck = millis();
     bool found_ck = false;
@@ -2019,13 +2029,13 @@ ndef_fail:
         Serial.print(F("[testck] UID: "));
         bolty_print_hex(bolt.nfc, uid_ck, uidLen_ck);
       }
-      if (millis() - t0_ck > 15000) { Serial.println(F("[testck] TIMEOUT")); serial_cmd_active = false; return; }
+      if (millis() - t0_ck > CARD_TAP_TIMEOUT_MS) { Serial.println(F("[testck] TIMEOUT")); serial_cmd_active = false; return; }
     } while (!found_ck);
     delay(50);
 
-    uint8_t zero_key[16] = {0};
+    uint8_t zero_key[AES_KEY_LEN] = {0};
     // Distinctive test value — not a real key, just for verification
-    uint8_t test_key[16] = {0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44,
+    uint8_t test_key[AES_KEY_LEN] = {0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44,
                             0x55, 0x66, 0x77, 0x88, 0x99, 0x00, 0xEE, 0xFF};
 
     // Read key 1 version BEFORE.
@@ -2039,7 +2049,7 @@ ndef_fail:
 
     // Auth with key 0 (zeros) — key 0 is master, needed for ChangeKey
     bolt.selectNtagApplicationFiles();
-    uint8_t auth1 = bolt.nfc->ntag424_Authenticate(zero_key, 0, 0x71);
+    uint8_t auth1 = bolt.nfc->ntag424_Authenticate(zero_key, 0, AUTH_CMD_EV2_FIRST);
     Serial.print(F("[testck] Auth key 0 (zeros): "));
     Serial.println(auth1 == 1 ? "OK" : "FAILED");
     if (auth1 != 1) {
@@ -2049,9 +2059,9 @@ ndef_fail:
       return;
     }
 
-    if (kv_before == 0x01) {
+    if (kv_before == KEY_VER_PROVISIONED) {
       Serial.println(F("[testck] Recovery mode — restoring key 1 from test value to zero"));
-      bool recovered = bolt.nfc->ntag424_ChangeKey(test_key, zero_key, 1, 0x00);
+      bool recovered = bolt.nfc->ntag424_ChangeKey(test_key, zero_key, 1, KEY_VER_FACTORY);
       Serial.print(F("[testck]   Result: "));
       Serial.println(recovered ? "OK" : "FAILED");
 
@@ -2061,7 +2071,7 @@ ndef_fail:
       if (kv_recovered < 0x10) Serial.print(F("0"));
       Serial.println(kv_recovered, HEX);
 
-      const bool recovery_pass = recovered && (kv_recovered == 0x00);
+      const bool recovery_pass = recovered && (kv_recovered == KEY_VER_FACTORY);
       Serial.println(recovery_pass ?
                          F("[testck] RECOVERY PASS — key 1 restored to factory state") :
                          F("[testck] RECOVERY FAIL — key 1 not restored"));
@@ -2070,7 +2080,7 @@ ndef_fail:
       return;
     }
 
-    if (kv_before != 0x00) {
+    if (kv_before != KEY_VER_FACTORY) {
       Serial.println(F("[testck] WARNING — key 1 is in an unexpected state, aborting"));
       led_blink(5, 100);
       serial_cmd_active = false;
@@ -2079,7 +2089,7 @@ ndef_fail:
 
     // Step 1: ChangeKey key 1 from zero → test value, version 0x01
     Serial.println(F("[testck] Step 1: ChangeKey(1, zero→test, ver=0x01)"));
-    bool ck1 = bolt.nfc->ntag424_ChangeKey(zero_key, test_key, 1, 0x01);
+    bool ck1 = bolt.nfc->ntag424_ChangeKey(zero_key, test_key, 1, KEY_VER_PROVISIONED);
     Serial.print(F("[testck]   Result: "));
     Serial.println(ck1 ? "OK" : "FAILED");
 
@@ -2090,11 +2100,11 @@ ndef_fail:
     if (kv_mid < 0x10) Serial.print(F("0"));
     Serial.println(kv_mid, HEX);
 
-    if (!ck1 && kv_mid == 0x01) {
+    if (!ck1 && kv_mid == KEY_VER_PROVISIONED) {
       Serial.println(F("[testck] NOTICE — card changed but library returned false (stale build/parsing bug)"));
     }
 
-    bool step1_pass = (kv_mid == 0x01);
+    bool step1_pass = (kv_mid == KEY_VER_PROVISIONED);
     Serial.print(F("[testck]   Step 1: "));
     Serial.println(step1_pass ? "PASS" : "FAIL");
 
@@ -2107,7 +2117,7 @@ ndef_fail:
 
     // Step 2: Re-auth (key 0 still zero), change key 1 back
     bolt.selectNtagApplicationFiles();
-    uint8_t auth2 = bolt.nfc->ntag424_Authenticate(zero_key, 0, 0x71);
+    uint8_t auth2 = bolt.nfc->ntag424_Authenticate(zero_key, 0, AUTH_CMD_EV2_FIRST);
     Serial.print(F("[testck] Re-auth key 0: "));
     Serial.println(auth2 == 1 ? "OK" : "FAILED");
     if (auth2 != 1) {
@@ -2118,7 +2128,7 @@ ndef_fail:
     }
 
     Serial.println(F("[testck] Step 2: ChangeKey(1, test→zero, ver=0x00)"));
-    bool ck2 = bolt.nfc->ntag424_ChangeKey(test_key, zero_key, 1, 0x00);
+    bool ck2 = bolt.nfc->ntag424_ChangeKey(test_key, zero_key, 1, KEY_VER_FACTORY);
     Serial.print(F("[testck]   Result: "));
     Serial.println(ck2 ? "OK" : "FAILED");
 
@@ -2129,11 +2139,11 @@ ndef_fail:
     if (kv_final < 0x10) Serial.print(F("0"));
     Serial.println(kv_final, HEX);
 
-    if (!ck2 && kv_final == 0x00) {
+    if (!ck2 && kv_final == KEY_VER_FACTORY) {
       Serial.println(F("[testck] NOTICE — card restored but library returned false (stale build/parsing bug)"));
     }
 
-    bool step2_pass = (kv_final == 0x00);
+    bool step2_pass = (kv_final == KEY_VER_FACTORY);
     Serial.print(F("[testck]   Step 2: "));
     Serial.println(step2_pass ? "PASS" : "FAIL");
 

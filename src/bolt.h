@@ -31,6 +31,27 @@ static const uint8_t NTAG424_AID[7] = {0xD2, 0x76, 0x00, 0x00,
 // NDEF File ID: 0xE104 — NT4H2421Gx datasheet §8.6.4
 static const uint16_t NTAG424_NDEF_FILE_ID = 0xE104;
 
+// Key version bytes
+static const uint8_t KEY_VER_FACTORY = 0x00;
+static const uint8_t KEY_VER_PROVISIONED = 0x01;
+static const uint8_t KEY_VER_READ_FAILED = 0xFF;
+
+// AuthenticateEV2First command byte
+static const uint8_t AUTH_CMD_EV2_FIRST = 0x71;
+
+// Key/UID sizes
+static const uint8_t AES_KEY_LEN = 16;
+static const uint8_t HEX_KEY_LEN = 32;
+static const uint8_t MAX_UID_LEN = 12;
+
+// Timeouts
+static const unsigned long CARD_TAP_TIMEOUT_MS = 15000;
+static const unsigned long CARD_TAP_TIMEOUT_LONG_MS = 30000;
+
+// NDEF
+static const uint16_t NDEF_MAX_LEN = 256;
+static const uint8_t NDEF_WRITE_CHUNK = 47;
+
 static String boltstatustext[7] = {
     "idle",          "waiting for nfc-tag..",  "provisioning data..",
     "wiping data..", "done - remove the card", "error",
@@ -119,14 +140,14 @@ inline void bolty_print_hex(BoltyNfcReader *nfc, const uint8_t *data,
 inline uint8_t bolty_get_key_version(BoltyNfcReader *nfc, uint8_t keyno) {
   if (!nfc->ntag424_Session.authenticated) {
     if (!nfc->ntag424_ISOSelectFileByDFN((uint8_t *)NTAG424_AID)) {
-      return 0xFF;
+      return KEY_VER_READ_FAILED;
     }
   }
-  uint8_t version = 0xFF;
+  uint8_t version = KEY_VER_READ_FAILED;
   if (nfc->ntag424_GetKeyVersion(keyno, &version)) {
     return version;
   }
-  return 0xFF;
+  return KEY_VER_READ_FAILED;
 }
 
 inline bool bolty_iso_authenticate(BoltyNfcReader *nfc, uint8_t *key,
@@ -147,11 +168,11 @@ struct KeyVerifyResult {
   uint8_t key_versions[5]; // 0xFF=read fail, 0x00=factory, 0x01+=provisioned
   bool verified[5];        // true = key ownership proven
   bool all_verified;       // all 5 keys verified
-  bool all_factory;        // all 5 keys at version 0x00
+  bool all_factory;        // all 5 keys at factory version
 };
 
 struct BoltcardKeys {
-  uint8_t keys[5][16] = {{0}};
+  uint8_t keys[5][AES_KEY_LEN] = {{0}};
 
   enum Slot : uint8_t {
     MasterKey     = 0,
@@ -190,7 +211,7 @@ struct BoltcardKeys {
   }
 
   bool isSlotFactoryDefault(uint8_t slot) const {
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < AES_KEY_LEN; i++) {
       if (keys[slot][i] != 0) return false;
     }
     return true;
@@ -203,11 +224,11 @@ struct BoltcardKeys {
     return true;
   }
 
-  void copySlotTo(uint8_t slot, uint8_t dest[16]) const {
-    memcpy(dest, keys[slot], 16);
+  void copySlotTo(uint8_t slot, uint8_t dest[AES_KEY_LEN]) const {
+    memcpy(dest, keys[slot], AES_KEY_LEN);
   }
 
-  void copyAllTo(uint8_t dest[5][16]) const {
+  void copyAllTo(uint8_t dest[5][AES_KEY_LEN]) const {
     memcpy(dest, keys, sizeof(keys));
   }
 
@@ -215,7 +236,7 @@ private:
   void setSlotFromHex(uint8_t slot, const char* hex) {
     if (hex == nullptr) return;
     size_t len = strlen(hex);
-    for (size_t i = 0; i + 1 < len && (i / 2) < 16; i += 2) {
+    for (size_t i = 0; i + 1 < len && (i / 2) < AES_KEY_LEN; i += 2) {
       uint8_t upper = convertCharToHex(hex[i]);
       uint8_t lower = (i + 1 < len) ? convertCharToHex(hex[i + 1]) : 0;
       keys[slot][i / 2] = (upper << 4) | lower;
@@ -306,9 +327,9 @@ public:
       DBG_PRINT(F("[changeAllKeys] Key "));
       DBG_PRINT(key_index);
       DBG_PRINT(F(": cur="));
-      for (int b = 0; b < 16; b++) { if (cur_keys.keys[key_index][b] < 0x10) DBG_PRINT('0'); DBG_PRINT(cur_keys.keys[key_index][b], HEX); }
+      for (int b = 0; b < AES_KEY_LEN; b++) { if (cur_keys.keys[key_index][b] < 0x10) DBG_PRINT('0'); DBG_PRINT(cur_keys.keys[key_index][b], HEX); }
       DBG_PRINT(F(" new="));
-      for (int b = 0; b < 16; b++) { if (new_keys.keys[key_index][b] < 0x10) DBG_PRINT('0'); DBG_PRINT(new_keys.keys[key_index][b], HEX); }
+      for (int b = 0; b < AES_KEY_LEN; b++) { if (new_keys.keys[key_index][b] < 0x10) DBG_PRINT('0'); DBG_PRINT(new_keys.keys[key_index][b], HEX); }
       DBG_PRINTLN();
       if (!nfc->ntag424_ChangeKey(cur_keys.keys[key_index], new_keys.keys[key_index],
                                   key_index, target_key_version)) {
@@ -335,7 +356,7 @@ public:
     return true;
   }
 
-  void setKey(uint8_t keys[16], String key) {
+  void setKey(uint8_t keys[AES_KEY_LEN], String key) {
     for (int i = 0; i < key.length(); i += 2) {
       uint8_t ki = (i / 2);
       uint8_t upper = (convertCharToHex(key[i]) << 4);
@@ -492,7 +513,7 @@ public:
   }
 
   bool scanUID() {
-    uint8_t uid[12] = {0};
+    uint8_t uid[MAX_UID_LEN] = {0};
     uint8_t uidLength = 0;
     if ((millis() - lastscan) > 2000) {
       last_scanned_uid = "";
@@ -538,7 +559,7 @@ public:
       return job_status;
     }
 
-    uint8_t uid[12] = {0};
+    uint8_t uid[MAX_UID_LEN] = {0};
     uint8_t uidLength = 0;
     job_status = JOBSTATUS_WAITING;
     set_job_status_id(JOBSTATUS_WAITING);
@@ -562,7 +583,7 @@ public:
     }
 
     uint8_t kv = bolty_get_key_version(nfc, 1);
-    if (kv != 0x00) {
+    if (kv != KEY_VER_FACTORY) {
       DBG_PRINT(F("ABORT: Card key 1 version is 0x"));
       if (kv < 0x10) {
         DBG_PRINT(F("0"));
@@ -583,9 +604,9 @@ public:
 
     // Native AuthenticateEV2First: cmd=0x71 (NT4H2421Gx §7.3.1.1).
     // Using cur_keys.keys[0] (factory zero key) with key number 0.
-    const uint8_t auth_result = nfc->ntag424_Authenticate(cur_keys.keys[0], 0, 0x71);
+    const uint8_t auth_result = nfc->ntag424_Authenticate(cur_keys.keys[0], 0, AUTH_CMD_EV2_FIRST);
     if (auth_result != 1) {
-      uint8_t chk_uid[12] = {0};
+      uint8_t chk_uid[MAX_UID_LEN] = {0};
       uint8_t chk_uid_len = 0;
       if (bolty_read_passive_target(nfc, chk_uid, &chk_uid_len)) {
         DBG_PRINTLN(F("Auth FAILED — card is present but key was rejected (wrong key?)"));
@@ -652,12 +673,11 @@ public:
     // Total: 4 + 12 + N ≤ 64 → N ≤ 48. Use 47 for safety margin.
     // Matches the chunk size used by ntag424_FormatNDEF() in ntag424_core.cpp.
     // Confirmed by reference: Obsttube/MFRC522_NTAG424DNA line 1598.
-    const uint8_t kWriteChunkSize = 47;
     size_t write_offset = 0;
     while (write_offset < ndef_file_length) {
       const uint8_t chunk_len =
-          (ndef_file_length - write_offset > kWriteChunkSize)
-              ? kWriteChunkSize
+          (ndef_file_length - write_offset > NDEF_WRITE_CHUNK)
+              ? NDEF_WRITE_CHUNK
               : static_cast<uint8_t>(ndef_file_length - write_offset);
       if (!nfc->ntag424_WriteData(2, filedata + write_offset, chunk_len,
                                    static_cast<int>(write_offset))) {
@@ -721,7 +741,7 @@ public:
     // provisioned (factory = 0x00). Keys changed in reverse order (4→0)
     // to avoid losing access mid-operation.
     // Ref: NT4H2421Gx datasheet §7.3.2, AN12196 §6.3
-    if (!changeAllKeys(0x01)) {
+    if (!changeAllKeys(KEY_VER_PROVISIONED)) {
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
@@ -731,7 +751,7 @@ public:
     // is unreliable here (returns 0x7E for some keys in auth'd session).
     selectNtagApplicationFiles();
     DBG_PRINTLN(F("[burn] Post-burn verification..."));
-    const uint8_t authed = nfc->ntag424_Authenticate(new_keys.keys[0], 0, 0x71);
+    const uint8_t authed = nfc->ntag424_Authenticate(new_keys.keys[0], 0, AUTH_CMD_EV2_FIRST);
     if (authed != 1) {
       DBG_PRINTLN(F("[burn] VERIFY FAIL: new-key auth failed"));
       set_job_status_id(JOBSTATUS_ERROR);
@@ -743,7 +763,7 @@ public:
   }
 
   uint8_t resetNdefOnly() {
-    uint8_t uid[12] = {0};
+    uint8_t uid[MAX_UID_LEN] = {0};
     uint8_t uidLength = 0;
 
     set_job_status_id(JOBSTATUS_WAITING);
@@ -767,7 +787,7 @@ public:
     }
 
     const uint8_t kv = bolty_get_key_version(nfc, 0);
-    if (kv != 0x00) {
+    if (kv != KEY_VER_FACTORY) {
       DBG_PRINT(F("ABORT: Key 0 version is 0x"));
       if (kv < 0x10) {
         DBG_PRINT(F("0"));
@@ -781,8 +801,8 @@ public:
     DBG_PRINTLN(F("Pre-reset check OK — key 0 is factory default"));
     selectNtagApplicationFiles();
 
-    uint8_t zero_key[16] = {0};
-    if (nfc->ntag424_Authenticate(zero_key, 0, 0x71) != 1) {
+    uint8_t zero_key[AES_KEY_LEN] = {0};
+    if (nfc->ntag424_Authenticate(zero_key, 0, AUTH_CMD_EV2_FIRST) != 1) {
       DBG_PRINTLN(F("Authentication with zero key FAILED."));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
@@ -799,7 +819,7 @@ public:
                                     (uint8_t)NTAG424_COMM_MODE_FULL);
 
     selectNtagApplicationFiles();
-    nfc->ntag424_Authenticate(zero_key, 0, 0x71);
+    nfc->ntag424_Authenticate(zero_key, 0, AUTH_CMD_EV2_FIRST);
     if (nfc->ntag424_FormatNDEF()) {
       DBG_PRINTLN(F("NDEF formatted OK."));
     } else {
@@ -808,7 +828,7 @@ public:
     job_perc = 100;
 
     selectNtagApplicationFiles();
-    const uint8_t verify_auth = nfc->ntag424_Authenticate(zero_key, 0, 0x71);
+    const uint8_t verify_auth = nfc->ntag424_Authenticate(zero_key, 0, AUTH_CMD_EV2_FIRST);
     if (verify_auth == 1) {
       DBG_PRINTLN(F("Verify auth OK — keys unchanged."));
     } else {
@@ -824,8 +844,8 @@ public:
   // Updates cur_keys.keys[] if probing finds a working key.
   KeyVerifyResult verify_all_keys() {
     KeyVerifyResult vr = {};
-    memset(vr.key_versions, 0xFF, 5);
-    uint8_t zero_key[16] = {0};
+    memset(vr.key_versions, KEY_VER_READ_FAILED, 5);
+    uint8_t zero_key[AES_KEY_LEN] = {0};
 
     DBG_PRINTLN(F("[verify] Reading key versions..."));
     for (int i = 0; i < 5; i++) {
@@ -834,7 +854,7 @@ public:
 
     vr.all_factory = true;
     for (int i = 0; i < 5; i++) {
-      if (vr.key_versions[i] != 0x00) { vr.all_factory = false; break; }
+      if (vr.key_versions[i] != KEY_VER_FACTORY) { vr.all_factory = false; break; }
     }
 
     if (vr.all_factory) {
@@ -853,8 +873,8 @@ public:
       if (vr.key_versions[i] < 0x10) DBG_PRINT(F("0"));
       DBG_PRINT(vr.key_versions[i], HEX);
 
-      if (vr.key_versions[i] == 0x00) {
-        if (nfc->ntag424_Authenticate(zero_key, i, 0x71) == 1) {
+      if (vr.key_versions[i] == KEY_VER_FACTORY) {
+        if (nfc->ntag424_Authenticate(zero_key, i, AUTH_CMD_EV2_FIRST) == 1) {
           vr.verified[i] = true;
           DBG_PRINTLN(F(" FACTORY-OK"));
         } else {
@@ -865,7 +885,7 @@ public:
       }
 
       // Provisioned slot — try explicit key first.
-      if (nfc->ntag424_Authenticate(cur_keys.keys[i], i, 0x71) == 1) {
+      if (nfc->ntag424_Authenticate(cur_keys.keys[i], i, AUTH_CMD_EV2_FIRST) == 1) {
         vr.verified[i] = true;
         DBG_PRINTLN(F(" AUTHENTICATED"));
         continue;
@@ -876,20 +896,20 @@ public:
         const uint8_t lnbits_src = (i == 3) ? 1 : 2;
         DBG_PRINT(F(" probing..."));
         selectNtagApplicationFiles();
-        if (nfc->ntag424_Authenticate(cur_keys.keys[lnbits_src], i, 0x71) == 1) {
+        if (nfc->ntag424_Authenticate(cur_keys.keys[lnbits_src], i, AUTH_CMD_EV2_FIRST) == 1) {
           DBG_PRINT(F(" K"));
           DBG_PRINT(i);
           DBG_PRINT(F("=K"));
           DBG_PRINT(lnbits_src);
           DBG_PRINTLN(F(" (LNBits) OK"));
-          memcpy(cur_keys.keys[i], cur_keys.keys[lnbits_src], 16);
+          memcpy(cur_keys.keys[i], cur_keys.keys[lnbits_src], AES_KEY_LEN);
           vr.verified[i] = true;
           continue;
         }
         selectNtagApplicationFiles();
-        if (nfc->ntag424_Authenticate(zero_key, i, 0x71) == 1) {
+        if (nfc->ntag424_Authenticate(zero_key, i, AUTH_CMD_EV2_FIRST) == 1) {
           DBG_PRINTLN(F(" zeros OK"));
-          memset(cur_keys.keys[i], 0, 16);
+          memset(cur_keys.keys[i], 0, AES_KEY_LEN);
           vr.verified[i] = true;
           continue;
         }
@@ -920,7 +940,7 @@ public:
   }
 
   uint8_t wipe() {
-    uint8_t uid[12] = {0};
+    uint8_t uid[MAX_UID_LEN] = {0};
     uint8_t uidLength = 0;
     set_job_status_id(JOBSTATUS_WAITING);
 
@@ -956,8 +976,8 @@ public:
 
     // Re-auth K0 for wipe ops (verify cycle may have left non-K0 session active).
     selectNtagApplicationFiles();
-    if (nfc->ntag424_Authenticate(cur_keys.keys[0], 0, 0x71) != 1) {
-      uint8_t chk_uid[12] = {0};
+    if (nfc->ntag424_Authenticate(cur_keys.keys[0], 0, AUTH_CMD_EV2_FIRST) != 1) {
+      uint8_t chk_uid[MAX_UID_LEN] = {0};
       uint8_t chk_uid_len = 0;
       if (bolty_read_passive_target(nfc, chk_uid, &chk_uid_len)) {
         DBG_PRINTLN(F("Post-verify K0 re-auth FAILED — card present but key rejected"));
@@ -986,7 +1006,7 @@ public:
 
     // Reset all keys to factory defaults (key version 0x00 = factory state).
     // Ref: NT4H2421Gx datasheet §7.3.2
-    if (!changeAllKeys(0x00)) {
+    if (!changeAllKeys(KEY_VER_FACTORY)) {
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
     }
@@ -998,7 +1018,7 @@ public:
     //   the active authentication is changed, the PICC terminates the
     //   transaction (SDM state is reset)."
     selectNtagApplicationFiles();
-    if (nfc->ntag424_Authenticate(new_keys.keys[0], 0, 0x71) != 1) {
+    if (nfc->ntag424_Authenticate(new_keys.keys[0], 0, AUTH_CMD_EV2_FIRST) != 1) {
       DBG_PRINTLN("Re-authentication after key change failed.");
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
@@ -1017,8 +1037,8 @@ public:
     // GetKeyVersion is unreliable in auth'd session (returns 0x7E/0x40).
     selectNtagApplicationFiles();
     DBG_PRINTLN(F("[wipe] Post-wipe verification..."));
-    uint8_t zero_key[16] = {0};
-    const uint8_t authed = nfc->ntag424_Authenticate(zero_key, 0, 0x71);
+    uint8_t zero_key[AES_KEY_LEN] = {0};
+    const uint8_t authed = nfc->ntag424_Authenticate(zero_key, 0, AUTH_CMD_EV2_FIRST);
     if (authed != 1) {
       DBG_PRINTLN(F("[wipe] VERIFY FAIL: zero-key auth failed — wipe did not succeed"));
       set_job_status_id(JOBSTATUS_ERROR);
