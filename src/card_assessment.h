@@ -24,6 +24,7 @@ static void print_deterministic_boltcard_check(BoltyNfcReader *nfc,
                                                const uint8_t *uid,
                                                uint8_t uid_len,
                                                const char *uri) {
+  char key_hex[(AES_KEY_LEN * 2) + 1] = {0};
   Serial.println(F("[inspect] --- Deterministic Key Derivation Check ---"));
 
   if (uid_len != 7) {
@@ -131,15 +132,20 @@ static void print_deterministic_boltcard_check(BoltyNfcReader *nfc,
       Serial.println(F("[inspect]   It is still not a guarantee that authenticate or wipe will succeed on this tag."));
       DBG_PRINTLN(F("[inspect]   Suggested keys command:"));
       DBG_PRINT(F("[inspect]   keys "));
-      DBG_PRINT(convertIntToHex(matched_keys[0], AES_KEY_LEN));
+      write_hex_to_buf(key_hex, sizeof(key_hex), matched_keys[0], AES_KEY_LEN);
+      DBG_PRINT(key_hex);
       DBG_PRINT(F(" "));
-      DBG_PRINT(convertIntToHex(matched_keys[1], AES_KEY_LEN));
+      write_hex_to_buf(key_hex, sizeof(key_hex), matched_keys[1], AES_KEY_LEN);
+      DBG_PRINT(key_hex);
       DBG_PRINT(F(" "));
-      DBG_PRINT(convertIntToHex(matched_keys[2], AES_KEY_LEN));
+      write_hex_to_buf(key_hex, sizeof(key_hex), matched_keys[2], AES_KEY_LEN);
+      DBG_PRINT(key_hex);
       DBG_PRINT(F(" "));
-      DBG_PRINT(convertIntToHex(matched_keys[3], AES_KEY_LEN));
+      write_hex_to_buf(key_hex, sizeof(key_hex), matched_keys[3], AES_KEY_LEN);
+      DBG_PRINT(key_hex);
       DBG_PRINT(F(" "));
-      DBG_PRINTLN(convertIntToHex(matched_keys[4], AES_KEY_LEN));
+      write_hex_to_buf(key_hex, sizeof(key_hex), matched_keys[4], AES_KEY_LEN);
+      DBG_PRINTLN(key_hex);
     } else {
       Serial.println(F("[inspect]   K1 matched, but tested deterministic K2 versions did not validate c=."));
       Serial.println(F("[inspect]   This is still a strong indicator that we probably know the issuer key and can likely recover the card more easily."));
@@ -151,13 +157,6 @@ static void print_deterministic_boltcard_check(BoltyNfcReader *nfc,
   } else if (!any_full_match) {
     Serial.println(F("[inspect] Deterministic read-only verification found a K1 match, but no full K2/c= match for the tested versions."));
   }
-}
-
-static void print_deterministic_boltcard_check(BoltyNfcReader *nfc,
-                                               const uint8_t *uid,
-                                               uint8_t uid_len,
-                                               const String &uri) {
-  print_deterministic_boltcard_check(nfc, uid, uid_len, uri.c_str());
 }
 
 // Perform full read-only card state assessment.

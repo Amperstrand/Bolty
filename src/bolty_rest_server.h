@@ -109,8 +109,8 @@ static esp_err_t rest_get_status(httpd_req_t *req) {
     "{\"ok\":true,\"hw_ready\":%s,\"uid\":\"%s\",\"job\":\"%s\","
     "\"card_name\":\"%s\",\"url\":\"%s\"}",
     bolty_hw_ready ? "true" : "false",
-    bolt.getScannedUid().c_str(),
-    bolt.get_job_status().c_str(),
+    bolt.getScannedUid(),
+    bolt.get_job_status(),
     mBoltConfig.card_name,
     mBoltConfig.url);
   return _rest_json(req, json);
@@ -275,7 +275,7 @@ static esp_err_t rest_post_burn(httpd_req_t *req) {
   uint8_t result;
   uint32_t t0 = millis();
   do {
-    result = bolt.burn(String(mBoltConfig.url));
+    result = bolt.burn(mBoltConfig.url);
     if (millis() - t0 > REST_OP_TIMEOUT_MS) {
       serial_cmd_active = false;
       return _rest_error(req, "Timeout (30s)");
@@ -385,7 +385,7 @@ static esp_err_t rest_get_job(httpd_req_t *req) {
   char json[128];
   snprintf(json, sizeof(json),
     "{\"ok\":true,\"status\":\"%s\",\"id\":%u,\"busy\":%s}",
-    bolt.get_job_status().c_str(),
+    bolt.get_job_status(),
     bolt.get_job_status_id(),
     serial_cmd_active ? "true" : "false");
   return _rest_json(req, json);

@@ -88,7 +88,7 @@ static const uint8_t FILE_SETTINGS_NO_SDM[] = {0x00, 0x00, FILE_ACCESS_STANDARD}
 // Factory default key — all zeros. Used for blank/unprovisioned cards.
 static const uint8_t ZERO_KEY[AES_KEY_LEN] = {0};
 
-static String boltstatustext[7] = {
+static const char *boltstatustext[7] = {
     "idle",          "waiting for nfc-tag..",  "provisioning data..",
     "wiping data..", "done - remove the card", "error",
     "guard rejected - card not in expected state",
@@ -113,20 +113,10 @@ struct sBoltConfig {
   bool wifi_probe_enabled;
 };
 
-inline String convertIntToHex(const uint8_t *input, uint8_t len) {
-  String ret = "";
-  for (uint8_t i = 0; i < len; i++) {
-    char hexChar[3];
-    sprintf(hexChar, "%02X", input[i]);
-    ret += hexChar;
-  }
-  return ret;
-}
-
 // Convert byte array to uppercase hex string in a pre-allocated buffer.
 // Returns pointer to the null terminator (one past last written char).
 // Buffer must have at least (2*len + 1) bytes.
-// Use this instead of convertIntToHex() to avoid Arduino String heap allocation.
+// Use this helper to avoid Arduino String heap allocation when formatting hex.
 inline char *write_hex_to_buf(char *buf, size_t buf_size, const uint8_t *data,
                               uint8_t len) {
   const size_t needed = (size_t)len * 2 + 1;
@@ -333,7 +323,7 @@ public:
   static const uint8_t MAX_SCAN_FAILURES = 5;
   static const unsigned long REINIT_BACKOFF_MS = 30000;
   unsigned long _last_reader_reinit_ms = 0;
-  String last_scanned_uid;
+  char last_scanned_uid[25] = {0};  // Max UID: 12 bytes * 2 hex chars + null
   long lastscan = 0;
 
 #if BOLTY_NFC_BACKEND_MFRC522
@@ -488,8 +478,9 @@ public:
     return true;
   }
 
-  void setKey(uint8_t keys[AES_KEY_LEN], String key) {
-    for (int i = 0; i < key.length(); i += 2) {
+  void setKey(uint8_t keys[AES_KEY_LEN], const char *key) {
+    const size_t len = strlen(key);
+    for (size_t i = 0; i + 1 < len; i += 2) {
       uint8_t ki = (i / 2);
       uint8_t upper = (convertCharToHex(key[i]) << 4);
       uint8_t lower = (convertCharToHex(key[i + 1]));
@@ -616,7 +607,7 @@ public:
 #endif
   }
 
-  String get_job_status() { return boltstatustext[job_status]; }
+  const char *get_job_status() { return boltstatustext[job_status]; }
   uint8_t get_job_perc() { return job_perc; }
   uint8_t get_job_status_id() { return job_status; }
 
@@ -636,7 +627,8 @@ public:
     tft.setFreeFont(&FreeSans9pt7b);
     tft.setTextColor(APPWHITE);
     tft.fillRect(0, -3 + (3 * 23), tft.width(), 21, statcolor);
-    displayTextCentered(-3 + (4 * 21), get_job_status());
+    // TODO(Wave B7): remove temporary String wrapper once GUI text APIs accept const char*.
+    displayTextCentered(-3 + (4 * 21), String(get_job_status()));
     tft.setTextColor(APPBLACK);
 #else
     DBG_PRINT("[status] ");
@@ -648,7 +640,7 @@ public:
     uint8_t uid[MAX_UID_LEN] = {0};
     uint8_t uidLength = 0;
     if ((millis() - lastscan) > 2000) {
-      last_scanned_uid = "";
+      last_scanned_uid[0] = '\0';
     }
 
     const bool success = bolty_read_passive_target(nfc, uid, &uidLength);
@@ -657,7 +649,7 @@ public:
       bolty_print_hex(nfc, uid, uidLength);
       if (((uidLength == 7) || (uidLength == 4)) && nfc->ntag424_isNTAG424()) {
         lastscan = millis();
-        last_scanned_uid = convertIntToHex(uid, uidLength);
+        write_hex_to_buf(last_scanned_uid, sizeof(last_scanned_uid), uid, uidLength);
         return true;
       }
     } else {
@@ -674,7 +666,7 @@ public:
     return false;
   }
 
-  String getScannedUid() { return last_scanned_uid; }
+  const char *getScannedUid() const { return last_scanned_uid; }
 
   // Max URL length: NDEF file = 256 bytes. Total message = 7 (header) + url_len
   // + 61 (SDM "?p=32hex&c=16hex"). Plus 2 for NLEN. Max url_len = 256 - 70 = 186.
@@ -691,10 +683,11 @@ public:
   // Ref: NT4H2421Gx datasheet §7.3.1 (Authenticate), §7.3.2 (ChangeKey),
   //      §7.6.2 (ChangeFileSettings), §8.7.2 (SDM configuration),
   //      NFC Forum NDEF §3.2 (record format), boltcard SPEC (LNURL/SDM URL format)
-  uint8_t burn(String lnurl) {
-    if ((int)lnurl.length() > MAX_URL_LENGTH) {
+  uint8_t burn(const char *lnurl) {
+    const size_t lnurl_len = strlen(lnurl);
+    if ((int)lnurl_len > MAX_URL_LENGTH) {
       DBG_PRINT(F("[burn] URL too long: "));
-      DBG_PRINT(lnurl.length());
+      DBG_PRINT(lnurl_len);
       DBG_PRINT(F(" bytes (max "));
       DBG_PRINT(MAX_URL_LENGTH);
       DBG_PRINTLN(F(")"));
@@ -749,20 +742,29 @@ public:
     // PICC data offset: 7 (NDEF header) + lnurl_length + "?p=" (2) + 16*2 hex digits
     // This tells the tag where to inject the UID+read counter during SDM.
     // Ref: NT4H2421Gx datasheet §8.7.2, SDM PICCDataOffset
-    const int piccDataOffset = lnurl.length() + 10;
+    const int piccDataOffset = lnurl_len + 10;
     // SDM MAC offset: piccDataOffset + UID_hex(14) + read_ctr_hex(6)
     // = lnurl_length + 10 + 14 + 6 + "&c="(3) = lnurl_length + 33
     // But we account for the full "?p=..." + "&c=..." structure:
     // lnurl + "?p=" (2) + 32 hex chars + "&c=" (3) + 16 hex chars
     // The MAC is appended at the end of the 16 hex c= placeholder.
     // Net: lnurl_length + 45
-    const int sdmMacOffset = lnurl.length() + 45;
+    const int sdmMacOffset = lnurl_len + 45;
     // Bolt card LNURL placeholder: p=32-hex-char PICC data placeholder,
     // c=16-hex-char MAC placeholder. These get replaced by the tag's
     // Secure Dynamic Messaging (SDM) during read.
     // Ref: bolt-card specification, NT4H2421Gx §8.7
-    lnurl += "?p=00000000000000000000000000000000&c=0000000000000000";
-    const uint8_t len = lnurl.length();
+    const char sdm_suffix[] = "?p=00000000000000000000000000000000&c=0000000000000000";
+    char full_url[256];
+    const size_t full_len = lnurl_len + strlen(sdm_suffix);
+    if (full_len + 1 > sizeof(full_url)) {
+      DBG_PRINTLN(F("[burn] URL + SDM suffix exceeds buffer"));
+      set_job_status_id(JOBSTATUS_ERROR);
+      return job_status;
+    }
+    memcpy(full_url, lnurl, lnurl_len);
+    memcpy(full_url + lnurl_len, sdm_suffix, strlen(sdm_suffix) + 1);
+    const uint8_t len = (uint8_t)full_len;
     // NDEF Record Header — NFC Forum NDEF specification §3.2
     // Byte 0: 0x00 = MB=0, ME=0 (more records follow; actually this IS the
     //         only record but we set MB/ME in byte 2's TNF)
@@ -789,7 +791,7 @@ public:
       return job_status;
     }
     memcpy(filedata, ndefheader, sizeof(ndefheader));
-    memcpy(filedata + sizeof(ndefheader), lnurl.c_str(), len);
+    memcpy(filedata + sizeof(ndefheader), full_url, len);
     const size_t ndef_file_length = len + sizeof(ndefheader);
 
     bool ndef_write_ok = true;

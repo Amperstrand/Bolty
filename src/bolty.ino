@@ -697,7 +697,7 @@ void app_keysetup_loop() {
     lasttime = millis();
     if (bolty_hw_ready) {
       bolt.scanUID();
-      app_message = bolt.getScannedUid();
+      app_message = String(bolt.getScannedUid());
     }
     if (app_message == "") {
       app_message = default_app_message;
@@ -757,8 +757,7 @@ void APP_BOLTBURN_loop() {
   Interval = 100;
   if (bolty_hw_ready) {
     bolt.loadKeysForBurn(mBoltConfig);
-    String lnurl = String(mBoltConfig.url);
-    uint8_t burn_result = bolt.burn(lnurl);
+    uint8_t burn_result = bolt.burn(mBoltConfig.url);
     if (burn_result != JOBSTATUS_WAITING) {
       led_set_job_status(bolt.get_job_status_id());
       previousMillis = millis();
@@ -1425,7 +1424,7 @@ void setup(void) {
   AsyncCallbackJsonWebHandler *handler = new AsyncCallbackJsonWebHandler(
       "/status", [](AsyncWebServerRequest *request, JsonVariant &json) {
         request->send(200, "application/json",
-                      "{\"status\":\"" + bolt.get_job_status() +
+                      "{\"status\":\"" + String(bolt.get_job_status()) +
                           "\",\"app\":\"" + app_active + "\",\"cnn\":\"" +
                           (active_bolt_config + 1) + "\"}");
       });
@@ -1435,7 +1434,7 @@ void setup(void) {
   AsyncCallbackJsonWebHandler *handler_uid = new AsyncCallbackJsonWebHandler(
       "/uid", [](AsyncWebServerRequest *request, JsonVariant &json) {
         request->send(200, "application/json",
-                      "{\"uid\":\"" + bolt.getScannedUid() + "\"}");
+                      "{\"uid\":\"" + String(bolt.getScannedUid()) + "\"}");
       });
 
   server.addHandler(handler_uid);

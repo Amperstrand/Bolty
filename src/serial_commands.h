@@ -101,6 +101,7 @@ void serial_print_help() {
 }
 
 void serial_print_status() {
+  char issuer_key_hex[(AES_KEY_LEN * 2) + 1] = {0};
   Serial.println();
   Serial.print(F("  NFC HW: ")); Serial.println(bolty_hw_ready ? F("ready") : F("NOT ready"));
   Serial.print(F("  Last UID: ")); Serial.println(bolt.getScannedUid());
@@ -114,7 +115,8 @@ void serial_print_status() {
     DBG_PRINT(F("  k3: ")); DBG_PRINTLN(mBoltConfig.k3);
     DBG_PRINT(F("  k4: ")); DBG_PRINTLN(mBoltConfig.k4);
     DBG_PRINT(F("  Issuer key: "));
-    DBG_PRINTLN(convertIntToHex(current_issuer_key, AES_KEY_LEN));
+    write_hex_to_buf(issuer_key_hex, sizeof(issuer_key_hex), current_issuer_key, AES_KEY_LEN);
+    DBG_PRINTLN(issuer_key_hex);
   } else {
     DBG_PRINT(F("  k0: ")); DBG_PRINTLN(mBoltConfig.k0);
     DBG_PRINT(F("  k1: ")); DBG_PRINTLN(mBoltConfig.k1);
@@ -236,7 +238,7 @@ void handle_ndef() {
       uint8_t redet_uid_len = 0;
       if (bolty_read_passive_target(bolt.nfc, redet_uid, &redet_uid_len)) {
         uint8_t k3_bytes[AES_KEY_LEN] = {0};
-        bolt.setKey(k3_bytes, String(mBoltConfig.k3));
+        bolt.setKey(k3_bytes, mBoltConfig.k3);
         if (bolt.nfc->ntag424_Authenticate(k3_bytes, 3, AUTH_CMD_EV2_FIRST) == 1) {
           uint8_t raw[64] = {0};
           uint8_t rlen = bolt.nfc->ntag424_ReadData(raw, 2, 0, sizeof(raw));
@@ -363,7 +365,9 @@ static InspectCardInfo inspect_card_info(const CardTapResult &tap) {
   Serial.print(F("[inspect] UID: "));
   bolty_print_hex(bolt.nfc, tap.uid, tap.uid_len);
   Serial.print(F("[inspect] UID compact: "));
-  Serial.println(convertIntToHex(tap.uid, tap.uid_len));
+  char uid_hex[25] = {0};
+  write_hex_to_buf(uid_hex, sizeof(uid_hex), tap.uid, tap.uid_len);
+  Serial.println(uid_hex);
   delay(50);
 
   Serial.println(F("[inspect] --- Version / Type ---"));
@@ -530,7 +534,9 @@ static bool inspect_match_issuer(const CardTapResult &tap,
   }
 
   DBG_PRINT(F("[inspect] Issuer key "));
-  DBG_PRINT(convertIntToHex(current_issuer_key, AES_KEY_LEN));
+  char issuer_key_hex[(AES_KEY_LEN * 2) + 1] = {0};
+  write_hex_to_buf(issuer_key_hex, sizeof(issuer_key_hex), current_issuer_key, AES_KEY_LEN);
+  DBG_PRINT(issuer_key_hex);
   DBG_PRINT(F(" -> K1 decrypt: "));
   DBG_PRINTLN(issuer_k1_match ? F("MATCH") : F("NO MATCH"));
 
@@ -641,7 +647,7 @@ static void inspect_ndef_content(const CardTapResult &tap) {
     uint8_t redet_uid_len = 0;
     if (bolty_read_passive_target(bolt.nfc, redet_uid, &redet_uid_len)) {
       uint8_t k3_bytes[AES_KEY_LEN] = {0};
-      bolt.setKey(k3_bytes, String(mBoltConfig.k3));
+      bolt.setKey(k3_bytes, mBoltConfig.k3);
       if (bolt.nfc->ntag424_Authenticate(k3_bytes, 3, AUTH_CMD_EV2_FIRST) == 1) {
         uint8_t raw[64] = {0};
         uint8_t rlen = bolt.nfc->ntag424_ReadData(raw, 2, 0, sizeof(raw));
@@ -849,8 +855,10 @@ void handle_ver() {
 
 void handle_issuer() {
   if (has_issuer_key) {
+    char issuer_key_hex[(AES_KEY_LEN * 2) + 1] = {0};
     DBG_PRINT(F("[issuer] Current issuer key: "));
-    DBG_PRINTLN(convertIntToHex(current_issuer_key, AES_KEY_LEN));
+    write_hex_to_buf(issuer_key_hex, sizeof(issuer_key_hex), current_issuer_key, AES_KEY_LEN);
+    DBG_PRINTLN(issuer_key_hex);
   } else {
     Serial.println(F("[issuer] No issuer key set"));
   }
@@ -1058,8 +1066,7 @@ void handle_burn() {
   if (!begin_card_command(F("[burn]"))) return;
   bolt.loadKeysForBurn(mBoltConfig);
   uint8_t result = wait_for_card(F("[burn] TIMEOUT — no card detected in 30s"), CARD_TAP_TIMEOUT_LONG_MS,
-                                 // TODO: remove String wrapper once bolt.burn accepts const char*.
-                                 [&]() { return bolt.burn(String(mBoltConfig.url)); });
+                                 [&]() { return bolt.burn(mBoltConfig.url); });
   if (result == JOBSTATUS_WAITING) {
     serial_cmd_active = false;
     led_blink(5, 100);
@@ -1191,8 +1198,7 @@ void handle_dummyburn() {
   bolt.new_keys = BoltcardKeys::allZeros();
   const char *lnurl = "https://dummy.test";
   uint8_t result = wait_for_card(F("[dummyburn] TIMEOUT — no card detected in 30s"), CARD_TAP_TIMEOUT_LONG_MS,
-                                 // TODO: remove String wrapper once bolt.burn accepts const char*.
-                                 [&]() { return bolt.burn(String(lnurl)); });
+                                 [&]() { return bolt.burn(lnurl); });
   if (result == JOBSTATUS_WAITING) {
     serial_cmd_active = false;
     led_blink(5, 100);

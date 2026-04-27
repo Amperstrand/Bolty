@@ -354,9 +354,7 @@ inline void store_hex_string(char *out, size_t out_size, const uint8_t *data,
   if (out == nullptr || out_size == 0 || data == nullptr) {
     return;
   }
-  String hex = convertIntToHex(data, len);
-  strncpy(out, hex.c_str(), out_size - 1);
-  out[out_size - 1] = '\0';
+  write_hex_to_buf(out, out_size, data, len);
 }
 
 inline void store_bolt_config_keys_from_bytes(sBoltConfig &config,
