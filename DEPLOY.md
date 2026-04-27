@@ -176,13 +176,26 @@ Type commands at 115200 baud over USB serial:
 - `help` — List all commands
 - `status` — Device and config status
 - `uid` — Scan card UID
-- `keyver` — Read key versions
-- `keys K0 K1 K2 K3 K4` — Set 5 hex keys
+- `keyver` — Read key versions for all 5 slots
+- `keys K0 K1 K2 K3 K4` — Set 5 hex keys (32 hex chars each)
 - `url <lnurl>` — Set URL for burn
-- `burn` — Burn card
-- `wipe` — Wipe card
+- `burn` — Burn card (writes keys + NDEF with SDM)
+- `wipe` — Wipe card (resets all keys to factory zero, clears NDEF)
+- `check` — Verify card has factory zero keys
+- `auth` — Authenticate with current K0
+- `recoverkey <slot> <old-key> [k0]` — Recover a single key slot to factory zero. Optional `k0` param for provisioned cards (defaults to zeros).
 - `ndef` — Read NDEF data
-- `check` — Verify card is blank
+- `diagnose` — Full card diagnostic
+
+### Card Lifecycle
+
+```
+Factory card → keys + url → burn → [PROVISIONED]
+     ↑                                    ↓
+     └── wipe ←── wipe ←─────────────────┘
+     
+     Any state → recoverkey <slot> <old-key> [k0] → per-slot recovery
+```
 
 ## Troubleshooting
 
