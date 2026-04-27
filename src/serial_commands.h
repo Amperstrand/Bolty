@@ -194,6 +194,15 @@ static CardTapResult wait_for_card(const __FlashStringHelper *timeout_msg,
   return tap;
 }
 
+static bool begin_card_command(const __FlashStringHelper *tag) {
+  if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return false; }
+  Serial.print(tag);
+  Serial.println(F(" Tap card now..."));
+  serial_cmd_active = true;
+  led_on();
+  return true;
+}
+
 template <typename Fn>
 static uint8_t wait_for_card(const __FlashStringHelper *timeout_msg,
                              unsigned long timeout_ms,
@@ -785,10 +794,7 @@ void handle_status() {
 }
 
 void handle_auth() {
-  if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
-  Serial.println(F("[auth] Tap card now..."));
-  serial_cmd_active = true;
-  led_on();
+  if (!begin_card_command(F("[auth]"))) return;
   bolt.setCurKeysFromHex(mBoltConfig.k0, mBoltConfig.k1, mBoltConfig.k2, mBoltConfig.k3, mBoltConfig.k4);
   Serial.print(F("[auth] Trying k0: "));
   for (int i = 0; i < AES_KEY_LEN; i++) { if (bolt.cur_keys.keys[0][i] < 0x10) Serial.print("0"); Serial.print(bolt.cur_keys.keys[0][i], HEX); }
@@ -836,10 +842,7 @@ void handle_auth() {
 // Sequence: SELECT AID (D2760000850101) → SELECT FILE (E104) →
 //           READ BINARY (offset=0, len=2) → READ BINARY (offset=2, len=nlen)
 void handle_ndef() {
-  if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
-  Serial.println(F("[ndef] Tap card now..."));
-  serial_cmd_active = true;
-  led_on();
+  if (!begin_card_command(F("[ndef]"))) return;
   CardTapResult tap = wait_for_card(nullptr);
   if (tap.found) {
     uint8_t ndef[NDEF_MAX_LEN] = {0};
@@ -894,14 +897,7 @@ ndef_fail:
 }
 
 void handle_picc() {
-  if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
-  if (strlen(mBoltConfig.k1) != HEX_KEY_LEN || strlen(mBoltConfig.k2) != HEX_KEY_LEN) {
-    Serial.println(F("[picc] Set k1 and k2 first (keys command)"));
-    return;
-  }
-  Serial.println(F("[picc] Tap card now..."));
-  serial_cmd_active = true;
-  led_on();
+  if (!begin_card_command(F("[picc]"))) return;
 
   CardTapResult tap = wait_for_card(F("[picc] TIMEOUT — no card detected"));
 
@@ -1309,10 +1305,7 @@ static void inspect_ndef_content(const CardTapResult &tap) {
 }
 
 void handle_inspect() {
-  if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
-  Serial.println(F("[inspect] Tap card now..."));
-  serial_cmd_active = true;
-  led_on();
+  if (!begin_card_command(F("[inspect]"))) return;
 
   CardTapResult tap = wait_for_card(F("[inspect] TIMEOUT"));
   if (!tap.found) return;
@@ -1339,11 +1332,7 @@ void handle_inspect() {
 }
 
 void handle_derivekeys() {
-  if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
-  Serial.println(F("[derivekeys] Tap card now..."));
-  Serial.println(F("[derivekeys] Read-only flow: inspect NDEF, verify p=/c=, and only then load keys into config."));
-  serial_cmd_active = true;
-  led_on();
+  if (!begin_card_command(F("[derivekeys]"))) return;
 
   CardTapResult tap = wait_for_card(F("[derivekeys] TIMEOUT"));
   if (!tap.found) return;
@@ -1667,12 +1656,7 @@ void handle_probe() {
 }
 
 void handle_burn() {
-  if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
-  if (strlen(mBoltConfig.url) == 0) { Serial.println(F("[error] No LNURL. Use: url <lnurl>")); return; }
-  if (strlen(mBoltConfig.k0) == 0) { Serial.println(F("[error] No keys. Use: keys <k0> <k1> <k2> <k3> <k4>")); return; }
-  Serial.println(F("[burn] Tap card now..."));
-  serial_cmd_active = true;
-  led_on();
+  if (!begin_card_command(F("[burn]"))) return;
   bolt.loadKeysForBurn(mBoltConfig);
   uint8_t result = wait_for_card(F("[burn] TIMEOUT — no card detected in 30s"), CARD_TAP_TIMEOUT_LONG_MS,
                                  [&]() { return bolt.burn(String(mBoltConfig.url)); });
@@ -1724,11 +1708,7 @@ void handle_burn() {
 }
 
 void handle_wipe() {
-  if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
-  if (strlen(mBoltConfig.k0) == 0) { Serial.println(F("[error] No keys. Use: keys <k0> <k1> <k2> <k3> <k4>")); return; }
-  Serial.println(F("[wipe] Tap card now..."));
-  serial_cmd_active = true;
-  led_on();
+  if (!begin_card_command(F("[wipe]"))) return;
   bolt.loadKeysForWipe(mBoltConfig);
   uint8_t result = wait_for_card(F("[wipe] TIMEOUT — no card detected in 30s"), CARD_TAP_TIMEOUT_LONG_MS,
                                  [&]() { return bolt.wipe(); });
@@ -1750,10 +1730,7 @@ void handle_wipe() {
 }
 
 void handle_keyver() {
-  if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
-  Serial.println(F("[keyver] Tap card now..."));
-  serial_cmd_active = true;
-  led_on();
+  if (!begin_card_command(F("[keyver]"))) return;
   CardTapResult tap = wait_for_card(F("[keyver] TIMEOUT"), F("[keyver] UID: "), CARD_TAP_TIMEOUT_MS, true);
   if (!tap.found) return;
   bool all_zero = true;
@@ -1785,10 +1762,7 @@ void handle_keyver() {
 }
 
 void handle_check() {
-  if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
-  Serial.println(F("[check] Tap card now..."));
-  serial_cmd_active = true;
-  led_on();
+  if (!begin_card_command(F("[check]"))) return;
   bolt.cur_keys = BoltcardKeys::allZeros();
   Serial.print(F("[check] Using zero key: "));
   for (int i = 0; i < AES_KEY_LEN; i++) { if (bolt.cur_keys.keys[0][i] < 0x10) Serial.print("0"); Serial.print(bolt.cur_keys.keys[0][i], HEX); }
@@ -1802,10 +1776,7 @@ void handle_check() {
 }
 
 void handle_dummyburn() {
-  if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
-  Serial.println(F("[dummyburn] Tap card now..."));
-  serial_cmd_active = true;
-  led_on();
+  if (!begin_card_command(F("[dummyburn]"))) return;
   bolt.cur_keys = BoltcardKeys::allZeros();
   bolt.new_keys = BoltcardKeys::allZeros();
   String lnurl = "https://dummy.test";
@@ -1826,11 +1797,7 @@ void handle_dummyburn() {
 }
 
 void handle_reset() {
-  if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
-  Serial.println(F("[reset] Tap card now..."));
-  Serial.println(F("[reset] Factory-key NDEF+SDM reset (keys unchanged)."));
-  serial_cmd_active = true;
-  led_on();
+  if (!begin_card_command(F("[reset]"))) return;
   uint8_t result = wait_for_card(F("[reset] TIMEOUT — no card detected in 30s"), CARD_TAP_TIMEOUT_LONG_MS,
                                  [&]() { return bolt.resetNdefOnly(); });
   if (result == JOBSTATUS_WAITING) {
@@ -1851,10 +1818,7 @@ void handle_reset() {
 }
 
 void handle_diagnose() {
-  if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
-  Serial.println(F("[diagnose] Tap card now..."));
-  serial_cmd_active = true;
-  led_on();
+  if (!begin_card_command(F("[diagnose]"))) return;
 
   CardTapResult tap = wait_for_card(F("[diagnose] TIMEOUT"), F("[diagnose] UID: "), CARD_TAP_TIMEOUT_MS, true);
   if (!tap.found) return;
