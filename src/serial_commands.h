@@ -187,6 +187,7 @@ static CardTapResult wait_for_card(const __FlashStringHelper *timeout_msg,
         Serial.println(timeout_msg);
       }
       serial_cmd_active = false;
+      led_blink(5, 100);
       return tap;
     }
   } while (!tap.found);
@@ -799,11 +800,7 @@ void handle_auth() {
   }
   Serial.println();
   CardTapResult tap = wait_for_card(F("[auth] TIMEOUT"), F("[auth] UID: "), CARD_TAP_TIMEOUT_MS, true);
-  if (!tap.found) {
-    serial_cmd_active = false;
-    led_blink(5, 100);
-    return;
-  }
+  if (!tap.found) return;
   Serial.println(F("[auth] About to authenticate..."));
   uint8_t result = bolt.nfc->ntag424_Authenticate(bolt.cur_keys.keys[0], 0, AUTH_CMD_EV2_FIRST);
   Serial.print(F("[auth] ntag424_Authenticate returned: "));
@@ -909,8 +906,6 @@ void handle_picc() {
   CardTapResult tap = wait_for_card(F("[picc] TIMEOUT — no card detected"));
 
   if (!tap.found) {
-    serial_cmd_active = false;
-    led_blink(5, 100);
     goto picc_done;
   }
 
@@ -1320,11 +1315,7 @@ void handle_inspect() {
   led_on();
 
   CardTapResult tap = wait_for_card(F("[inspect] TIMEOUT"));
-  if (!tap.found) {
-    serial_cmd_active = false;
-    led_blink(5, 100);
-    return;
-  }
+  if (!tap.found) return;
 
   InspectCardInfo card_info = inspect_card_info(tap);
   InspectKeyVersions key_info = inspect_key_versions();
@@ -1355,11 +1346,7 @@ void handle_derivekeys() {
   led_on();
 
   CardTapResult tap = wait_for_card(F("[derivekeys] TIMEOUT"));
-  if (!tap.found) {
-    serial_cmd_active = false;
-    led_blink(5, 100);
-    return;
-  }
+  if (!tap.found) return;
 
   Serial.print(F("[derivekeys] UID: "));
   bolty_print_hex(bolt.nfc, tap.uid, tap.uid_len);
@@ -1768,11 +1755,7 @@ void handle_keyver() {
   serial_cmd_active = true;
   led_on();
   CardTapResult tap = wait_for_card(F("[keyver] TIMEOUT"), F("[keyver] UID: "), CARD_TAP_TIMEOUT_MS, true);
-  if (!tap.found) {
-    serial_cmd_active = false;
-    led_blink(5, 100);
-    return;
-  }
+  if (!tap.found) return;
   bool all_zero = true;
   for (int k = 0; k < 5; k++) {
     uint8_t kv = bolty_get_key_version(bolt.nfc, k);
@@ -1811,11 +1794,7 @@ void handle_check() {
   for (int i = 0; i < AES_KEY_LEN; i++) { if (bolt.cur_keys.keys[0][i] < 0x10) Serial.print("0"); Serial.print(bolt.cur_keys.keys[0][i], HEX); }
   Serial.println();
   CardTapResult tap = wait_for_card(F("[check] TIMEOUT"), F("[check] UID: "), CARD_TAP_TIMEOUT_MS, true);
-  if (!tap.found) {
-    serial_cmd_active = false;
-    led_blink(5, 100);
-    return;
-  }
+  if (!tap.found) return;
   uint8_t result = bolt.nfc->ntag424_Authenticate(bolt.cur_keys.keys[0], 0, AUTH_CMD_EV2_FIRST);
   Serial.println(result == 1 ? F("[check] SUCCESS — card has factory zero keys") : F("[check] FAILED — card does NOT have factory keys"));
   led_blink(result == 1 ? 3 : 5, 100);
@@ -1878,11 +1857,7 @@ void handle_diagnose() {
   led_on();
 
   CardTapResult tap = wait_for_card(F("[diagnose] TIMEOUT"), F("[diagnose] UID: "), CARD_TAP_TIMEOUT_MS, true);
-  if (!tap.found) {
-    serial_cmd_active = false;
-    led_blink(5, 100);
-    return;
-  }
+  if (!tap.found) return;
 
   // Read all 5 key versions (PLAIN mode — no auth needed)
   Serial.println(F("[diagnose] --- Key Versions ---"));
@@ -2005,11 +1980,7 @@ void handle_recoverkey() {
   led_on();
 
   CardTapResult tap = wait_for_card(F("[recoverkey] TIMEOUT"), F("[recoverkey] UID: "), CARD_TAP_TIMEOUT_MS, true);
-  if (!tap.found) {
-    serial_cmd_active = false;
-    led_blink(5, 100);
-    return;
-  }
+  if (!tap.found) return;
   bolt.selectNtagApplicationFiles();
 
   uint8_t auth_rk = bolt.nfc->ntag424_Authenticate(auth_key, 0, AUTH_CMD_EV2_FIRST);
@@ -2058,11 +2029,7 @@ void handle_testck() {
 
   // Detect card
   CardTapResult tap = wait_for_card(F("[testck] TIMEOUT"), F("[testck] UID: "), CARD_TAP_TIMEOUT_MS, true);
-  if (!tap.found) {
-    serial_cmd_active = false;
-    led_blink(5, 100);
-    return;
-  }
+  if (!tap.found) return;
 
   uint8_t zero_key[AES_KEY_LEN] = {0};
   // Distinctive test value — not a real key, just for verification
