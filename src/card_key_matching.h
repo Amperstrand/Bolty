@@ -171,8 +171,8 @@ static bool deterministic_decrypt_p(BoltyNfcReader *nfc,
                             decrypted)) {
     return false;
   }
-  if (decrypted[0] != 0xC7) return false;
-  if (!crypto_memcmp(decrypted + 1, uid, 7)) return false;
+  if (decrypted[0] != PICC_FORMAT_BOLTCARD) return false;
+  if (!crypto_memcmp(decrypted + 1, uid, PICC_UID_BYTE_LEN)) return false;
   counter_out = decode_u24_le(decrypted + 8);
   return true;
 }
@@ -183,11 +183,8 @@ static bool deterministic_verify_cmac(BoltyNfcReader *nfc,
                                       uint32_t counter,
                                       const uint8_t expected_c[8]) {
   (void)nfc;
-  uint8_t sv2[AES_KEY_LEN] = {0x3C, 0xC3, 0x00, 0x01, 0x00, 0x80};
-  memcpy(sv2 + 6, uid, 7);
-  sv2[13] = (uint8_t)(counter & 0xFF);
-  sv2[14] = (uint8_t)((counter >> 8) & 0xFF);
-  sv2[15] = (uint8_t)((counter >> 16) & 0xFF);
+  uint8_t sv2[AES_KEY_LEN] = {};
+  sdm_build_sv2(uid, counter, sv2);
 
   uint8_t session_key[AES_KEY_LEN] = {0};
   AES128_CMAC(k2, sv2, sizeof(sv2), session_key);
@@ -208,7 +205,7 @@ static bool deterministic_try_known_matches(BoltyNfcReader *nfc,
                                             const String &uri,
                                             DeterministicBoltcardMatch &match) {
   memset(&match, 0, sizeof(match));
-  if (uid == nullptr || uid_len != 7 || uri.length() == 0) return false;
+  if (uid == nullptr || uid_len != PICC_UID_BYTE_LEN || uri.length() == 0) return false;
 
   String p_hex;
   if (!uri_get_query_param(uri, "p", p_hex)) return false;

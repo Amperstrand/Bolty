@@ -52,6 +52,26 @@ static const unsigned long CARD_TAP_TIMEOUT_LONG_MS = 30000;
 static const uint16_t NDEF_MAX_LEN = 256;
 static const uint8_t NDEF_WRITE_CHUNK = 47;
 
+// --- NTAG424 DNA File Numbers ---
+// Ref: NT4H2421Gx datasheet §8.6.4, Table 68
+static const uint8_t NTAG424_FILE_NDEF = 2;      // NDEF file (standard data file)
+
+// --- NDEF Record Header Constants ---
+// Ref: NFC Forum NDEF Technical Specification §3.2.1
+static const uint8_t NDEF_HEADER_SHORT = 0xD1;   // MB=1, ME=1, CF=0, SR=1, IL=0, TNF=0x01
+static const uint8_t NDEF_TYPE_URI = 0x55;       // NFC Well-Known Type "U" (URI record)
+static const uint8_t NDEF_URI_NO_PREFIX = 0x00;  // URI Identifier Code: no prepending
+
+// --- SDM File Settings Constants ---
+// Ref: NT4H2421Gx datasheet §7.6.2 Table 49 (ChangeFileSettings),
+//      §8.7.2 Table 71 (SDM configuration for NDEF file)
+static const uint8_t SDM_FILE_OPTION_SDM_ENABLED = 0x40;  // FileOption: SDM enabled (bit 6)
+static const uint8_t SDM_OPTIONS_FULL = 0xC1;             // UID mirror + ReadCnt mirror + CMAC + encrypt PICC data
+static const uint8_t SDM_ACCESS_FREE = 0xFF;              // SDMAccessRights: free read retrieval
+static const uint8_t SDM_COUNTER_RETR = 0x12;             // SDMCounterRetr: retrieve read counter
+static const uint8_t FILE_ACCESS_STANDARD = 0xE0;         // Write=K0, Read=free (bits: W=0xE=K0, R=0x0=free)
+static const uint8_t FILE_SETTINGS_NO_SDM[] = {0x00, 0x00, FILE_ACCESS_STANDARD};
+
 static String boltstatustext[7] = {
     "idle",          "waiting for nfc-tag..",  "provisioning data..",
     "wiping data..", "done - remove the card", "error",
@@ -641,7 +661,7 @@ public:
     }
     DBG_PRINTLN(F("Auth OK."));
 
-    const uint8_t uriIdentifier = 0;
+    const uint8_t uriIdentifier = NDEF_URI_NO_PREFIX;
     // PICC data offset: 7 (NDEF header) + lnurl_length + "?p=" (2) + 16*2 hex digits
     // This tells the tag where to inject the UID+read counter during SDM.
     // Ref: NT4H2421Gx datasheet §8.7.2, SDM PICCDataOffset
@@ -672,10 +692,10 @@ public:
     uint8_t ndefheader[7] = {
         0x0,
         static_cast<uint8_t>(len + 5),
-        0xD1,
+        NDEF_HEADER_SHORT,
         0x01,
         static_cast<uint8_t>(len + 1),
-        0x55,
+        NDEF_TYPE_URI,
         uriIdentifier,
     };
     uint8_t *filedata = (uint8_t *)malloc(len + sizeof(ndefheader));
@@ -702,8 +722,8 @@ public:
           (ndef_file_length - write_offset > NDEF_WRITE_CHUNK)
               ? NDEF_WRITE_CHUNK
               : static_cast<uint8_t>(ndef_file_length - write_offset);
-      if (!nfc->ntag424_WriteData(2, filedata + write_offset, chunk_len,
-                                   static_cast<int>(write_offset))) {
+      if (!nfc->ntag424_WriteData(NTAG424_FILE_NDEF, filedata + write_offset, chunk_len,
+                                    static_cast<int>(write_offset))) {
         ndef_write_ok = false;
         break;
       }
@@ -731,24 +751,24 @@ public:
     //   [9-11]  SDMMACInputOffset (3 bytes, LE) — MAC input location
     //   [12-14] SDMMACOffset (3 bytes, LE) — where SDM writes the CMAC
     // Ref: NT4H2421Gx datasheet §8.7.2 Table 71, bolt-card specification
-    uint8_t fileSettings[] = {0x40,
-                              0x00,
-                              0xE0,
-                              0xC1,
-                              0xFF,
-                              0x12,
-                              static_cast<uint8_t>(piccDataOffset & 0xff),
-                              static_cast<uint8_t>((piccDataOffset >> 8) & 0xff),
-                              static_cast<uint8_t>((piccDataOffset >> 16) & 0xff),
-                              static_cast<uint8_t>(sdmMacOffset & 0xff),
-                              static_cast<uint8_t>((sdmMacOffset >> 8) & 0xff),
-                              static_cast<uint8_t>((sdmMacOffset >> 16) & 0xff),
-                              static_cast<uint8_t>(sdmMacOffset & 0xff),
-                              static_cast<uint8_t>((sdmMacOffset >> 8) & 0xff),
-                              static_cast<uint8_t>((sdmMacOffset >> 16) & 0xff)};
-    if (!nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
-                                    (uint8_t)sizeof(fileSettings),
-                                    (uint8_t)NTAG424_COMM_MODE_FULL)) {
+    uint8_t fileSettings[] = {SDM_FILE_OPTION_SDM_ENABLED,
+                               0x00,
+                               FILE_ACCESS_STANDARD,
+                               SDM_OPTIONS_FULL,
+                               SDM_ACCESS_FREE,
+                               SDM_COUNTER_RETR,
+                               static_cast<uint8_t>(piccDataOffset & 0xff),
+                               static_cast<uint8_t>((piccDataOffset >> 8) & 0xff),
+                               static_cast<uint8_t>((piccDataOffset >> 16) & 0xff),
+                               static_cast<uint8_t>(sdmMacOffset & 0xff),
+                               static_cast<uint8_t>((sdmMacOffset >> 8) & 0xff),
+                               static_cast<uint8_t>((sdmMacOffset >> 16) & 0xff),
+                               static_cast<uint8_t>(sdmMacOffset & 0xff),
+                               static_cast<uint8_t>((sdmMacOffset >> 8) & 0xff),
+                               static_cast<uint8_t>((sdmMacOffset >> 16) & 0xff)};
+    if (!nfc->ntag424_ChangeFileSettings(NTAG424_FILE_NDEF, fileSettings,
+                                     (uint8_t)sizeof(fileSettings),
+                                     (uint8_t)NTAG424_COMM_MODE_FULL)) {
       DBG_PRINTLN(F("ChangeFileSettings (SDM enable) FAILED — aborting burn before key change"));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;
@@ -834,11 +854,11 @@ public:
 
     DBG_PRINTLN(F("Disabling SDM and resetting file settings..."));
     // Reset file 2 settings: disable SDM, keep Plain read/write access.
-    // {0x00, 0x00, 0xE0} = no SDM mirroring, free access, standard file.
+    // FILE_SETTINGS_NO_SDM = no SDM mirroring, free access, standard file.
     // Ref: NT4H2421Gx datasheet §7.6.2 Table 49
-    uint8_t fileSettings[] = {0x00, 0x00, 0xE0};
-    nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
-                                    (uint8_t)sizeof(fileSettings),
+    nfc->ntag424_ChangeFileSettings(NTAG424_FILE_NDEF,
+                                    (uint8_t *)FILE_SETTINGS_NO_SDM,
+                                    (uint8_t)sizeof(FILE_SETTINGS_NO_SDM),
                                     (uint8_t)NTAG424_COMM_MODE_FULL);
 
     selectNtagApplicationFiles();
@@ -999,12 +1019,12 @@ public:
     }
     DBG_PRINTLN("Disable Mirroring and SDM.");
     // Reset file 2 settings: disable SDM, keep Plain read/write access.
-    // {0x00, 0x00, 0xE0} = no SDM mirroring, free access, standard file.
+    // FILE_SETTINGS_NO_SDM = no SDM mirroring, free access, standard file.
     // Ref: NT4H2421Gx datasheet §7.6.2 Table 49
-    uint8_t fileSettings[] = {0x00, 0x00, 0xE0};
-    if (!nfc->ntag424_ChangeFileSettings((uint8_t)2, fileSettings,
-                                    (uint8_t)sizeof(fileSettings),
-                                    (uint8_t)NTAG424_COMM_MODE_FULL)) {
+    if (!nfc->ntag424_ChangeFileSettings(NTAG424_FILE_NDEF,
+                                     (uint8_t *)FILE_SETTINGS_NO_SDM,
+                                     (uint8_t)sizeof(FILE_SETTINGS_NO_SDM),
+                                     (uint8_t)NTAG424_COMM_MODE_FULL)) {
       DBG_PRINTLN(F("ChangeFileSettings (SDM disable) FAILED — aborting wipe before key change"));
       set_job_status_id(JOBSTATUS_ERROR);
       return job_status;

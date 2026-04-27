@@ -27,6 +27,46 @@
 #include "debug.h"
 #include "ntag424_crypto.h"
 
+// --- PICC Data Format Constants ---
+// Ref: AN12196 §4.7 "SDM for Metro", NT4H2421Gx datasheet §8.7.2
+//
+// Decrypted p= byte 0 (PICC data format byte):
+//   Bit 7 (0x80): UID present (7 bytes following)
+//   Bit 6 (0x40): Read counter present (3 bytes LE)
+//   Bits 2-0:      UID length / type indicator (0x07 = 7-byte UID)
+//   Standard boltcard format: 0xC7 = CMAC(1) + UID(1) + Counter(1) + UID_len(7)
+static const uint8_t PICC_FORMAT_BOLTCARD = 0xC7;
+static const uint8_t PICC_FLAG_HAS_UID = 0x80;
+static const uint8_t PICC_FLAG_HAS_COUNTER = 0x40;
+static const uint8_t PICC_UID_LEN_MASK = 0x07;
+static const uint8_t PICC_UID_BYTE_LEN = 7;    // NTAG424 DNA UID is always 7 bytes
+static const uint8_t PICC_COUNTER_LEN = 3;     // Read counter is 24-bit LE
+
+// --- SV2 Derivation Vector ---
+// Ref: AN12196 §4.7, NT4H2421Gx datasheet §8.7.2
+// SV2 is the "SesSDMFileReadMACKey" derivation input:
+//   Bytes 0-1: 0x3C, 0xC3 (SDM MAC derivation constant)
+//   Byte 2:    0x00 (RFU)
+//   Byte 3:    0x01 (SDM variant)
+//   Byte 4:    0x00 (RFU)
+//   Byte 5:    0x80 (CMAC output length indicator)
+//   Bytes 6-12:  UID[0..6]
+//   Bytes 13-15: ReadCounter[0..2] (LE)
+static const uint8_t SV2_HEADER[] = {0x3C, 0xC3, 0x00, 0x01, 0x00, 0x80};
+static const uint8_t SV2_UID_OFFSET = 6;
+static const uint8_t SV2_COUNTER_OFFSET = 13;
+
+// Build SV2 derivation vector for SDM MAC verification.
+// Ref: AN12196 §4.7, BTCPayServer.NTag424/Ntag424.cs (SesSDMFileReadMACKey)
+static inline void sdm_build_sv2(const uint8_t uid[7], uint32_t counter, uint8_t sv2_out[16]) {
+  memset(sv2_out, 0, 16);
+  memcpy(sv2_out, SV2_HEADER, sizeof(SV2_HEADER));
+  memcpy(sv2_out + SV2_UID_OFFSET, uid, PICC_UID_BYTE_LEN);
+  sv2_out[SV2_COUNTER_OFFSET] = (uint8_t)(counter & 0xFF);
+  sv2_out[SV2_COUNTER_OFFSET + 1] = (uint8_t)((counter >> 8) & 0xFF);
+  sv2_out[SV2_COUNTER_OFFSET + 2] = (uint8_t)((counter >> 16) & 0xFF);
+}
+
 struct PiccData {
   bool valid;
   uint8_t uid[7];
@@ -95,19 +135,19 @@ static inline bool picc_decrypt_p(const uint8_t k1[16], const char* p_hex, PiccD
   uint8_t decrypted[16];
   if (!ntag424_decrypt((uint8_t*)k1, 16, ciphertext, decrypted)) return false;
 
-  if (decrypted[0] != 0xC7) return false;
+  if (decrypted[0] != PICC_FORMAT_BOLTCARD) return false;
 
   memset(out, 0, sizeof(PiccData));
 
   uint8_t offset = 1;
-  bool has_uid = (decrypted[0] & 0x80) != 0;
-  bool has_counter = (decrypted[0] & 0x40) != 0;
+  bool has_uid = (decrypted[0] & PICC_FLAG_HAS_UID) != 0;
+  bool has_counter = (decrypted[0] & PICC_FLAG_HAS_COUNTER) != 0;
 
   if (has_uid) {
-    if ((decrypted[0] & 0x07) != 0x07) return false;
-    memcpy(out->uid, decrypted + offset, 7);
+    if ((decrypted[0] & PICC_UID_LEN_MASK) != PICC_UID_BYTE_LEN) return false;
+    memcpy(out->uid, decrypted + offset, PICC_UID_BYTE_LEN);
     out->has_uid = true;
-    offset += 7;
+    offset += PICC_UID_BYTE_LEN;
   }
 
   if (has_counter) {
@@ -126,17 +166,7 @@ static inline bool picc_verify_c(const uint8_t k2[16], const PiccData* picc, con
 
   // SesSDMFileReadMACKey: SV2 derivation vector
   uint8_t sv2[16];
-  memset(sv2, 0, sizeof(sv2));
-  sv2[0] = 0x3C;
-  sv2[1] = 0xC3;
-  sv2[2] = 0x00;
-  sv2[3] = 0x01;
-  sv2[4] = 0x00;
-  sv2[5] = 0x80;
-  memcpy(sv2 + 6, picc->uid, 7);
-  sv2[13] = (uint8_t)(picc->counter & 0xFF);
-  sv2[14] = (uint8_t)((picc->counter >> 8) & 0xFF);
-  sv2[15] = (uint8_t)((picc->counter >> 16) & 0xFF);
+  sdm_build_sv2(picc->uid, picc->counter, sv2);
 
   uint8_t derived_key[16];
   ntag424_cmac((uint8_t*)k2, sv2, 16, derived_key);
@@ -178,10 +208,10 @@ static inline void picc_print(const PiccData* picc) {
     return;
   }
   DBG_PRINT(F("[picc] UID: "));
-  for (int i = 0; i < 7; i++) {
+  for (int i = 0; i < PICC_UID_BYTE_LEN; i++) {
     if (picc->uid[i] < 0x10) DBG_PRINT('0');
     DBG_PRINT(picc->uid[i], HEX);
-    if (i < 6) DBG_PRINT(':');
+    if (i < PICC_UID_BYTE_LEN - 1) DBG_PRINT(':');
   }
   DBG_PRINT(F("  Counter: "));
   DBG_PRINTLN(picc->counter);

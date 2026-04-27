@@ -6,6 +6,11 @@
 //   IssuerKey (16 bytes) → CardKey → K0,K1,K2,K3,K4 + CardID
 //   PRF = AES-128-CMAC (NIST SP 800-38B)
 //
+// These tags are defined by the boltcard deterministic key derivation spec:
+//   https://github.com/boltcard/boltcard/blob/main/docs/DETERMINISTIC.md
+// PRF = AES-128-CMAC per NIST SP 800-38B.
+// NTAG424 DNA context and key usage are described in NXP AN12196.
+//
 // Key derivation constants (from spec):
 //   CardKey = CMAC(IssuerKey, 0x2d003f75 || UID[7] || Version_LE[4])
 //   K0      = CMAC(CardKey,  0x2d003f76)

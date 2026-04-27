@@ -6,6 +6,32 @@
 
 #include "bolt.h"
 
+// --- NTAG424 APDU Status Codes ---
+// Ref: NT4H2421Gx datasheet §9, Table 94-95 (Status and Error Codes)
+static const uint8_t SW1_NTAG_SUCCESS = 0x91;
+static const uint8_t SW1_ISO_69 = 0x69;
+
+static const uint8_t SW2_OK = 0x00;
+static const uint8_t SW2_AUTH_ERROR = 0xAE;
+static const uint8_t SW2_BOUNDARY_ERROR = 0xBE;
+static const uint8_t SW2_MEMORY_ERROR = 0xEE;
+static const uint8_t SW2_INTEGRITY_ERROR = 0x1E;
+static const uint8_t SW2_LENGTH_ERROR = 0x7E;
+static const uint8_t SW2_PERMISSION_DENIED = 0x9D;
+static const uint8_t SW2_COMMAND_ABORTED = 0xCA;
+static const uint8_t SW2_PARAMETER_ERROR = 0x9E;
+static const uint8_t SW2_NO_SUCH_KEY = 0x40;
+static const uint8_t SW2_AUTH_DELAY = 0xAD;
+static const uint8_t SW2_FILE_NOT_FOUND = 0xF0;
+
+static const uint8_t SW2_82_SECURITY_STATUS = 0x82;
+static const uint8_t SW2_85_CONDITIONS = 0x85;
+static const uint8_t SW2_88_REF_DATA_INVALID = 0x88;
+
+static const uint8_t SW1_6A_WRONG_PARAMS = 0x6A;
+static const uint8_t SW2_82_FILE_NOT_FOUND_ISO = 0x82;
+static const uint8_t SW2_86_INCORRECT_P1P2 = 0x86;
+
 // Constant-time comparison for secrets (MAC, UID, tokens).
 // Always compares all bytes regardless of mismatches to prevent timing attacks.
 inline bool crypto_memcmp(const void *a, const void *b, size_t len) {
@@ -34,52 +60,52 @@ inline void secure_memzero(void *ptr, size_t len) {
 }
 
 inline const char *ntag424_error_name(uint8_t sw1, uint8_t sw2) {
-  if (sw1 == 0x91) {
+  if (sw1 == SW1_NTAG_SUCCESS) {
     switch (sw2) {
-    case 0x00:
+    case SW2_OK:
       return "OK";
-    case 0xAE:
+    case SW2_AUTH_ERROR:
       return "AUTHENTICATION_ERROR";
-    case 0xBE:
+    case SW2_BOUNDARY_ERROR:
       return "BOUNDARY_ERROR";
-    case 0xEE:
+    case SW2_MEMORY_ERROR:
       return "MEMORY_ERROR";
-    case 0x1E:
+    case SW2_INTEGRITY_ERROR:
       return "INTEGRITY_ERROR";
-    case 0x7E:
+    case SW2_LENGTH_ERROR:
       return "LENGTH_ERROR";
-    case 0x9D:
+    case SW2_PERMISSION_DENIED:
       return "PERMISSION_DENIED";
-    case 0xCA:
+    case SW2_COMMAND_ABORTED:
       return "COMMAND_ABORTED";
-    case 0x9E:
+    case SW2_PARAMETER_ERROR:
       return "PARAMETER_ERROR";
-    case 0x40:
+    case SW2_NO_SUCH_KEY:
       return "NO_SUCH_KEY";
-    case 0xAD:
+    case SW2_AUTH_DELAY:
       return "AUTHENTICATION_DELAY";
-    case 0xF0:
+    case SW2_FILE_NOT_FOUND:
       return "FILE_NOT_FOUND";
     default:
       return "UNKNOWN_ERROR";
     }
   }
-  if (sw1 == 0x69) {
+  if (sw1 == SW1_ISO_69) {
     switch (sw2) {
-    case 0x82:
+    case SW2_82_SECURITY_STATUS:
       return "SECURITY_STATUS_NOT_SATISFIED";
-    case 0x85:
+    case SW2_85_CONDITIONS:
       return "CONDITIONS_NOT_SATISFIED";
-    case 0x88:
+    case SW2_88_REF_DATA_INVALID:
       return "REF_DATA_INVALID";
     default:
       return "UNKNOWN_ERROR";
     }
   }
-  if (sw1 == 0x6A && sw2 == 0x82) {
+  if (sw1 == SW1_6A_WRONG_PARAMS && sw2 == SW2_82_FILE_NOT_FOUND_ISO) {
     return "FILE_NOT_FOUND";
   }
-  if (sw1 == 0x6A && sw2 == 0x86) {
+  if (sw1 == SW1_6A_WRONG_PARAMS && sw2 == SW2_86_INCORRECT_P1P2) {
     return "INCORRECT_P1_P2";
   }
   return "UNKNOWN_ERROR";
@@ -107,13 +133,15 @@ inline bool ndef_extract_uri(const uint8_t *ndef, int len, String &uri) {
   }
 
   for (int i = 0; i <= len - 5; i++) {
-    if (ndef[i] == 0xD1 && ndef[i + 1] == 0x01 && ndef[i + 3] == 0x55) {
+    if (ndef[i] == NDEF_HEADER_SHORT && ndef[i + 1] == 0x01 &&
+        ndef[i + 3] == NDEF_TYPE_URI) {
       const int payload_len = ndef[i + 2];
       if (payload_len < 1 || i + 4 + payload_len > len) {
         return false;
       }
 
       const uint8_t prefix = ndef[i + 4];
+      // NFC Forum URI Identifier Codes, Ref: NFC Forum NDEF §3.2.2 Table 7
       switch (prefix) {
       case 0x00:
         uri = "";
