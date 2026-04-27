@@ -809,13 +809,13 @@ void handle_keys() {
   const String &cmd = g_serial_command;
   String args = cmd.substring(5);
   int s1 = args.indexOf(' ');
+  if (s1 < 0) { Serial.println(F("[error] Usage: keys <k0> <k1> <k2> <k3> <k4>")); return; }
   int s2 = args.indexOf(' ', s1 + 1);
+  if (s2 < 0) { Serial.println(F("[error] Usage: keys <k0> <k1> <k2> <k3> <k4>")); return; }
   int s3 = args.indexOf(' ', s2 + 1);
+  if (s3 < 0) { Serial.println(F("[error] Usage: keys <k0> <k1> <k2> <k3> <k4>")); return; }
   int s4 = args.indexOf(' ', s3 + 1);
-  if (s1 < 0 || s2 < 0 || s3 < 0 || s4 < 0) {
-    Serial.println(F("[error] Usage: keys <k0> <k1> <k2> <k3> <k4>"));
-    return;
-  }
+  if (s4 < 0) { Serial.println(F("[error] Usage: keys <k0> <k1> <k2> <k3> <k4>")); return; }
   String k0 = args.substring(0, s1);
   String k1 = args.substring(s1 + 1, s2);
   String k2 = args.substring(s2 + 1, s3);
@@ -827,11 +827,11 @@ void handle_keys() {
     Serial.println(F("[error] Each key must be exactly 32 hex chars"));
     return;
   }
-  strncpy(mBoltConfig.k0, k0.c_str(), 33);
-  strncpy(mBoltConfig.k1, k1.c_str(), 33);
-  strncpy(mBoltConfig.k2, k2.c_str(), 33);
-  strncpy(mBoltConfig.k3, k3.c_str(), 33);
-  strncpy(mBoltConfig.k4, k4.c_str(), 33);
+  safe_strcpy(mBoltConfig.k0, k0.c_str(), sizeof(mBoltConfig.k0));
+  safe_strcpy(mBoltConfig.k1, k1.c_str(), sizeof(mBoltConfig.k1));
+  safe_strcpy(mBoltConfig.k2, k2.c_str(), sizeof(mBoltConfig.k2));
+  safe_strcpy(mBoltConfig.k3, k3.c_str(), sizeof(mBoltConfig.k3));
+  safe_strcpy(mBoltConfig.k4, k4.c_str(), sizeof(mBoltConfig.k4));
   has_issuer_key = false;  // Mutual exclusion: keys overrides issuer
   Serial.println(F("[keys] Keys set"));
   Serial.print(F("  k0: ")); Serial.println(k0);
@@ -846,32 +846,32 @@ void handle_url() {
     Serial.println(F("[error] Usage: url <lnurl>"));
     return;
   }
-  strncpy(mBoltConfig.url, url.c_str(), sizeof(mBoltConfig.url));
+  safe_strcpy(mBoltConfig.url, url.c_str(), sizeof(mBoltConfig.url));
   if (url.startsWith("lnurlp://")) {
-    strncpy(mBoltConfig.card_mode, "pos", sizeof(mBoltConfig.card_mode));
+    safe_strcpy(mBoltConfig.card_mode, "pos", sizeof(mBoltConfig.card_mode));
   } else if (url.startsWith("https://")) {
-    strncpy(mBoltConfig.card_mode, "2fa", sizeof(mBoltConfig.card_mode));
+    safe_strcpy(mBoltConfig.card_mode, "2fa", sizeof(mBoltConfig.card_mode));
   } else {
-    strncpy(mBoltConfig.card_mode, "withdraw", sizeof(mBoltConfig.card_mode));
+    safe_strcpy(mBoltConfig.card_mode, "withdraw", sizeof(mBoltConfig.card_mode));
   }
   saveBoltConfig(active_bolt_config);
   Serial.print(F("[url] Set to: ")); Serial.println(url);
 }
 
 void handle_mode_pos() {
-  strncpy(mBoltConfig.card_mode, "pos", sizeof(mBoltConfig.card_mode));
+  safe_strcpy(mBoltConfig.card_mode, "pos", sizeof(mBoltConfig.card_mode));
   saveBoltConfig(active_bolt_config);
   Serial.println(F("[mode] Set to: pos"));
 }
 
 void handle_mode_2fa() {
-  strncpy(mBoltConfig.card_mode, "2fa", sizeof(mBoltConfig.card_mode));
+  safe_strcpy(mBoltConfig.card_mode, "2fa", sizeof(mBoltConfig.card_mode));
   saveBoltConfig(active_bolt_config);
   Serial.println(F("[mode] Set to: 2fa"));
 }
 
 void handle_mode_withdraw() {
-  strncpy(mBoltConfig.card_mode, "withdraw", sizeof(mBoltConfig.card_mode));
+  safe_strcpy(mBoltConfig.card_mode, "withdraw", sizeof(mBoltConfig.card_mode));
   saveBoltConfig(active_bolt_config);
   Serial.println(F("[mode] Set to: withdraw"));
 }
@@ -884,7 +884,7 @@ void handle_reseturl() {
     Serial.println(F("[error] Usage: reseturl <plain-url>"));
     return;
   }
-  strncpy(mBoltConfig.reset_url, url.c_str(), sizeof(mBoltConfig.reset_url));
+  safe_strcpy(mBoltConfig.reset_url, url.c_str(), sizeof(mBoltConfig.reset_url));
   saveBoltConfig(active_bolt_config);
   Serial.print(F("[reseturl] Set to: ")); Serial.println(url);
 }
@@ -893,7 +893,7 @@ void handle_wifissid() {
   const String &cmd = g_serial_command;
   String ssid = cmd.substring(9);
   ssid.trim();
-  strncpy(mBoltConfig.wifi_ssid, ssid.c_str(), sizeof(mBoltConfig.wifi_ssid));
+  safe_strcpy(mBoltConfig.wifi_ssid, ssid.c_str(), sizeof(mBoltConfig.wifi_ssid));
   saveBoltConfig(active_bolt_config);
   Serial.print(F("[wifissid] Set to: ")); Serial.println(mBoltConfig.wifi_ssid);
 }
@@ -902,7 +902,7 @@ void handle_wifipass() {
   const String &cmd = g_serial_command;
   String pass = cmd.substring(9);
   pass.trim();
-  strncpy(mBoltConfig.wifi_password, pass.c_str(), sizeof(mBoltConfig.wifi_password));
+  safe_strcpy(mBoltConfig.wifi_password, pass.c_str(), sizeof(mBoltConfig.wifi_password));
   saveBoltConfig(active_bolt_config);
   Serial.println(F("[wifipass] Updated"));
 }
@@ -964,7 +964,7 @@ void handle_keyserver() {
     Serial.println(F("[error] URL too long"));
     return;
   }
-  strncpy(web_lookup_url, url.c_str(), sizeof(web_lookup_url));
+  safe_strcpy(web_lookup_url, url.c_str(), sizeof(web_lookup_url));
   Serial.print(F("[keyserver] Set to: "));
   Serial.println(web_lookup_url);
 }

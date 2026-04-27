@@ -222,7 +222,7 @@ static void reset_card_assessment(CardAssessment &assessment) {
 }
 
 static bool same_uid(const CardAssessment &assessment, const uint8_t *uid, uint8_t uid_len) {
-  return assessment.present && assessment.uid_len == uid_len && memcmp(assessment.uid, uid, uid_len) == 0;
+  return assessment.present && assessment.uid_len == uid_len && crypto_memcmp(assessment.uid, uid, uid_len);
 }
 
 static IdleCardKind classify_idle_card(const uint8_t *uid, uint8_t uid_len) {
@@ -467,6 +467,7 @@ void saveSettings() {
   char path[20];
   sprintf(path, "/settings.dat");
   fs::File myFile = SPIFFS.open(path, FILE_WRITE);
+  if (!myFile) { Serial.println(F("[error] Failed to open settings for write")); return; }
   myFile.write((byte *)&mSettings, sizeof(sSettings));
   myFile.close();
 }
@@ -476,22 +477,28 @@ void extractfiles(){
     Serial.println("Extracting files");
     Stream *HTMLTarStream = new TarStream(data_tar, (size_t) data_tar_len);
     TarGzUnpacker *TARGZUnpacker = new TarGzUnpacker();
-    TARGZUnpacker->haltOnError( true ); // stop on fail (manual restart/reset required)
-    TARGZUnpacker->setTarVerify( true ); // true = enables health checks but slows down the overall process
-    TARGZUnpacker->setupFSCallbacks( targzTotalBytesFn, targzFreeBytesFn ); // prevent the partition from exploding, recommended
-    TARGZUnpacker->setGzProgressCallback( BaseUnpacker::defaultProgressCallback ); // targzNullProgressCallback or defaultProgressCallback
-    TARGZUnpacker->setLoggerCallback( BaseUnpacker::targzPrintLoggerCallback  );    // gz log verbosity
-    TARGZUnpacker->setTarProgressCallback( BaseUnpacker::defaultProgressCallback ); // prints the untarring progress for each individual file
-    TARGZUnpacker->setTarStatusProgressCallback( BaseUnpacker::defaultTarStatusProgressCallback ); // print the filenames as they're expanded
-    TARGZUnpacker->setTarMessageCallback( BaseUnpacker::targzPrintLoggerCallback ); // tar log verbosity
+    TARGZUnpacker->haltOnError( true );
+    TARGZUnpacker->setTarVerify( true );
+    TARGZUnpacker->setupFSCallbacks( targzTotalBytesFn, targzFreeBytesFn );
+    TARGZUnpacker->setGzProgressCallback( BaseUnpacker::defaultProgressCallback );
+    TARGZUnpacker->setLoggerCallback( BaseUnpacker::targzPrintLoggerCallback  );
+    TARGZUnpacker->setTarProgressCallback( BaseUnpacker::defaultProgressCallback );
+    TARGZUnpacker->setTarStatusProgressCallback( BaseUnpacker::defaultTarStatusProgressCallback );
+    TARGZUnpacker->setTarMessageCallback( BaseUnpacker::targzPrintLoggerCallback );
     if( !TARGZUnpacker->tarGzStreamExpander( HTMLTarStream, tarGzFS ) ) {
       Serial.println("Error while unpacking the webserver files");
+      delete TARGZUnpacker;
+      delete HTMLTarStream;
       return;
     }
-    //write version info
+    delete TARGZUnpacker;
+    delete HTMLTarStream;
+
     fs::File myFile = SPIFFS.open("/fsversion.dat", FILE_WRITE);
-    myFile.write((byte *) &fsversion, sizeof(fsversion));
-    myFile.close();
+    if (myFile) {
+      myFile.write((byte *) &fsversion, sizeof(fsversion));
+      myFile.close();
+    }
 
     Serial.println("done!");
     
@@ -500,6 +507,7 @@ void extractfiles(){
 int checkFsVersion(){
   int myversion = -1;
   fs::File myFile = SPIFFS.open("/fsversion.dat", FILE_READ);
+  if (!myFile) return -1;
   myFile.read((byte *) &myversion, sizeof(myversion));
   myFile.close();
   Serial.println(myversion);
@@ -513,6 +521,7 @@ void loadSettings() {
   if (SPIFFS.exists(path) == 1) {
     Serial.println(" found");
     fs::File myFile = SPIFFS.open(path, FILE_READ);
+    if (!myFile) { Serial.println(F("[error] Failed to open settings for read")); return; }
     myFile.read((byte *)&mSettings, sizeof(sSettings));
     myFile.close();
   } else {
@@ -544,6 +553,7 @@ void saveBoltConfig(uint8_t slot) {
   memset(sanitized.k3, 0, sizeof(sanitized.k3));
   memset(sanitized.k4, 0, sizeof(sanitized.k4));
   fs::File myFile = SPIFFS.open(path, FILE_WRITE);
+  if (!myFile) { Serial.println(F("[error] Failed to open config for write")); return; }
   myFile.write((byte *)&sanitized, sizeof(sBoltConfig));
   myFile.close();
 }
@@ -570,6 +580,7 @@ void loadBoltConfig(uint8_t slot) {
   if (SPIFFS.exists(path) == 1) {
     Serial.println(" found");
     fs::File myFile = SPIFFS.open(path, FILE_READ);
+    if (!myFile) { Serial.println(F("[error] Failed to open config for read")); return; }
     myFile.read((byte *)&mBoltConfig, sizeof(sBoltConfig));
     myFile.close();
   } else {
@@ -602,6 +613,7 @@ String exportBoltConfig() {
   String path = "/backup.dat";
   SPIFFS.remove(path);
   fs::File myFile = SPIFFS.open(path, FILE_APPEND);
+  if (!myFile) { Serial.println(F("[error] Failed to open backup for write")); return path; }
   for (uint8_t i = 0; i < MAX_BOLT_DEVICES; i++) {
     loadBoltConfig(i);
     myFile.write((byte *)&mBoltConfig, sizeof(sBoltConfig));
@@ -614,6 +626,7 @@ String exportBoltConfig() {
 void importBoltConfig() {
   String path = "/backup.dat";
   fs::File myFile = SPIFFS.open(path, FILE_READ);
+  if (!myFile) { Serial.println(F("[error] Failed to open backup for read")); return; }
   for (uint8_t i = 0; i < MAX_BOLT_DEVICES; i++) {
     myFile.seek(i * sizeof(sBoltConfig));
     myFile.readBytes((char *)&mBoltConfig, sizeof(sBoltConfig));
@@ -1075,7 +1088,7 @@ void randomchar(char *outbuf, uint8_t count) {
   for (uint8_t i = 0; i < count; i++) {
     Serial.print(i);
     Serial.print(":");
-    outbuf[i] = charpool[random(0, 63)];
+    outbuf[i] = charpool[esp_random() % 63];
     Serial.println(outbuf[i]);
   }
   outbuf[count] = 0;
@@ -1454,31 +1467,31 @@ void setup(void) {
           data = json.as<JsonObject>();
         }
         if (data.containsKey("card_name"))
-          strcpy(mBoltConfig.card_name, data["card_name"]);
+          safe_strcpy(mBoltConfig.card_name, data["card_name"], sizeof(mBoltConfig.card_name));
         if (data.containsKey("card_mode"))
-          strncpy(mBoltConfig.card_mode, data["card_mode"], sizeof(mBoltConfig.card_mode));
+          safe_strcpy(mBoltConfig.card_mode, data["card_mode"], sizeof(mBoltConfig.card_mode));
         if (data.containsKey("lnurlp_base"))
-          strcpy(mBoltConfig.url, data["lnurlp_base"]);
+          safe_strcpy(mBoltConfig.url, data["lnurlp_base"], sizeof(mBoltConfig.url));
         else if (data.containsKey("lnurlw_base"))
-          strcpy(mBoltConfig.url, data["lnurlw_base"]);
+          safe_strcpy(mBoltConfig.url, data["lnurlw_base"], sizeof(mBoltConfig.url));
         if (data.containsKey("wallet_name"))
-          strcpy(mBoltConfig.wallet_name, data["wallet_name"]);
+          safe_strcpy(mBoltConfig.wallet_name, data["wallet_name"], sizeof(mBoltConfig.wallet_name));
         if (data.containsKey("wallet_url"))
-          strcpy(mBoltConfig.wallet_url, data["wallet_url"]);
+          safe_strcpy(mBoltConfig.wallet_url, data["wallet_url"], sizeof(mBoltConfig.wallet_url));
         if (data.containsKey("wallet_host"))
-          strcpy(mBoltConfig.wallet_host, data["wallet_host"]);
+          safe_strcpy(mBoltConfig.wallet_host, data["wallet_host"], sizeof(mBoltConfig.wallet_host));
         if (data.containsKey("uid"))
-          strcpy(mBoltConfig.uid, data["uid"]);
+          safe_strcpy(mBoltConfig.uid, data["uid"], sizeof(mBoltConfig.uid));
         if (data.containsKey("k0"))
-          strcpy(mBoltConfig.k0, data["k0"]);
+          safe_strcpy(mBoltConfig.k0, data["k0"], sizeof(mBoltConfig.k0));
         if (data.containsKey("k1"))
-          strcpy(mBoltConfig.k1, data["k1"]);
+          safe_strcpy(mBoltConfig.k1, data["k1"], sizeof(mBoltConfig.k1));
         if (data.containsKey("k2"))
-          strcpy(mBoltConfig.k2, data["k2"]);
+          safe_strcpy(mBoltConfig.k2, data["k2"], sizeof(mBoltConfig.k2));
         if (data.containsKey("k3"))
-          strcpy(mBoltConfig.k3, data["k3"]);
+          safe_strcpy(mBoltConfig.k3, data["k3"], sizeof(mBoltConfig.k3));
         if (data.containsKey("k4"))
-          strcpy(mBoltConfig.k4, data["k4"]);
+          safe_strcpy(mBoltConfig.k4, data["k4"], sizeof(mBoltConfig.k4));
         saveBoltConfig(active_bolt_config);
         Serial.println(mBoltConfig.card_name);
         request->send(200, "application/json",
@@ -1498,10 +1511,10 @@ void setup(void) {
           data = json.as<JsonObject>();
         }
         if (data["essid"] != "") {
-          strcpy(mSettings.essid, data["essid"]);
+          safe_strcpy(mSettings.essid, data["essid"], sizeof(mSettings.essid));
         }
         if ((data["password"] != "*123--keep-my-current-password--321*")) {
-          strcpy(mSettings.password, data["password"]);
+          safe_strcpy(mSettings.password, data["password"], sizeof(mSettings.password));
         }
         if (data["wifimode"] == "sta") {
           mSettings.wifimode = WIFIMODE_STA;
@@ -1532,10 +1545,10 @@ void setup(void) {
           return;
         }
         if (data["http_u"] != "") {
-          strcpy(mSettings.http_username, data["http_u"]);
+          safe_strcpy(mSettings.http_username, data["http_u"], sizeof(mSettings.http_username));
         }
         if (data["http_p"] != "") {
-          strcpy(mSettings.http_password, data["http_p"]);
+          safe_strcpy(mSettings.http_password, data["http_p"], sizeof(mSettings.http_password));
         }
         saveSettings();
         request->send(200, "application/json",

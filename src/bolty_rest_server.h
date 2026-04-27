@@ -45,7 +45,11 @@ static bool _rest_check_token(httpd_req_t *req, const char *expected_token) {
   char *hdr = (char *)malloc(hdr_len);
   if (!hdr) { httpd_resp_send_500(req); return false; }
   httpd_req_get_hdr_value_str(req, "Authorization", hdr, hdr_len);
-  bool ok = (strncmp(hdr, "Bearer ", 7) == 0 && strcmp(hdr + 7, expected_token) == 0);
+  bool ok = false;
+  if (strncmp(hdr, "Bearer ", 7) == 0) {
+    const size_t token_len = strlen(expected_token);
+    ok = (strlen(hdr + 7) == token_len && crypto_memcmp(hdr + 7, expected_token, token_len));
+  }
   free(hdr);
   if (!ok) { httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "Invalid token"); }
   return ok;
@@ -155,11 +159,11 @@ static esp_err_t rest_post_keys(httpd_req_t *req) {
       strlen(k3) != 32 || strlen(k4) != 32)
     return _rest_error(req, "Each key must be 32 hex chars");
 
-  strncpy(mBoltConfig.k0, k0, 33);
-  strncpy(mBoltConfig.k1, k1, 33);
-  strncpy(mBoltConfig.k2, k2, 33);
-  strncpy(mBoltConfig.k3, k3, 33);
-  strncpy(mBoltConfig.k4, k4, 33);
+  safe_strcpy(mBoltConfig.k0, k0, sizeof(mBoltConfig.k0));
+  safe_strcpy(mBoltConfig.k1, k1, sizeof(mBoltConfig.k1));
+  safe_strcpy(mBoltConfig.k2, k2, sizeof(mBoltConfig.k2));
+  safe_strcpy(mBoltConfig.k3, k3, sizeof(mBoltConfig.k3));
+  safe_strcpy(mBoltConfig.k4, k4, sizeof(mBoltConfig.k4));
   has_issuer_key = false;
   return _rest_json(req, "{\"ok\":true,\"message\":\"Keys set\"}");
 }
@@ -177,13 +181,13 @@ static esp_err_t rest_post_url(httpd_req_t *req) {
   const char *url = doc["url"] | "";
   if (strlen(url) == 0) return _rest_error(req, "Missing 'url' field");
 
-  strncpy(mBoltConfig.url, url, sizeof(mBoltConfig.url));
+  safe_strcpy(mBoltConfig.url, url, sizeof(mBoltConfig.url));
   if (strncmp(url, "lnurlp://", 9) == 0) {
-    strncpy(mBoltConfig.card_mode, "pos", sizeof(mBoltConfig.card_mode));
+    safe_strcpy(mBoltConfig.card_mode, "pos", sizeof(mBoltConfig.card_mode));
   } else if (strncmp(url, "https://", 8) == 0) {
-    strncpy(mBoltConfig.card_mode, "2fa", sizeof(mBoltConfig.card_mode));
+    safe_strcpy(mBoltConfig.card_mode, "2fa", sizeof(mBoltConfig.card_mode));
   } else {
-    strncpy(mBoltConfig.card_mode, "withdraw", sizeof(mBoltConfig.card_mode));
+    safe_strcpy(mBoltConfig.card_mode, "withdraw", sizeof(mBoltConfig.card_mode));
   }
   return _rest_json(req, "{\"ok\":true,\"message\":\"URL set\"}");
 }

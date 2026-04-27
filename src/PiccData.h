@@ -149,7 +149,7 @@ static inline bool picc_verify_c(const uint8_t k2[16], const PiccData* picc, con
   uint8_t expected_mac[8];
   if (picc_hex_to_bytes(c_hex, expected_mac, 8) != 8) return false;
 
-  return memcmp(computed_mac, expected_mac, 8) == 0;
+  return crypto_memcmp(computed_mac, expected_mac, 8);
 }
 
 static inline PiccData picc_decrypt_and_verify(const uint8_t k1[16], const uint8_t k2[16],

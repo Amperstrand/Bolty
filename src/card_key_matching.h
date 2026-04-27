@@ -172,7 +172,7 @@ static bool deterministic_decrypt_p(BoltyNfcReader *nfc,
     return false;
   }
   if (decrypted[0] != 0xC7) return false;
-  if (memcmp(decrypted + 1, uid, 7) != 0) return false;
+  if (!crypto_memcmp(decrypted + 1, uid, 7)) return false;
   counter_out = decode_u24_le(decrypted + 8);
   return true;
 }
@@ -199,7 +199,7 @@ static bool deterministic_verify_cmac(BoltyNfcReader *nfc,
   for (int i = 0; i < 8; i++) {
     computed_c[i] = full_cmac[(i * 2) + 1];
   }
-  return memcmp(computed_c, expected_c, sizeof(computed_c)) == 0;
+  return crypto_memcmp(computed_c, expected_c, sizeof(computed_c));
 }
 
 static bool deterministic_try_known_matches(BoltyNfcReader *nfc,

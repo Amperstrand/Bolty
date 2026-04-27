@@ -6,6 +6,25 @@
 
 #include "bolt.h"
 
+// Constant-time comparison for secrets (MAC, UID, tokens).
+// Always compares all bytes regardless of mismatches to prevent timing attacks.
+inline bool crypto_memcmp(const void *a, const void *b, size_t len) {
+  const uint8_t *pa = (const uint8_t *)a;
+  const uint8_t *pb = (const uint8_t *)b;
+  uint8_t diff = 0;
+  for (size_t i = 0; i < len; i++) {
+    diff |= pa[i] ^ pb[i];
+  }
+  return diff == 0;
+}
+
+// Always-null-terminating string copy. Use instead of strncpy/strcpy.
+inline void safe_strcpy(char *dst, const char *src, size_t dst_size) {
+  if (dst_size == 0) return;
+  strncpy(dst, src, dst_size - 1);
+  dst[dst_size - 1] = '\0';
+}
+
 inline const char *ntag424_error_name(uint8_t sw1, uint8_t sw2) {
   if (sw1 == 0x91) {
     switch (sw2) {
