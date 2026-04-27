@@ -35,6 +35,7 @@ static const uint16_t NTAG424_NDEF_FILE_ID = 0xE104;
 static const uint8_t KEY_VER_FACTORY = 0x00;
 static const uint8_t KEY_VER_PROVISIONED = 0x01;
 static const uint8_t KEY_VER_READ_FAILED = 0xFF;
+static const uint8_t NTAG424_HW_TYPE_DNA = 0x04;  // NTAG424 DNA hardware type from GetVersion response
 
 // AuthenticateEV2First command byte
 static const uint8_t AUTH_CMD_EV2_FIRST = 0x71;

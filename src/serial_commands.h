@@ -357,7 +357,7 @@ static InspectCardInfo inspect_card_info(const CardTapResult &tap) {
     Serial.println();
   }
   Serial.print(F("[inspect] isNTAG424: "));
-  Serial.println(info.version_ok && bolt.nfc->ntag424_VersionInfo.HWType == 0x04 ? F("YES") : F("NO / UNKNOWN"));
+  Serial.println(info.version_ok && bolt.nfc->ntag424_VersionInfo.HWType == NTAG424_HW_TYPE_DNA ? F("YES") : F("NO / UNKNOWN"));
 
   return info;
 }
@@ -420,7 +420,7 @@ static InspectKeyVersions inspect_key_versions() {
 static void inspect_file_settings() {
   Serial.println(F("[inspect] --- NDEF File Settings ---"));
   uint8_t fs[32] = {0};
-  const uint8_t fs_len = bolt.nfc->ntag424_GetFileSettings(2, fs, NTAG424_COMM_MODE_PLAIN);
+  const uint8_t fs_len = bolt.nfc->ntag424_GetFileSettings(NTAG424_FILE_NDEF, fs, NTAG424_COMM_MODE_PLAIN);
   if (fs_len >= 2) {
     Serial.print(F("[inspect] GetFileSettings len: "));
     Serial.println(fs_len);
@@ -440,8 +440,8 @@ static void inspect_file_settings() {
       Serial.print(F("[inspect] FileSize bytes: "));
       Serial.println(((uint32_t)fs[4] << 16) | ((uint32_t)fs[5] << 8) | fs[6]);
       Serial.print(F("[inspect] SDM enabled: "));
-      Serial.println((fs[1] & 0x40) ? F("YES") : F("NO"));
-      if ((fs[1] & 0x40) && fs_len >= 21) {
+      Serial.println((fs[1] & SDM_FILE_OPTION_SDM_ENABLED) ? F("YES") : F("NO"));
+      if ((fs[1] & SDM_FILE_OPTION_SDM_ENABLED) && fs_len >= 21) {
         Serial.print(F("[inspect] SDM options: 0x"));
         print_hex_byte_prefixed(fs[7]);
         Serial.println();
@@ -809,7 +809,7 @@ void handle_ver() {
     Serial.print(F("[ver] HWType: 0x"));
     Serial.print(bolt.nfc->ntag424_VersionInfo.HWType, HEX);
     Serial.print(F(" expected: 0x04 match: "));
-    Serial.println(bolt.nfc->ntag424_VersionInfo.HWType == 0x04 ? "YES" : "NO");
+    Serial.println(bolt.nfc->ntag424_VersionInfo.HWType == NTAG424_HW_TYPE_DNA ? "YES" : "NO");
     Serial.print(F("[ver] isNTAG424: "));
     Serial.println(bolt.nfc->ntag424_isNTAG424() ? "YES" : "NO");
     Serial.print(F("[ver] HWType after isNTAG424: 0x"));

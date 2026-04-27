@@ -213,6 +213,8 @@ struct CardAssessment {
 
 static CardAssessment g_last_assessment = {};
 
+// Zero-initialize a CardAssessment struct, setting default confidence levels and card classification.
+// Called before each card scan to start with a clean state.
 static void reset_card_assessment(CardAssessment &assessment) {
   memset(&assessment, 0, sizeof(assessment));
   assessment.kind = IdleCardKind::none;
@@ -222,10 +224,14 @@ static void reset_card_assessment(CardAssessment &assessment) {
   }
 }
 
+// Compare a scanned UID against a stored assessment using constant-time comparison.
+// Ref: bolty_utils.h (crypto_memcmp for timing-safe comparison)
 static bool same_uid(const CardAssessment &assessment, const uint8_t *uid, uint8_t uid_len) {
   return assessment.present && assessment.uid_len == uid_len && crypto_memcmp(assessment.uid, uid, uid_len);
 }
 
+// Classify a detected card as blank, provisioned bolt card, or unknown by reading key versions and NDEF.
+// Ref: NT4H2421Gx datasheet §7.3.3 (GetKeyVersion), NFC Forum NDEF §3.2
 static IdleCardKind classify_idle_card(const uint8_t *uid, uint8_t uid_len) {
   if (!(((uid_len == 7) || (uid_len == 4)) && bolt.nfc->ntag424_isNTAG424())) {
     return IdleCardKind::unknown;
@@ -255,6 +261,8 @@ static IdleCardKind classify_idle_card(const uint8_t *uid, uint8_t uid_len) {
   return IdleCardKind::unknown;
 }
 
+// Signal card classification via LED patterns and serial output.
+// Ref: led.h (LED pattern definitions for blank/provisioned/unknown states)
 static void signal_idle_card_kind(IdleCardKind kind) {
   switch (kind) {
     case IdleCardKind::blank:
@@ -274,6 +282,8 @@ static void signal_idle_card_kind(IdleCardKind kind) {
   }
 }
 
+// Convert per-key confidence levels (0/1/2) to LED row brightness values for display.
+// Maps KEY_CONFIDENCE_* values from card_assessment.h to visual indicators.
 static void assessment_to_led_rows(const CardAssessment &assessment, uint8_t rows[5]) {
   for (int i = 0; i < 5; i++) {
     switch (assessment.key_confidence[i]) {
@@ -290,6 +300,8 @@ static void assessment_to_led_rows(const CardAssessment &assessment, uint8_t row
   }
 }
 
+// Print comprehensive card assessment to serial: UID, NTAG424 detection, key versions, confidence, URI.
+// Ref: NT4H2421Gx datasheet §7.1 (GetVersion), §7.3.3 (GetKeyVersion)
 static void print_card_assessment(const CardAssessment &assessment) {
   Serial.println(F("[assess] --- Card Assessment ---"));
   Serial.print(F("[assess] UID: "));
@@ -331,6 +343,8 @@ static void print_card_assessment(const CardAssessment &assessment) {
 
 static bool assess_current_card(CardAssessment &assessment);
 
+// Handle ATOM button press: scan card, run assessment, display results via LED and serial.
+// Orchestrates classify_idle_card → print_card_assessment → LED display flow.
 static void handle_atom_button_feedback() {
 #if HAS_LED_MATRIX
   if (sharedvars.appbuttons[0] == 1) {
@@ -364,6 +378,9 @@ static void handle_atom_button_feedback() {
 #endif
 }
 
+// Handle ATOM long-press: perform safe card reset with guard checks.
+// For blank cards: resets NDEF+SDM only. For provisioned: attempts full wipe with derived keys.
+// Ref: bolt.h (resetNdefOnly, wipe), card_assessment.h (assess_current_card)
 static void handle_atom_hold_reset() {
 #if HAS_LED_MATRIX
   if (!button_is_held()) {
@@ -472,6 +489,8 @@ void saveSettings() {
   myFile.close();
 }
 
+// Extract web server files from tardata.h embedded data to SPIFFS filesystem.
+// Checks filesystem version to avoid re-extraction on unchanged firmware.
 //Extract files needed by the webserver from the data in tardata.h
 void extractfiles(){
     Serial.println("Extracting files");
@@ -975,6 +994,8 @@ void update_screen() {
 }
 #endif
 
+// Application state machine: manages lifecycle transitions (START→LOOP→END) for each app mode.
+// Handles screen updates, delayed restarts, and job status polling between states.
 void app_stateengine() {
   handle_events();
 #if HAS_DISPLAY
@@ -1189,6 +1210,8 @@ void wifi_stop() {}
 void wifi_toogle() {}
 #endif
 
+// Initialize NFC reader hardware, configure PN532/NTAG424 communication parameters.
+// Ref: Adafruit-PN532 library (begin), NT4H2421Gx datasheet §6.4 (AID selection)
 void nfc_start() {
   Serial.println("switching nfc on");
 #if NFC_RESET_PIN >= 0
@@ -1239,6 +1262,8 @@ void handleUpload(AsyncWebServerRequest *request, String filename, size_t index,
 }
 #endif
 
+// Arduino entry point: initialize serial, SPIFFS, NFC hardware, watchdog, load config, start REST server.
+// Configures hardware watchdog per ESP-IDF v5 API (esp_task_wdt_config_t).
 void setup(void) {
   Serial.begin(115200);
   while (!Serial)
