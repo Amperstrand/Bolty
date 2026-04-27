@@ -159,7 +159,7 @@ sSettings mSettings;
 uint8_t app_active;
 int8_t app_next;
 uint8_t app_status;
-String SIpAddress = "Waiting for ip..";
+char SIpAddress[40] = "Waiting for ip..";
 IPAddress myIP;
 #endif
 
@@ -419,8 +419,8 @@ typedef void (*tAppHandler)();
 typedef void (*tEvtHandler)(uint8_t btn, uint8_t evt);
 
 struct sAppHandler {
-  String app_title;
-  String app_desc;
+  char app_title[32];
+  char app_desc[32];
   tAppHandler app_start; // function pointer start lifecycle
   tAppHandler app_end;   // function pointer end lifecycle
   tAppHandler app_loop;  // function pointer mainloop
@@ -669,8 +669,9 @@ void handle_events() {
   // Button 0 double clicky
   if (sharedvars.appbuttons[0] == 3) {
     Serial.println("double click btn0");
-    String wurl =
-        String(mBoltConfig.wallet_host) + "?" + String(mBoltConfig.wallet_url);
+    char wurl[512];
+    snprintf(wurl, sizeof(wurl), "%s?%s", mBoltConfig.wallet_host,
+             mBoltConfig.wallet_url);
     Serial.println(wurl);
   }
   // Button 1 double clicky
@@ -690,17 +691,18 @@ void handle_events() {
 void app_keysetup_start() { Serial.println("app_KEYSETUP_start"); }
 
 long lasttime = 0;
-String default_app_message = "* Buttons are locked! *";
-String app_message = default_app_message;
+static const char DEFAULT_APP_MESSAGE[] = "* Buttons are locked! *";
+char app_message[64] = "* Buttons are locked! *";
 void app_keysetup_loop() {
   if (!serial_cmd_active && (millis() - lasttime) > 200) {
     lasttime = millis();
     if (bolty_hw_ready) {
       bolt.scanUID();
-      app_message = String(bolt.getScannedUid());
+      strncpy(app_message, bolt.getScannedUid(), sizeof(app_message) - 1);
+      app_message[sizeof(app_message) - 1] = '\0';
     }
-    if (app_message == "") {
-      app_message = default_app_message;
+    if (app_message[0] == '\0') {
+      strncpy(app_message, DEFAULT_APP_MESSAGE, sizeof(app_message));
     }
 #if HAS_DISPLAY
     tft.setFreeFont(&FreeSans9pt7b);
@@ -775,29 +777,56 @@ void APP_BOLTBURN_loop() {
 }
 
 
-String shortenkeys(const String &var){
-  return var.substring(0,3) + "*************";
+static void shortenkeys_buf(const char *key, char *buf, size_t buf_size) {
+  if (buf_size == 0) {
+    return;
+  }
+  if (buf_size < 17) {
+    buf[0] = '\0';
+    return;
+  }
+
+  buf[0] = key[0] ? key[0] : '*';
+  buf[1] = key[1] ? key[1] : '*';
+  buf[2] = key[2] ? key[2] : '*';
+  memset(buf + 3, '*', 13);
+  buf[16] = '\0';
 }
 
 String processor_default(const String &var){
   if (var == "cnn")
-    return String(active_bolt_config + 1).c_str();
+    return String(active_bolt_config + 1);
   if (var == "cn")
     return mBoltConfig.card_name;
   if (var == "url")
     return mBoltConfig.url;
   if (var == "card_mode")
     return strlen(mBoltConfig.card_mode) ? mBoltConfig.card_mode : "withdraw";
-  if (var == "ks0")
-    return shortenkeys(mBoltConfig.k0);
-  if (var == "ks1")
-    return shortenkeys(mBoltConfig.k1);
-  if (var == "ks2")
-    return shortenkeys(mBoltConfig.k2);
-  if (var == "ks3")
-    return shortenkeys(mBoltConfig.k3);
-  if (var == "ks4")
-    return shortenkeys(mBoltConfig.k4);
+  if (var == "ks0") {
+    char masked[17];
+    shortenkeys_buf(mBoltConfig.k0, masked, sizeof(masked));
+    return String(masked);
+  }
+  if (var == "ks1") {
+    char masked[17];
+    shortenkeys_buf(mBoltConfig.k1, masked, sizeof(masked));
+    return String(masked);
+  }
+  if (var == "ks2") {
+    char masked[17];
+    shortenkeys_buf(mBoltConfig.k2, masked, sizeof(masked));
+    return String(masked);
+  }
+  if (var == "ks3") {
+    char masked[17];
+    shortenkeys_buf(mBoltConfig.k3, masked, sizeof(masked));
+    return String(masked);
+  }
+  if (var == "ks4") {
+    char masked[17];
+    shortenkeys_buf(mBoltConfig.k4, masked, sizeof(masked));
+    return String(masked);
+  }
   if (var == "k0")
     return mBoltConfig.k0;
   if (var == "k1")
@@ -933,8 +962,7 @@ void update_screen() {
       displayTextLeft(ofs + (5 * lineh),
                       "WiFi " + String(ap_ssid) + ":" + String(ap_password));
     }
-    SIpAddress = getIpAddress();
-    displayTextLeft(ofs + (6 * lineh), SIpAddress);
+    displayTextLeft(ofs + (6 * lineh), getIpAddress());
   }
 #endif
   signal_update_screen = false;
@@ -1068,12 +1096,16 @@ void randomchar(char *outbuf, uint8_t count) {
 #endif
 
 #if HAS_WIFI
-String getIpAddress() {
-  if (mSettings.wifimode == WIFIMODE_AP)
+const char *getIpAddress() {
+  if (mSettings.wifimode == WIFIMODE_AP) {
     myIP = WiFi.softAPIP();
-  if (mSettings.wifimode == WIFIMODE_STA)
+  }
+  if (mSettings.wifimode == WIFIMODE_STA) {
     myIP = WiFi.localIP();
-  return myIP.toString();
+  }
+  strncpy(SIpAddress, myIP.toString().c_str(), sizeof(SIpAddress) - 1);
+  SIpAddress[sizeof(SIpAddress) - 1] = '\0';
+  return SIpAddress;
 }
 
 void wifi_start() {
@@ -1133,6 +1165,7 @@ void wifi_stop() {
   WiFi.disconnect();
   esp_wifi_stop();
   Serial.println("WIFI: Disconnected");
+  strncpy(SIpAddress, "Waiting for ip..", sizeof(SIpAddress));
   delay(100);
   WiFi.mode(WIFI_OFF);
   delay(100);
@@ -1150,8 +1183,8 @@ void wifi_toogle() {
   }
 }
 #else
-String getIpAddress() {
-  return String("WiFi disabled");
+const char *getIpAddress() {
+  return "no wifi";
 }
 
 void wifi_start() { Serial.println("WiFi disabled (headless mode)"); }
@@ -1311,24 +1344,36 @@ void setup(void) {
   app_status = APP_STATUS_START;
   led_set_app_mode(app_active);
   led_set_job_status(bolt.get_job_status_id());
-  mAppHandler[APP_KEYSETUP].app_title = "Key-Setup";
-  mAppHandler[APP_KEYSETUP].app_desc = "Use a webbrowser";
+  strncpy(mAppHandler[APP_KEYSETUP].app_title, "Key-Setup",
+          sizeof(mAppHandler[APP_KEYSETUP].app_title) - 1);
+  mAppHandler[APP_KEYSETUP].app_title[sizeof(mAppHandler[APP_KEYSETUP].app_title) - 1] = '\0';
+  strncpy(mAppHandler[APP_KEYSETUP].app_desc, "Use a webbrowser",
+          sizeof(mAppHandler[APP_KEYSETUP].app_desc) - 1);
+  mAppHandler[APP_KEYSETUP].app_desc[sizeof(mAppHandler[APP_KEYSETUP].app_desc) - 1] = '\0';
   mAppHandler[APP_KEYSETUP].app_start = app_keysetup_start;
   mAppHandler[APP_KEYSETUP].app_end = app_keysetup_end;
   mAppHandler[APP_KEYSETUP].app_loop = app_keysetup_loop;
   mAppHandler[APP_KEYSETUP].app_fgcolor = APPBLACK;
   mAppHandler[APP_KEYSETUP].app_bgcolor = fromrgb(0x3e, 0xaf, 0x7c);
 
-  mAppHandler[APP_BOLTBURN].app_title = "Burn";
-  mAppHandler[APP_BOLTBURN].app_desc = "Burn a Bolt Card";
+  strncpy(mAppHandler[APP_BOLTBURN].app_title, "Burn",
+          sizeof(mAppHandler[APP_BOLTBURN].app_title) - 1);
+  mAppHandler[APP_BOLTBURN].app_title[sizeof(mAppHandler[APP_BOLTBURN].app_title) - 1] = '\0';
+  strncpy(mAppHandler[APP_BOLTBURN].app_desc, "Burn a Bolt Card",
+          sizeof(mAppHandler[APP_BOLTBURN].app_desc) - 1);
+  mAppHandler[APP_BOLTBURN].app_desc[sizeof(mAppHandler[APP_BOLTBURN].app_desc) - 1] = '\0';
   mAppHandler[APP_BOLTBURN].app_start = APP_BOLTBURN_start;
   mAppHandler[APP_BOLTBURN].app_end = APP_BOLTBURN_end;
   mAppHandler[APP_BOLTBURN].app_loop = APP_BOLTBURN_loop;
   mAppHandler[APP_BOLTBURN].app_fgcolor = APPBLACK;
   mAppHandler[APP_BOLTBURN].app_bgcolor = fromrgb(0xff, 0xad, 0x33);
 
-  mAppHandler[APP_BOLTWIPE].app_title = "Wipe";
-  mAppHandler[APP_BOLTWIPE].app_desc = "Wipe a Bolt Card";
+  strncpy(mAppHandler[APP_BOLTWIPE].app_title, "Wipe",
+          sizeof(mAppHandler[APP_BOLTWIPE].app_title) - 1);
+  mAppHandler[APP_BOLTWIPE].app_title[sizeof(mAppHandler[APP_BOLTWIPE].app_title) - 1] = '\0';
+  strncpy(mAppHandler[APP_BOLTWIPE].app_desc, "Wipe a Bolt Card",
+          sizeof(mAppHandler[APP_BOLTWIPE].app_desc) - 1);
+  mAppHandler[APP_BOLTWIPE].app_desc[sizeof(mAppHandler[APP_BOLTWIPE].app_desc) - 1] = '\0';
   mAppHandler[APP_BOLTWIPE].app_start = APP_BOLTWIPE_start;
   mAppHandler[APP_BOLTWIPE].app_end = APP_BOLTWIPE_end;
   mAppHandler[APP_BOLTWIPE].app_loop = APP_BOLTWIPE_loop;
@@ -1415,8 +1460,7 @@ void setup(void) {
         "href='https://fontlibrary.org/face/dejavu-sans-mono' "
         "type='text/css'></head><body><pre style='font-family: "
         "DejaVuSansMonoBold,monospace;font-size: 0.2em;'>"); // font-size: 1vw;
-    String walurl = web_keysetup_processor("wallet_link");
-    SendQR(walurl, response);
+    SendQR(web_keysetup_processor("wallet_link"), response);
     response->print("</pre></body></html>");
     request->send(response);
   });
@@ -1551,7 +1595,7 @@ void setup(void) {
   if (mSettings.wifi_enabled) {
     wifi_start();
     IPAddress myIP;
-    SIpAddress = getIpAddress();
+    getIpAddress();
     Serial.println(SIpAddress);
   }
   Serial.println("Server started");
