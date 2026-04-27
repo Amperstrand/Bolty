@@ -1669,14 +1669,18 @@ void loop(void) {
 
 #if !HAS_WIFI
   if (Serial.available()) {
-    String cmd = Serial.readStringUntil('\n');
-    handle_serial_command(cmd);
+    char cmd_buf[512] = {0};
+    int cmd_len = Serial.readBytesUntil('\n', cmd_buf, sizeof(cmd_buf) - 1);
+    cmd_buf[cmd_len] = '\0';
+    handle_serial_command(cmd_buf);
   }
 #elif HAS_REST_SERVER
   // REST mode: handle serial + WiFi health
   if (Serial.available()) {
-    String cmd = Serial.readStringUntil('\n');
-    handle_serial_command(cmd);
+    char cmd_buf[512] = {0};
+    int cmd_len = Serial.readBytesUntil('\n', cmd_buf, sizeof(cmd_buf) - 1);
+    cmd_buf[cmd_len] = '\0';
+    handle_serial_command(cmd_buf);
   }
   // Reconnect WiFi if dropped (critical for REST availability)
   if (WiFi.status() != WL_CONNECTED) {

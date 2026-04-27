@@ -127,59 +127,10 @@ inline uint32_t decode_u24_le(const uint8_t *buf) {
          ((uint32_t)buf[2] << 16);
 }
 
-inline bool ndef_extract_uri(const uint8_t *ndef, int len, String &uri) {
-  if (ndef == nullptr || len < 5) {
-    return false;
-  }
-
-  for (int i = 0; i <= len - 5; i++) {
-    if (ndef[i] == NDEF_HEADER_SHORT && ndef[i + 1] == 0x01 &&
-        ndef[i + 3] == NDEF_TYPE_URI) {
-      const int payload_len = ndef[i + 2];
-      if (payload_len < 1 || i + 4 + payload_len > len) {
-        return false;
-      }
-
-      const uint8_t prefix = ndef[i + 4];
-      // NFC Forum URI Identifier Codes, Ref: NFC Forum NDEF §3.2.2 Table 7
-      switch (prefix) {
-      case 0x00:
-        uri = "";
-        break;
-      case 0x01:
-        uri = "http://www.";
-        break;
-      case 0x02:
-        uri = "https://www.";
-        break;
-      case 0x03:
-        uri = "http://";
-        break;
-      case 0x04:
-        uri = "https://";
-        break;
-      default:
-        uri = "";
-        break;
-      }
-
-      for (int j = 0; j < payload_len - 1; j++) {
-        const uint8_t ch = ndef[i + 5 + j];
-        uri += (ch >= 0x20 && ch < 0x7F) ? (char)ch : '.';
-      }
-      return true;
-    }
-  }
-
-  return false;
-}
-
-// ── char[]-based API variants (replacing Arduino String versions) ──
-
 // Extract URI from NDEF record into a pre-allocated buffer.
 // Returns true if a valid URI was found and written to buf (null-terminated).
 // buf_size must be >= the URI length + 1.
-inline bool ndef_extract_uri_buf(const uint8_t *ndef, int len, char *buf, size_t buf_size) {
+inline bool ndef_extract_uri(const uint8_t *ndef, int len, char *buf, size_t buf_size) {
   if (buf == nullptr || buf_size == 0) {
     return false;
   }
@@ -238,6 +189,10 @@ inline bool ndef_extract_uri_buf(const uint8_t *ndef, int len, char *buf, size_t
   return false;
 }
 
+inline bool ndef_extract_uri_buf(const uint8_t *ndef, int len, char *buf, size_t buf_size) {
+  return ndef_extract_uri(ndef, len, buf, buf_size);
+}
+
 inline void print_ndef_ascii(const uint8_t *ndef, int len) {
   for (int i = 0; i < len; i++) {
     Serial.write(ndef[i] >= 0x20 && ndef[i] < 0x7F ? ndef[i] : '.');
@@ -245,23 +200,23 @@ inline void print_ndef_ascii(const uint8_t *ndef, int len) {
   DBG_PRINTLN();
 }
 
-inline void print_boltcard_heuristics(const String &uri) {
+inline void print_boltcard_heuristics(const char *uri) {
   DBG_PRINTLN(F("[inspect] --- Boltcard Heuristics ---"));
-  if (uri.length() == 0) {
+  if (uri == nullptr || uri[0] == '\0') {
     DBG_PRINTLN(F("[inspect] No URI record found in NDEF."));
     return;
   }
 
   const bool has_lnurlw =
-      uri.startsWith("lnurlw://") || uri.indexOf("lnurlw://") >= 0;
+      strncmp(uri, "lnurlw://", 9) == 0 || strstr(uri, "lnurlw://") != nullptr;
   const bool has_lnurlp =
-      uri.startsWith("lnurlp://") || uri.indexOf("lnurlp://") >= 0;
+      strncmp(uri, "lnurlp://", 9) == 0 || strstr(uri, "lnurlp://") != nullptr;
   const bool has_https =
-      uri.startsWith("https://") || uri.indexOf("https://") >= 0;
-  const int p_idx = uri.indexOf("p=");
-  const int c_idx = uri.indexOf("c=");
-  const bool has_p = p_idx >= 0;
-  const bool has_c = c_idx >= 0;
+      strncmp(uri, "https://", 8) == 0 || strstr(uri, "https://") != nullptr;
+  const char *p_pos = strstr(uri, "p=");
+  const char *c_pos = strstr(uri, "c=");
+  const bool has_p = p_pos != nullptr;
+  const bool has_c = c_pos != nullptr;
 
   DBG_PRINT(F("[inspect] URI has lnurlw scheme: "));
   DBG_PRINTLN(has_lnurlw ? F("YES") : F("NO"));
@@ -276,11 +231,11 @@ inline void print_boltcard_heuristics(const String &uri) {
 
   if (has_p) {
     DBG_PRINT(F("[inspect] p= offset in URI: "));
-    DBG_PRINTLN(p_idx);
+    DBG_PRINTLN((int)(p_pos - uri));
   }
   if (has_c) {
     DBG_PRINT(F("[inspect] c= offset in URI: "));
-    DBG_PRINTLN(c_idx);
+    DBG_PRINTLN((int)(c_pos - uri));
   }
 
   const bool looks_boltcard = has_lnurlw || has_lnurlp || (has_p && has_c);
@@ -304,25 +259,9 @@ inline bool hex_nibble(char ch, uint8_t &value) {
   return false;
 }
 
-inline bool parse_hex_fixed(const String &hex, uint8_t *out, size_t out_len) {
-  if (hex.length() != (int)(out_len * 2)) {
-    return false;
-  }
-  for (size_t i = 0; i < out_len; i++) {
-    uint8_t upper = 0;
-    uint8_t lower = 0;
-    if (!hex_nibble(hex[(int)(i * 2)], upper) ||
-        !hex_nibble(hex[(int)(i * 2 + 1)], lower)) {
-      return false;
-    }
-    out[i] = (uint8_t)((upper << 4) | lower);
-  }
-  return true;
-}
-
 // Parse fixed-length hex C-string into byte array (String-free version).
 // hex must have exactly 2*out_len characters. Returns true on success.
-inline bool parse_hex_fixed_cstr(const char *hex, uint8_t *out, size_t out_len) {
+inline bool parse_hex_fixed(const char *hex, uint8_t *out, size_t out_len) {
   if (hex == nullptr || out == nullptr || strlen(hex) != out_len * 2) {
     return false;
   }
@@ -337,34 +276,15 @@ inline bool parse_hex_fixed_cstr(const char *hex, uint8_t *out, size_t out_len) 
   return true;
 }
 
-inline bool uri_get_query_param(const String &uri, const char *name,
-                                String &value) {
-  value = "";
-  const int query_idx = uri.indexOf('?');
-  if (query_idx < 0) {
-    return false;
-  }
-
-  const String needle = String(name) + "=";
-  const int start = uri.indexOf(needle, query_idx + 1);
-  if (start < 0) {
-    return false;
-  }
-
-  const int value_start = start + needle.length();
-  int value_end = uri.indexOf('&', value_start);
-  if (value_end < 0) {
-    value_end = uri.length();
-  }
-  value = uri.substring(value_start, value_end);
-  return value.length() > 0;
+inline bool parse_hex_fixed_cstr(const char *hex, uint8_t *out, size_t out_len) {
+  return parse_hex_fixed(hex, out, out_len);
 }
 
 // Find query parameter value in a URI string.
 // Returns true if param found; writes null-terminated value to buf (up to buf_size-1).
 // Searches within the substring starting at the first '?' in uri.
-inline bool uri_get_query_param_buf(const char *uri, const char *name,
-                                    char *buf, size_t buf_size) {
+inline bool uri_get_query_param(const char *uri, const char *name,
+                                char *buf, size_t buf_size) {
   if (uri == nullptr || name == nullptr || buf == nullptr || buf_size == 0) {
     return false;
   }
@@ -401,6 +321,11 @@ inline bool uri_get_query_param_buf(const char *uri, const char *name,
   memcpy(buf, value_start, value_len);
   buf[value_len] = '\0';
   return true;
+}
+
+inline bool uri_get_query_param_buf(const char *uri, const char *name,
+                                    char *buf, size_t buf_size) {
+  return uri_get_query_param(uri, name, buf, buf_size);
 }
 
 inline void print_hex_bytes_inline(const uint8_t *data, size_t len) {

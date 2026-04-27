@@ -23,7 +23,37 @@ extern bool has_issuer_key;
 extern CardAssessment g_last_assessment;
 
 static uint8_t current_issuer_key[AES_KEY_LEN] = {0};
-static String g_serial_command;
+
+// Max serial command line length
+static const int SERIAL_CMD_MAX = 512;
+static char g_serial_command[SERIAL_CMD_MAX] = {0};
+
+// Trim leading/trailing whitespace in-place. Returns pointer to first non-space char.
+static char *strtrim(char *s) {
+  while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') s++;
+  if (*s == '\0') return s;
+  char *end = s + strlen(s) - 1;
+  while (end > s && (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')) {
+    *end = '\0';
+    end--;
+  }
+  return s;
+}
+
+// Extract a space-delimited token from str starting at offset.
+// Writes token into buf (max buf_size-1 chars), null-terminated.
+// Returns offset past the token (after the space), or -1 if no token found.
+static int next_token(const char *str, int offset, char *buf, size_t buf_size) {
+  while (str[offset] == ' ') offset++;
+  if (str[offset] == '\0') return -1;
+  size_t i = 0;
+  while (str[offset] && str[offset] != ' ' && i < buf_size - 1) {
+    buf[i++] = str[offset++];
+  }
+  buf[i] = '\0';
+  while (str[offset] == ' ') offset++;
+  return offset;
+}
 
 #include "card_key_matching.h"
 #include "card_web_lookup.h"
@@ -269,8 +299,8 @@ void handle_picc() {
       goto picc_done;
     }
 
-    String uri;
-    if (!ndef_extract_uri(ndef, len, uri)) {
+    char uri[256] = {0};
+    if (!ndef_extract_uri(ndef, len, uri, sizeof(uri))) {
       Serial.println(F("[picc] No URI in NDEF"));
       led_blink(5, 100);
       serial_cmd_active = false;
@@ -290,7 +320,7 @@ void handle_picc() {
       goto picc_done;
     }
 
-    PiccData picc = picc_parse_url(k1, k2, uri.c_str());
+    PiccData picc = picc_parse_url(k1, k2, uri);
     picc_print(&picc);
 
     if (picc.valid) {
@@ -311,13 +341,11 @@ picc_done:;
 }
 
 void handle_decodebolt11() {
-  const String &cmd = g_serial_command;
-  String invoice = cmd.substring(13);
-  invoice.trim();
-  if (invoice.length() < 10) {
+  char *invoice = strtrim(g_serial_command + 13);
+  if (strlen(invoice) < 10) {
     Serial.println(F("[bolt11] Invoice too short"));
   } else {
-    Bolt11Info info = bolt11_decode(invoice.c_str());
+    Bolt11Info info = bolt11_decode(invoice);
     bolt11_print(&info);
   }
 }
@@ -645,8 +673,8 @@ static void inspect_ndef_content(const CardTapResult &tap) {
   Serial.print(F("[inspect] NDEF ASCII: "));
   print_ndef_ascii(ndef, ndef_len);
 
-  String uri;
-  if (ndef_extract_uri(ndef, ndef_len, uri)) {
+  char uri[256] = {0};
+  if (ndef_extract_uri(ndef, ndef_len, uri, sizeof(uri))) {
     Serial.print(F("[inspect] URI: "));
     Serial.println(uri);
   } else {
@@ -655,9 +683,10 @@ static void inspect_ndef_content(const CardTapResult &tap) {
   print_boltcard_heuristics(uri);
 
   // Parse p= and c= once for all key matching attempts
-  String p_hex, c_hex;
-  const bool has_p = uri_get_query_param(uri, "p", p_hex);
-  const bool has_c = uri_get_query_param(uri, "c", c_hex);
+  char p_hex[33] = {0};
+  char c_hex[17] = {0};
+  const bool has_p = uri_get_query_param(uri, "p", p_hex, sizeof(p_hex));
+  const bool has_c = uri_get_query_param(uri, "c", c_hex, sizeof(c_hex));
   uint8_t p_bytes[AES_KEY_LEN] = {0};
   uint8_t c_bytes[8] = {0};
   bool p_ok = false, c_ok = false;
@@ -738,8 +767,8 @@ void handle_derivekeys() {
     return;
   }
 
-  String uri;
-  if (!ndef_extract_uri(ndef, ndef_len, uri)) {
+  char uri[256] = {0};
+  if (!ndef_extract_uri(ndef, ndef_len, uri, sizeof(uri))) {
     Serial.println(F("[derivekeys] FAIL — NDEF does not contain a URI record."));
     Serial.println(F("[derivekeys] No keys were changed in config."));
     led_blink(5, 100);
@@ -828,15 +857,13 @@ void handle_issuer() {
 }
 
 void handle_set_issuer() {
-  const String &cmd = g_serial_command;
-  String hex = cmd.substring(7);
-  hex.trim();
-  if (hex.length() != HEX_KEY_LEN) {
+  char *hex = strtrim(g_serial_command + 7);
+  if (strlen(hex) != HEX_KEY_LEN) {
     Serial.println(F("[error] Issuer key must be exactly 32 hex chars"));
     return;
   }
-  for (unsigned int i = 0; i < hex.length(); i++) {
-    char c = hex.charAt(i);
+  for (size_t i = 0; hex[i] != '\0'; i++) {
+    char c = hex[i];
     if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
       Serial.println(F("[error] Issuer key must be hex only (0-9, a-f)"));
       return;
@@ -855,32 +882,25 @@ void handle_set_issuer() {
 }
 
 void handle_keys() {
-  const String &cmd = g_serial_command;
-  String args = cmd.substring(5);
-  int s1 = args.indexOf(' ');
-  if (s1 < 0) { Serial.println(F("[error] Usage: keys <k0> <k1> <k2> <k3> <k4>")); return; }
-  int s2 = args.indexOf(' ', s1 + 1);
-  if (s2 < 0) { Serial.println(F("[error] Usage: keys <k0> <k1> <k2> <k3> <k4>")); return; }
-  int s3 = args.indexOf(' ', s2 + 1);
-  if (s3 < 0) { Serial.println(F("[error] Usage: keys <k0> <k1> <k2> <k3> <k4>")); return; }
-  int s4 = args.indexOf(' ', s3 + 1);
-  if (s4 < 0) { Serial.println(F("[error] Usage: keys <k0> <k1> <k2> <k3> <k4>")); return; }
-  String k0 = args.substring(0, s1);
-  String k1 = args.substring(s1 + 1, s2);
-  String k2 = args.substring(s2 + 1, s3);
-  String k3 = args.substring(s3 + 1, s4);
-  String k4 = args.substring(s4 + 1);
-  if (k0.length() != HEX_KEY_LEN || k1.length() != HEX_KEY_LEN ||
-      k2.length() != HEX_KEY_LEN || k3.length() != HEX_KEY_LEN ||
-      k4.length() != HEX_KEY_LEN) {
+  const char *args = g_serial_command + 5;
+  char k0[33] = {0}, k1[33] = {0}, k2[33] = {0}, k3[33] = {0}, k4[33] = {0};
+  int pos = 0;
+  pos = next_token(args, pos, k0, sizeof(k0)); if (pos < 0) { Serial.println(F("[error] Usage: keys <k0> <k1> <k2> <k3> <k4>")); return; }
+  pos = next_token(args, pos, k1, sizeof(k1)); if (pos < 0) { Serial.println(F("[error] Usage: keys <k0> <k1> <k2> <k3> <k4>")); return; }
+  pos = next_token(args, pos, k2, sizeof(k2)); if (pos < 0) { Serial.println(F("[error] Usage: keys <k0> <k1> <k2> <k3> <k4>")); return; }
+  pos = next_token(args, pos, k3, sizeof(k3)); if (pos < 0) { Serial.println(F("[error] Usage: keys <k0> <k1> <k2> <k3> <k4>")); return; }
+  pos = next_token(args, pos, k4, sizeof(k4)); if (pos < 0 || args[pos] != '\0') { Serial.println(F("[error] Usage: keys <k0> <k1> <k2> <k3> <k4>")); return; }
+  if (strlen(k0) != HEX_KEY_LEN || strlen(k1) != HEX_KEY_LEN ||
+      strlen(k2) != HEX_KEY_LEN || strlen(k3) != HEX_KEY_LEN ||
+      strlen(k4) != HEX_KEY_LEN) {
     Serial.println(F("[error] Each key must be exactly 32 hex chars"));
     return;
   }
-  safe_strcpy(mBoltConfig.k0, k0.c_str(), sizeof(mBoltConfig.k0));
-  safe_strcpy(mBoltConfig.k1, k1.c_str(), sizeof(mBoltConfig.k1));
-  safe_strcpy(mBoltConfig.k2, k2.c_str(), sizeof(mBoltConfig.k2));
-  safe_strcpy(mBoltConfig.k3, k3.c_str(), sizeof(mBoltConfig.k3));
-  safe_strcpy(mBoltConfig.k4, k4.c_str(), sizeof(mBoltConfig.k4));
+  safe_strcpy(mBoltConfig.k0, k0, sizeof(mBoltConfig.k0));
+  safe_strcpy(mBoltConfig.k1, k1, sizeof(mBoltConfig.k1));
+  safe_strcpy(mBoltConfig.k2, k2, sizeof(mBoltConfig.k2));
+  safe_strcpy(mBoltConfig.k3, k3, sizeof(mBoltConfig.k3));
+  safe_strcpy(mBoltConfig.k4, k4, sizeof(mBoltConfig.k4));
   has_issuer_key = false;  // Mutual exclusion: keys overrides issuer
   Serial.println(F("[keys] Keys set"));
   DBG_PRINT(F("  k0: ")); DBG_PRINTLN(k0);
@@ -888,17 +908,15 @@ void handle_keys() {
 }
 
 void handle_url() {
-  const String &cmd = g_serial_command;
-  String url = cmd.substring(4);
-  url.trim();
-  if (url.length() == 0) {
+  char *url = strtrim(g_serial_command + 4);
+  if (strlen(url) == 0) {
     Serial.println(F("[error] Usage: url <lnurl>"));
     return;
   }
-  safe_strcpy(mBoltConfig.url, url.c_str(), sizeof(mBoltConfig.url));
-  if (url.startsWith("lnurlp://")) {
+  safe_strcpy(mBoltConfig.url, url, sizeof(mBoltConfig.url));
+  if (strncmp(url, "lnurlp://", 9) == 0) {
     safe_strcpy(mBoltConfig.card_mode, "pos", sizeof(mBoltConfig.card_mode));
-  } else if (url.startsWith("https://")) {
+  } else if (strncmp(url, "https://", 8) == 0) {
     safe_strcpy(mBoltConfig.card_mode, "2fa", sizeof(mBoltConfig.card_mode));
   } else {
     safe_strcpy(mBoltConfig.card_mode, "withdraw", sizeof(mBoltConfig.card_mode));
@@ -926,53 +944,48 @@ void handle_mode_withdraw() {
 }
 
 void handle_reseturl() {
-  const String &cmd = g_serial_command;
-  String url = cmd.substring(9);
-  url.trim();
-  if (url.length() == 0) {
+  char *url = strtrim(g_serial_command + 9);
+  if (strlen(url) == 0) {
     Serial.println(F("[error] Usage: reseturl <plain-url>"));
     return;
   }
-  safe_strcpy(mBoltConfig.reset_url, url.c_str(), sizeof(mBoltConfig.reset_url));
+  safe_strcpy(mBoltConfig.reset_url, url, sizeof(mBoltConfig.reset_url));
   saveBoltConfig(active_bolt_config);
   Serial.print(F("[reseturl] Set to: ")); Serial.println(url);
 }
 
 void handle_wifissid() {
-  const String &cmd = g_serial_command;
-  String ssid = cmd.substring(9);
-  ssid.trim();
-  safe_strcpy(mBoltConfig.wifi_ssid, ssid.c_str(), sizeof(mBoltConfig.wifi_ssid));
+  char *ssid = strtrim(g_serial_command + 9);
+  safe_strcpy(mBoltConfig.wifi_ssid, ssid, sizeof(mBoltConfig.wifi_ssid));
   saveBoltConfig(active_bolt_config);
   Serial.print(F("[wifissid] Set to: ")); Serial.println(mBoltConfig.wifi_ssid);
 }
 
 void handle_wifipass() {
-  const String &cmd = g_serial_command;
-  String pass = cmd.substring(9);
-  pass.trim();
-  safe_strcpy(mBoltConfig.wifi_password, pass.c_str(), sizeof(mBoltConfig.wifi_password));
+  char *pass = strtrim(g_serial_command + 9);
+  safe_strcpy(mBoltConfig.wifi_password, pass, sizeof(mBoltConfig.wifi_password));
   saveBoltConfig(active_bolt_config);
   Serial.println(F("[wifipass] Updated"));
 }
 
 #if HAS_WEB_LOOKUP
 void handle_wifi_connect() {
-  const String &cmd = g_serial_command;
-  String args = cmd.substring(5);
-  args.trim();
-  int sp = args.indexOf(' ');
-  if (sp < 0) {
+  char *args = strtrim(g_serial_command + 5);
+  char ssid[65] = {0};
+  int pos = next_token(args, 0, ssid, sizeof(ssid));
+  if (pos < 0) {
     Serial.println(F("[error] Usage: wifi <ssid> <password>"));
     return;
   }
-  String ssid = args.substring(0, sp);
-  String pass = args.substring(sp + 1);
-  pass.trim();
+  char *pass = strtrim(args + pos);
+  if (pass[0] == '\0') {
+    Serial.println(F("[error] Usage: wifi <ssid> <password>"));
+    return;
+  }
   Serial.print(F("[wifi] Connecting to "));
   Serial.println(ssid);
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid.c_str(), pass.c_str());
+  WiFi.begin(ssid, pass);
   unsigned long t0 = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - t0 < CARD_TAP_TIMEOUT_MS) {
     delay(500);
@@ -1006,14 +1019,12 @@ void handle_wifi() {
 }
 
 void handle_keyserver() {
-  const String &cmd = g_serial_command;
-  String url = cmd.substring(10);
-  url.trim();
-  if (url.length() >= sizeof(web_lookup_url)) {
+  char *url = strtrim(g_serial_command + 10);
+  if (strlen(url) >= sizeof(web_lookup_url)) {
     Serial.println(F("[error] URL too long"));
     return;
   }
-  safe_strcpy(web_lookup_url, url.c_str(), sizeof(web_lookup_url));
+  safe_strcpy(web_lookup_url, url, sizeof(web_lookup_url));
   Serial.print(F("[keyserver] Set to: "));
   Serial.println(web_lookup_url);
 }
@@ -1047,6 +1058,7 @@ void handle_burn() {
   if (!begin_card_command(F("[burn]"))) return;
   bolt.loadKeysForBurn(mBoltConfig);
   uint8_t result = wait_for_card(F("[burn] TIMEOUT — no card detected in 30s"), CARD_TAP_TIMEOUT_LONG_MS,
+                                 // TODO: remove String wrapper once bolt.burn accepts const char*.
                                  [&]() { return bolt.burn(String(mBoltConfig.url)); });
   if (result == JOBSTATUS_WAITING) {
     serial_cmd_active = false;
@@ -1177,9 +1189,10 @@ void handle_dummyburn() {
   if (!begin_card_command(F("[dummyburn]"))) return;
   bolt.cur_keys = BoltcardKeys::allZeros();
   bolt.new_keys = BoltcardKeys::allZeros();
-  String lnurl = "https://dummy.test";
+  const char *lnurl = "https://dummy.test";
   uint8_t result = wait_for_card(F("[dummyburn] TIMEOUT — no card detected in 30s"), CARD_TAP_TIMEOUT_LONG_MS,
-                                 [&]() { return bolt.burn(lnurl); });
+                                 // TODO: remove String wrapper once bolt.burn accepts const char*.
+                                 [&]() { return bolt.burn(String(lnurl)); });
   if (result == JOBSTATUS_WAITING) {
     serial_cmd_active = false;
     led_blink(5, 100);
@@ -1283,44 +1296,39 @@ void handle_diagnose() {
 // key slot to zero with version 0x00. Usage: recoverkey &lt;slot&gt; &lt;old-key&gt; [k0]
 // Ref: NT4H2421Gx datasheet §7.3.2 (ChangeKey command, INS 0xC4)
 void handle_recoverkey() {
-  const String &cmd = g_serial_command;
   // Usage: recoverkey <slot 0-4> <32-hex-old-key> [32-hex-k0]
   // Authenticates with K0 (zeros by default, or provided hex), then ChangeKey
   // to restore the target key slot to zero with version 0x00.
   if (!bolty_hw_ready) { Serial.println(F("[error] NFC not ready")); return; }
 
-  String args = cmd.substring(11);
-  args.trim();
-  int spaceIdx = args.indexOf(' ');
-  if (spaceIdx < 0) {
+  char *args = strtrim(g_serial_command + 11);
+  char slot_buf[12] = {0};
+  char old_key_hex[33] = {0};
+  char k0_hex[33] = {0};
+  int pos = next_token(args, 0, slot_buf, sizeof(slot_buf));
+  pos = (pos < 0) ? -1 : next_token(args, pos, old_key_hex, sizeof(old_key_hex));
+  if (pos < 0) {
     Serial.println(F("[recoverkey] Usage: recoverkey <slot 0-4> <32-hex-old-key> [32-hex-k0]"));
     return;
   }
-  int slot = args.substring(0, spaceIdx).toInt();
-  String rest = args.substring(spaceIdx + 1);
-  rest.trim();
-
-  int spaceIdx2 = rest.indexOf(' ');
-  String old_key_hex, k0_hex;
-  if (spaceIdx2 >= 0) {
-    old_key_hex = rest.substring(0, spaceIdx2);
-    k0_hex = rest.substring(spaceIdx2 + 1);
-    k0_hex.trim();
-  } else {
-    old_key_hex = rest;
-    k0_hex = "";
+  if (args[pos] != '\0') {
+    pos = next_token(args, pos, k0_hex, sizeof(k0_hex));
+    if (pos < 0 || args[pos] != '\0') {
+      Serial.println(F("[recoverkey] Usage: recoverkey <slot 0-4> <32-hex-old-key> [32-hex-k0]"));
+      return;
+    }
   }
-  old_key_hex.trim();
+  int slot = atoi(slot_buf);
 
   if (slot < 0 || slot > 4) {
     Serial.println(F("[recoverkey] Slot must be 0-4"));
     return;
   }
-  if (old_key_hex.length() != HEX_KEY_LEN) {
+  if (strlen(old_key_hex) != HEX_KEY_LEN) {
     Serial.println(F("[recoverkey] Old key must be 32 hex chars (16 bytes)"));
     return;
   }
-  if (k0_hex.length() > 0 && k0_hex.length() != HEX_KEY_LEN) {
+  if (strlen(k0_hex) > 0 && strlen(k0_hex) != HEX_KEY_LEN) {
     Serial.println(F("[recoverkey] K0 must be 32 hex chars (16 bytes) or omitted for zeros"));
     return;
   }
@@ -1328,7 +1336,7 @@ void handle_recoverkey() {
   uint8_t auth_key[AES_KEY_LEN] = {0};
   uint8_t old_key[AES_KEY_LEN] = {0};
   bolt.setKey(old_key, old_key_hex);
-  if (k0_hex.length() == HEX_KEY_LEN) {
+  if (strlen(k0_hex) == HEX_KEY_LEN) {
     bolt.setKey(auth_key, k0_hex);
   }
 
@@ -1337,7 +1345,7 @@ void handle_recoverkey() {
   Serial.println(F(" -> zero, ver=0x00"));
   DBG_PRINT(F("[recoverkey] Candidate old key: "));
   DBG_PRINTLN(old_key_hex);
-  if (k0_hex.length() == HEX_KEY_LEN) {
+  if (strlen(k0_hex) == HEX_KEY_LEN) {
     DBG_PRINT(F("[recoverkey] Auth K0: "));
     DBG_PRINTLN(k0_hex);
   } else {
@@ -1517,52 +1525,56 @@ void handle_ota() {
 }
 #endif
 
-void handle_serial_command(String cmd) {
-  cmd.trim();
-  if (cmd.length() == 0) return;
+void handle_serial_command(const char *raw_cmd) {
+  strncpy(g_serial_command, raw_cmd, SERIAL_CMD_MAX - 1);
+  g_serial_command[SERIAL_CMD_MAX - 1] = '\0';
+  char *cmd = strtrim(g_serial_command);
+  if (cmd != g_serial_command) {
+    memmove(g_serial_command, cmd, strlen(cmd) + 1);
+    cmd = g_serial_command;
+  }
+  if (cmd[0] == '\0') return;
 
-  g_serial_command = cmd;
-
-  if (cmd == "help") { handle_help(); }
-  else if (cmd == "uid") { handle_uid(); }
-  else if (cmd == "status") { handle_status(); }
-  else if (cmd == "auth") { handle_auth(); }
-  else if (cmd == "ndef") { handle_ndef(); }
-  else if (cmd == "picc") { handle_picc(); }
-  else if (cmd.startsWith("decodebolt11 ")) { handle_decodebolt11(); }
-  else if (cmd == "inspect") { handle_inspect(); }
-  else if (cmd == "derivekeys") { handle_derivekeys(); }
-  else if (cmd == "ver") { handle_ver(); }
-  else if (cmd == "issuer") { handle_issuer(); }
-  else if (cmd.startsWith("issuer ")) { handle_set_issuer(); }
-  else if (cmd.startsWith("keys ")) { handle_keys(); }
-  else if (cmd.startsWith("url ")) { handle_url(); }
-  else if (cmd == "mode pos") { handle_mode_pos(); }
-  else if (cmd == "mode 2fa") { handle_mode_2fa(); }
-  else if (cmd == "mode withdraw") { handle_mode_withdraw(); }
-  else if (cmd.startsWith("reseturl ")) { handle_reseturl(); }
-  else if (cmd.startsWith("wifissid ")) { handle_wifissid(); }
-  else if (cmd.startsWith("wifipass ")) { handle_wifipass(); }
+  if (strcmp(cmd, "help") == 0) { handle_help(); }
+  else if (strcmp(cmd, "uid") == 0) { handle_uid(); }
+  else if (strcmp(cmd, "status") == 0) { handle_status(); }
+  else if (strcmp(cmd, "auth") == 0) { handle_auth(); }
+  else if (strcmp(cmd, "ndef") == 0) { handle_ndef(); }
+  else if (strcmp(cmd, "picc") == 0) { handle_picc(); }
+  else if (strncmp(cmd, "decodebolt11 ", 13) == 0) { handle_decodebolt11(); }
+  else if (strcmp(cmd, "inspect") == 0) { handle_inspect(); }
+  else if (strcmp(cmd, "derivekeys") == 0) { handle_derivekeys(); }
+  else if (strcmp(cmd, "ver") == 0) { handle_ver(); }
+  else if (strcmp(cmd, "issuer") == 0) { handle_issuer(); }
+  else if (strncmp(cmd, "issuer ", 7) == 0) { handle_set_issuer(); }
+  else if (strncmp(cmd, "keys ", 5) == 0) { handle_keys(); }
+  else if (strncmp(cmd, "url ", 4) == 0) { handle_url(); }
+  else if (strcmp(cmd, "mode pos") == 0) { handle_mode_pos(); }
+  else if (strcmp(cmd, "mode 2fa") == 0) { handle_mode_2fa(); }
+  else if (strcmp(cmd, "mode withdraw") == 0) { handle_mode_withdraw(); }
+  else if (strncmp(cmd, "reseturl ", 9) == 0) { handle_reseturl(); }
+  else if (strncmp(cmd, "wifissid ", 9) == 0) { handle_wifissid(); }
+  else if (strncmp(cmd, "wifipass ", 9) == 0) { handle_wifipass(); }
 #if HAS_WEB_LOOKUP
-  else if (cmd.startsWith("wifi ")) { handle_wifi_connect(); }
-  else if (cmd == "wifi off") { handle_wifi_off(); }
-  else if (cmd == "wifi") { handle_wifi(); }
-  else if (cmd.startsWith("keyserver ")) { handle_keyserver(); }
+  else if (strncmp(cmd, "wifi ", 5) == 0) { handle_wifi_connect(); }
+  else if (strcmp(cmd, "wifi off") == 0) { handle_wifi_off(); }
+  else if (strcmp(cmd, "wifi") == 0) { handle_wifi(); }
+  else if (strncmp(cmd, "keyserver ", 10) == 0) { handle_keyserver(); }
 #endif
-  else if (cmd == "probe on") { handle_probe_on(); }
-  else if (cmd == "probe off") { handle_probe_off(); }
-  else if (cmd == "probe") { handle_probe(); }
-  else if (cmd == "burn") { handle_burn(); }
-  else if (cmd == "wipe") { handle_wipe(); }
-  else if (cmd == "keyver") { handle_keyver(); }
-  else if (cmd == "check") { handle_check(); }
-  else if (cmd == "dummyburn") { handle_dummyburn(); }
-  else if (cmd == "reset") { handle_reset(); }
-  else if (cmd == "diagnose") { handle_diagnose(); }
-  else if (cmd.startsWith("recoverkey ")) { handle_recoverkey(); }
-  else if (cmd == "testck") { handle_testck(); }
+  else if (strcmp(cmd, "probe on") == 0) { handle_probe_on(); }
+  else if (strcmp(cmd, "probe off") == 0) { handle_probe_off(); }
+  else if (strcmp(cmd, "probe") == 0) { handle_probe(); }
+  else if (strcmp(cmd, "burn") == 0) { handle_burn(); }
+  else if (strcmp(cmd, "wipe") == 0) { handle_wipe(); }
+  else if (strcmp(cmd, "keyver") == 0) { handle_keyver(); }
+  else if (strcmp(cmd, "check") == 0) { handle_check(); }
+  else if (strcmp(cmd, "dummyburn") == 0) { handle_dummyburn(); }
+  else if (strcmp(cmd, "reset") == 0) { handle_reset(); }
+  else if (strcmp(cmd, "diagnose") == 0) { handle_diagnose(); }
+  else if (strncmp(cmd, "recoverkey ", 11) == 0) { handle_recoverkey(); }
+  else if (strcmp(cmd, "testck") == 0) { handle_testck(); }
 #if BOLTY_OTA_ENABLED
-  else if (cmd == "ota") { handle_ota(); }
+  else if (strcmp(cmd, "ota") == 0) { handle_ota(); }
 #endif
   else {
     Serial.print(F("[error] Unknown: ")); Serial.println(cmd);
