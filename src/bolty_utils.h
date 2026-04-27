@@ -174,6 +174,70 @@ inline bool ndef_extract_uri(const uint8_t *ndef, int len, String &uri) {
   return false;
 }
 
+// ── char[]-based API variants (replacing Arduino String versions) ──
+
+// Extract URI from NDEF record into a pre-allocated buffer.
+// Returns true if a valid URI was found and written to buf (null-terminated).
+// buf_size must be >= the URI length + 1.
+inline bool ndef_extract_uri_buf(const uint8_t *ndef, int len, char *buf, size_t buf_size) {
+  if (buf == nullptr || buf_size == 0) {
+    return false;
+  }
+  buf[0] = '\0';
+  if (ndef == nullptr || len < 5) {
+    return false;
+  }
+
+  for (int i = 0; i <= len - 5; i++) {
+    if (ndef[i] == NDEF_HEADER_SHORT && ndef[i + 1] == 0x01 &&
+        ndef[i + 3] == NDEF_TYPE_URI) {
+      const int payload_len = ndef[i + 2];
+      if (payload_len < 1 || i + 4 + payload_len > len) {
+        return false;
+      }
+
+      const uint8_t prefix = ndef[i + 4];
+      const char *prefix_str = "";
+      switch (prefix) {
+      case 0x00:
+        prefix_str = "";
+        break;
+      case 0x01:
+        prefix_str = "http://www.";
+        break;
+      case 0x02:
+        prefix_str = "https://www.";
+        break;
+      case 0x03:
+        prefix_str = "http://";
+        break;
+      case 0x04:
+        prefix_str = "https://";
+        break;
+      default:
+        prefix_str = "";
+        break;
+      }
+
+      const size_t prefix_len = strlen(prefix_str);
+      const size_t suffix_len = (size_t)(payload_len - 1);
+      if (prefix_len + suffix_len + 1 > buf_size) {
+        return false;
+      }
+
+      memcpy(buf, prefix_str, prefix_len);
+      for (size_t j = 0; j < suffix_len; j++) {
+        const uint8_t ch = ndef[i + 5 + (int)j];
+        buf[prefix_len + j] = (ch >= 0x20 && ch < 0x7F) ? (char)ch : '.';
+      }
+      buf[prefix_len + suffix_len] = '\0';
+      return true;
+    }
+  }
+
+  return false;
+}
+
 inline void print_ndef_ascii(const uint8_t *ndef, int len) {
   for (int i = 0; i < len; i++) {
     Serial.write(ndef[i] >= 0x20 && ndef[i] < 0x7F ? ndef[i] : '.');
@@ -256,6 +320,23 @@ inline bool parse_hex_fixed(const String &hex, uint8_t *out, size_t out_len) {
   return true;
 }
 
+// Parse fixed-length hex C-string into byte array (String-free version).
+// hex must have exactly 2*out_len characters. Returns true on success.
+inline bool parse_hex_fixed_cstr(const char *hex, uint8_t *out, size_t out_len) {
+  if (hex == nullptr || out == nullptr || strlen(hex) != out_len * 2) {
+    return false;
+  }
+  for (size_t i = 0; i < out_len; i++) {
+    uint8_t upper = 0;
+    uint8_t lower = 0;
+    if (!hex_nibble(hex[i * 2], upper) || !hex_nibble(hex[i * 2 + 1], lower)) {
+      return false;
+    }
+    out[i] = (uint8_t)((upper << 4) | lower);
+  }
+  return true;
+}
+
 inline bool uri_get_query_param(const String &uri, const char *name,
                                 String &value) {
   value = "";
@@ -277,6 +358,49 @@ inline bool uri_get_query_param(const String &uri, const char *name,
   }
   value = uri.substring(value_start, value_end);
   return value.length() > 0;
+}
+
+// Find query parameter value in a URI string.
+// Returns true if param found; writes null-terminated value to buf (up to buf_size-1).
+// Searches within the substring starting at the first '?' in uri.
+inline bool uri_get_query_param_buf(const char *uri, const char *name,
+                                    char *buf, size_t buf_size) {
+  if (uri == nullptr || name == nullptr || buf == nullptr || buf_size == 0) {
+    return false;
+  }
+
+  buf[0] = '\0';
+  const char *query = strchr(uri, '?');
+  if (query == nullptr) {
+    return false;
+  }
+
+  const size_t name_len = strlen(name);
+  const char *start = query + 1;
+  while ((start = strstr(start, name)) != nullptr) {
+    if (start[name_len] == '=') {
+      break;
+    }
+    start += name_len;
+  }
+  if (start == nullptr) {
+    return false;
+  }
+
+  const char *value_start = start + name_len + 1;
+  const char *value_end = strchr(value_start, '&');
+  if (value_end == nullptr) {
+    value_end = uri + strlen(uri);
+  }
+
+  const size_t value_len = (size_t)(value_end - value_start);
+  if (value_len == 0 || value_len + 1 > buf_size) {
+    return false;
+  }
+
+  memcpy(buf, value_start, value_len);
+  buf[value_len] = '\0';
+  return true;
 }
 
 inline void print_hex_bytes_inline(const uint8_t *data, size_t len) {

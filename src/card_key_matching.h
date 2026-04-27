@@ -219,21 +219,21 @@ static bool deterministic_verify_cmac(BoltyNfcReader *nfc,
 static bool deterministic_try_known_matches(BoltyNfcReader *nfc,
                                             const uint8_t *uid,
                                             uint8_t uid_len,
-                                            const String &uri,
+                                            const char *uri,
                                             DeterministicBoltcardMatch &match) {
   memset(&match, 0, sizeof(match));
-  if (uid == nullptr || uid_len != PICC_UID_BYTE_LEN || uri.length() == 0) return false;
+  if (uid == nullptr || uid_len != PICC_UID_BYTE_LEN || uri == nullptr || strlen(uri) == 0) return false;
 
-  String p_hex;
-  if (!uri_get_query_param(uri, "p", p_hex)) return false;
+  char p_hex[33];
+  if (!uri_get_query_param_buf(uri, "p", p_hex, sizeof(p_hex))) return false;
 
   uint8_t p_bytes[AES_KEY_LEN] = {0};
-  if (!parse_hex_fixed(p_hex, p_bytes, sizeof(p_bytes))) return false;
+  if (!parse_hex_fixed_cstr(p_hex, p_bytes, sizeof(p_bytes))) return false;
 
-  String c_hex;
-  const bool has_c = uri_get_query_param(uri, "c", c_hex);
+  char c_hex[17];
+  const bool has_c = uri_get_query_param_buf(uri, "c", c_hex, sizeof(c_hex));
   uint8_t c_bytes[8] = {0};
-  const bool c_parse_ok = has_c && parse_hex_fixed(c_hex, c_bytes, sizeof(c_bytes));
+  const bool c_parse_ok = has_c && parse_hex_fixed_cstr(c_hex, c_bytes, sizeof(c_bytes));
 
   for (int candidate = 0; candidate < 7; candidate++) {
     const uint8_t *issuer_key = BOLTCARD_ISSUER_KEYS[candidate];
@@ -271,4 +271,12 @@ static bool deterministic_try_known_matches(BoltyNfcReader *nfc,
   }
 
   return false;
+}
+
+static bool deterministic_try_known_matches(BoltyNfcReader *nfc,
+                                            const uint8_t *uid,
+                                            uint8_t uid_len,
+                                            const String &uri,
+                                            DeterministicBoltcardMatch &match) {
+  return deterministic_try_known_matches(nfc, uid, uid_len, uri.c_str(), match);
 }

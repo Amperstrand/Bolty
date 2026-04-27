@@ -35,7 +35,7 @@ struct CardAssessment {
   bool looks_like_boltcard;
   bool deterministic_k1_match;
   bool deterministic_full_match;
-  String uri;
+  char uri[256];  // Extracted URI from NDEF record (max URI length per NDEF spec)
   uint8_t derived_keys[5][16];
   bool reset_eligible;
 };
@@ -49,6 +49,7 @@ static void reset_card_assessment(CardAssessment &assessment) {
     assessment.key_versions[i] = 0xFF;
     assessment.key_confidence[i] = KeyConfidence::unknown;
   }
+  assessment.uri[0] = '\0';
 }
 
 // Compare a scanned UID against a stored assessment using constant-time comparison.

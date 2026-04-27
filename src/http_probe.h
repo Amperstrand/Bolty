@@ -165,4 +165,9 @@ static inline bool http_probe_url(const String &url) {
 #endif
 }
 
+static inline bool http_probe_url(const char *url) {
+  if (url == nullptr || url[0] == '\0') return false;
+  return http_probe_url(String(url));
+}
+
 #endif

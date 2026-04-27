@@ -349,8 +349,8 @@ static esp_err_t rest_get_ndef(httpd_req_t *req) {
 
   if (len <= 0) return _rest_error(req, "NDEF read failed");
 
-  String uri;
-  bool has_uri = ndef_extract_uri(ndef, len, uri);
+  char uri[256] = {0};
+  bool has_uri = ndef_extract_uri_buf(ndef, len, uri, sizeof(uri));
   char ascii[257] = {0};
   for (int i = 0; i < len && i < 256; i++)
     ascii[i] = (ndef[i] >= 0x20 && ndef[i] < 0x7F) ? ndef[i] : '.';
@@ -367,8 +367,8 @@ static esp_err_t rest_get_ndef(httpd_req_t *req) {
   pos += snprintf(json + pos, sizeof(json) - pos,
     "\",\"uri\":\"");
   if (has_uri) {
-    for (unsigned int i = 0; i < uri.length() && pos < 480; i++) {
-      char c = uri.charAt(i);
+    for (size_t i = 0; uri[i] != '\0' && pos < 480; i++) {
+      char c = uri[i];
       if (c == '"' || c == '\\') json[pos++] = '\\';
       json[pos++] = c;
     }

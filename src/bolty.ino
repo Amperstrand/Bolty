@@ -142,7 +142,7 @@ struct DeterministicBoltcardMatch;
 static bool deterministic_try_known_matches(BoltyNfcReader *nfc,
                                             const uint8_t *uid,
                                             uint8_t uid_len,
-                                            const String &uri,
+                                            const char *uri,
                                             DeterministicBoltcardMatch &match);
 
 #if HAS_WIFI
@@ -197,13 +197,13 @@ static IdleCardKind classify_idle_card(const uint8_t *uid, uint8_t uid_len) {
   uint8_t ndef[256] = {0};
   const int ndef_len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
   if (ndef_len > 0) {
-    String uri;
-    if (ndef_extract_uri(ndef, ndef_len, uri)) {
-      const bool has_lnurlw = uri.startsWith("lnurlw://") || uri.indexOf("lnurlw://") >= 0;
-      String p_hex;
-      String c_hex;
-      const bool has_p = uri_get_query_param(uri, "p", p_hex);
-      const bool has_c = uri_get_query_param(uri, "c", c_hex);
+    char uri[256] = {0};
+    if (ndef_extract_uri_buf(ndef, ndef_len, uri, sizeof(uri))) {
+      const bool has_lnurlw = strstr(uri, "lnurlw://") != nullptr;
+      char p_hex[33] = {0};
+      char c_hex[17] = {0};
+      const bool has_p = uri_get_query_param_buf(uri, "p", p_hex, sizeof(p_hex));
+      const bool has_c = uri_get_query_param_buf(uri, "c", c_hex, sizeof(c_hex));
       if (has_lnurlw || (has_p && has_c)) {
         return IdleCardKind::programmed;
       }
@@ -285,7 +285,7 @@ static void print_card_assessment(const CardAssessment &assessment) {
   Serial.println(assessment.has_ndef ? F("YES") : F("NO"));
   Serial.print(F("[assess] Looks like Bolt Card: "));
   Serial.println(assessment.looks_like_boltcard ? F("YES") : F("NO"));
-  if (assessment.uri.length() > 0) {
+  if (strlen(assessment.uri) > 0) {
     Serial.print(F("[assess] URI: "));
     Serial.println(assessment.uri);
   }
@@ -320,7 +320,7 @@ static void handle_atom_button_feedback() {
     led_show_key_assessment(rows, 2500);
     led_tick();
 #if HAS_HTTP_PROBE
-    if (mBoltConfig.wifi_probe_enabled && assessment.has_uri && assessment.uri.length() > 0) {
+    if (mBoltConfig.wifi_probe_enabled && assessment.has_uri && strlen(assessment.uri) > 0) {
       http_probe_url(assessment.uri);
     }
 #endif

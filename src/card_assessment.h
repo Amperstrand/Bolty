@@ -23,34 +23,34 @@ extern CardAssessment g_last_assessment;
 static void print_deterministic_boltcard_check(BoltyNfcReader *nfc,
                                                const uint8_t *uid,
                                                uint8_t uid_len,
-                                               const String &uri) {
+                                               const char *uri) {
   Serial.println(F("[inspect] --- Deterministic Key Derivation Check ---"));
 
   if (uid_len != 7) {
     Serial.println(F("[inspect] SKIPPED — deterministic Bolt Card derivation expects a 7-byte UID."));
     return;
   }
-  if (uri.length() == 0) {
+  if (uri == nullptr || strlen(uri) == 0) {
     Serial.println(F("[inspect] SKIPPED — no URI available for read-only deterministic verification."));
     return;
   }
 
-  String p_hex;
-  if (!uri_get_query_param(uri, "p", p_hex)) {
+  char p_hex[33];
+  if (!uri_get_query_param_buf(uri, "p", p_hex, sizeof(p_hex))) {
     Serial.println(F("[inspect] SKIPPED — URI has no p= parameter to decrypt."));
     return;
   }
 
   uint8_t p_bytes[AES_KEY_LEN] = {0};
-  if (!parse_hex_fixed(p_hex, p_bytes, sizeof(p_bytes))) {
+  if (!parse_hex_fixed_cstr(p_hex, p_bytes, sizeof(p_bytes))) {
     Serial.println(F("[inspect] FAIL — p= is not valid 16-byte hex."));
     return;
   }
 
-  String c_hex;
-  const bool has_c = uri_get_query_param(uri, "c", c_hex);
+  char c_hex[17];
+  const bool has_c = uri_get_query_param_buf(uri, "c", c_hex, sizeof(c_hex));
   uint8_t c_bytes[8] = {0};
-  const bool c_parse_ok = has_c && parse_hex_fixed(c_hex, c_bytes, sizeof(c_bytes));
+  const bool c_parse_ok = has_c && parse_hex_fixed_cstr(c_hex, c_bytes, sizeof(c_bytes));
 
   bool any_match = false;
   bool any_full_match = false;
@@ -153,6 +153,13 @@ static void print_deterministic_boltcard_check(BoltyNfcReader *nfc,
   }
 }
 
+static void print_deterministic_boltcard_check(BoltyNfcReader *nfc,
+                                               const uint8_t *uid,
+                                               uint8_t uid_len,
+                                               const String &uri) {
+  print_deterministic_boltcard_check(nfc, uid, uid_len, uri.c_str());
+}
+
 // Perform full read-only card state assessment.
 //
 // Multi-phase assessment: detect card type (NTAG424 check) → read key versions
@@ -215,21 +222,22 @@ static bool assess_current_card(CardAssessment &assessment) {
   if (ndef_len > 0) {
     Serial.print(F("[assess] NDEF ASCII: "));
     print_ndef_ascii(ndef, ndef_len);
-    if (ndef_extract_uri(ndef, ndef_len, assessment.uri)) {
+    if (ndef_extract_uri_buf(ndef, ndef_len, assessment.uri, sizeof(assessment.uri))) {
       assessment.has_uri = true;
-      const bool has_lnurlw = assessment.uri.startsWith("lnurlw://") || assessment.uri.indexOf("lnurlw://") >= 0;
-      const bool has_lnurlp = assessment.uri.startsWith("lnurlp://") || assessment.uri.indexOf("lnurlp://") >= 0;
-      String p_hex;
-      String c_hex;
-      const bool has_p = uri_get_query_param(assessment.uri, "p", p_hex);
-      const bool has_c = uri_get_query_param(assessment.uri, "c", c_hex);
+      const char *uri_str = assessment.uri;
+      const bool has_lnurlw = strstr(uri_str, "lnurlw://") != nullptr;
+      const bool has_lnurlp = strstr(uri_str, "lnurlp://") != nullptr;
+      char p_hex[33];
+      char c_hex[17];
+      const bool has_p = uri_get_query_param_buf(assessment.uri, "p", p_hex, sizeof(p_hex));
+      const bool has_c = uri_get_query_param_buf(assessment.uri, "c", c_hex, sizeof(c_hex));
       assessment.looks_like_boltcard = has_lnurlw || has_lnurlp || (has_p && has_c);
 
       // Try current issuer key first (if set)
       bool issuer_matched = false;
       if (has_issuer_key && uid_len == 7 && has_p) {
         uint8_t p_bytes[AES_KEY_LEN] = {0};
-        if (parse_hex_fixed(p_hex, p_bytes, AES_KEY_LEN)) {
+        if (parse_hex_fixed_cstr(p_hex, p_bytes, AES_KEY_LEN)) {
           for (int vi = 0; vi < 4 && !issuer_matched; vi++) {
             uint32_t try_ver = BOLTCARD_VERSION_CANDIDATES[vi];
             uint8_t try_keys[5][AES_KEY_LEN] = {{0}};
@@ -239,9 +247,9 @@ static bool assess_current_card(CardAssessment &assessment) {
             if (deterministic_decrypt_p(bolt.nfc, try_keys[1], p_bytes, uid, dec, ctr)) {
               // K1 matched — check CMAC if available
               bool cmac_ok = false;
-              if (has_c && c_hex.length() >= 16) {
+              if (has_c && strlen(c_hex) >= 16) {
                 uint8_t c_bytes[8] = {0};
-                if (parse_hex_fixed(c_hex, c_bytes, 8)) {
+                if (parse_hex_fixed_cstr(c_hex, c_bytes, 8)) {
                   cmac_ok = deterministic_verify_cmac(bolt.nfc, try_keys[2], uid, ctr, c_bytes);
                 }
               }
@@ -264,7 +272,7 @@ static bool assess_current_card(CardAssessment &assessment) {
       #if HAS_WEB_LOOKUP
       if (!issuer_matched && wifi_connected && uid_len == 7 && has_p) {
         uint8_t p_bytes[AES_KEY_LEN] = {0};
-        if (parse_hex_fixed(p_hex, p_bytes, AES_KEY_LEN)) {
+        if (parse_hex_fixed_cstr(p_hex, p_bytes, AES_KEY_LEN)) {
           char uid_hex[15] = {0};
           for (int i = 0; i < uid_len; i++) {
             snprintf(uid_hex + i*2, 3, "%02X", uid[i]);
@@ -275,9 +283,9 @@ static bool assess_current_card(CardAssessment &assessment) {
           if (web_lookup_and_match(bolt.nfc, uid_hex, p_bytes, uid, web_keys, web_counter, web_decrypted)) {
             // K1 matched from web — check CMAC
             bool cmac_ok = false;
-            if (has_c && c_hex.length() >= 16) {
+            if (has_c && strlen(c_hex) >= 16) {
               uint8_t c_bytes[8] = {0};
-              if (parse_hex_fixed(c_hex, c_bytes, 8)) {
+              if (parse_hex_fixed_cstr(c_hex, c_bytes, 8)) {
                 cmac_ok = deterministic_verify_cmac(bolt.nfc, web_keys[2], uid, web_counter, c_bytes);
               }
             }

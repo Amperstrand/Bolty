@@ -29,6 +29,7 @@ class CardAssessment:
         self.looks_like_boltcard = False
         self.deterministic_k1_match = False
         self.deterministic_full_match = False
+        self.uri = ""
         self.reset_eligible = False
 
 
@@ -46,6 +47,7 @@ def reset_card_assessment(a: CardAssessment) -> None:
     a.looks_like_boltcard = False
     a.deterministic_k1_match = False
     a.deterministic_full_match = False
+    a.uri = ""
     a.reset_eligible = False
 
 
@@ -85,6 +87,7 @@ def make_dirty_assessment() -> CardAssessment:
     assessment.looks_like_boltcard = True
     assessment.deterministic_k1_match = True
     assessment.deterministic_full_match = True
+    assessment.uri = "https://example.com/?p=00112233445566778899AABBCCDDEEFF&c=0011223344556677"
     assessment.reset_eligible = True
     return assessment
 
@@ -107,6 +110,7 @@ class TestResetCardAssessment:
         assert assessment.looks_like_boltcard is False
         assert assessment.deterministic_k1_match is False
         assert assessment.deterministic_full_match is False
+        assert assessment.uri == ""
         assert assessment.reset_eligible is False
 
     def test_key_versions_are_0xFF(self) -> None:
@@ -146,6 +150,7 @@ class TestResetCardAssessment:
         assert assessment.looks_like_boltcard is False
         assert assessment.deterministic_k1_match is False
         assert assessment.deterministic_full_match is False
+        assert assessment.uri == ""
         assert assessment.reset_eligible is False
 
     def test_reset_after_modification(self) -> None:
