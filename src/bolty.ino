@@ -22,6 +22,7 @@
 #include <esp_task_wdt.h>
 #include "bolt.h"
 #include "bolty_utils.h"
+#include "card_types.h"
 #include "PiccData.h"
 #include "Bolt11Decode.h"
 #include "KeyDerivation.h"
@@ -179,56 +180,7 @@ static bool wifi_connected = false;
 static char web_lookup_url[128] = "https://boltcardpoc.psbt.me/api/keys";
 #endif
 
-enum class IdleCardKind : uint8_t {
-  none = 0,
-  blank,
-  unknown,
-  programmed,
-};
-
-enum class KeyConfidence : uint8_t {
-  unknown = 0,
-  partial,
-  high,
-};
-
-struct CardAssessment {
-  bool present;
-  bool is_ntag424;
-  uint8_t uid[12];
-  uint8_t uid_len;
-  IdleCardKind kind;
-  uint8_t key_versions[5];
-  KeyConfidence key_confidence[5];
-  bool zero_key_auth_ok;
-  bool has_ndef;
-  bool has_uri;
-  bool looks_like_boltcard;
-  bool deterministic_k1_match;
-  bool deterministic_full_match;
-  String uri;
-  uint8_t derived_keys[5][16];
-  bool reset_eligible;
-};
-
 static CardAssessment g_last_assessment = {};
-
-// Zero-initialize a CardAssessment struct, setting default confidence levels and card classification.
-// Called before each card scan to start with a clean state.
-static void reset_card_assessment(CardAssessment &assessment) {
-  memset(&assessment, 0, sizeof(assessment));
-  assessment.kind = IdleCardKind::none;
-  for (int i = 0; i < 5; i++) {
-    assessment.key_versions[i] = 0xFF;
-    assessment.key_confidence[i] = KeyConfidence::unknown;
-  }
-}
-
-// Compare a scanned UID against a stored assessment using constant-time comparison.
-// Ref: bolty_utils.h (crypto_memcmp for timing-safe comparison)
-static bool same_uid(const CardAssessment &assessment, const uint8_t *uid, uint8_t uid_len) {
-  return assessment.present && assessment.uid_len == uid_len && crypto_memcmp(assessment.uid, uid, uid_len);
-}
 
 // Classify a detected card as blank, provisioned bolt card, or unknown by reading key versions and NDEF.
 // Ref: NT4H2421Gx datasheet §7.3.3 (GetKeyVersion), NFC Forum NDEF §3.2
