@@ -939,6 +939,8 @@ uint8_t lineh = 21;
 void update_screen() {
   tft.fillScreen(fromrgb(0xed, 0xef, 0xf2));
   int8_t ofs = -3;
+  char config_label[64];
+  char wifi_label[64];
   tft.fillRect(0, 0, tft.width(), 23, mAppHandler[app_active].app_bgcolor);
 #if HAS_BATTERY
   draw_battery(true);
@@ -953,14 +955,15 @@ void update_screen() {
   tft.setTextColor(APPWHITE);
   displayTextCentered(ofs + (1 * lineh), mAppHandler[app_active].app_title);
   tft.setTextColor(mAppHandler[app_active].app_fgcolor);
-  displayTextCentered(ofs + (2 * lineh), String(active_bolt_config + 1) + ". " +
-                                             mBoltConfig.card_name);
+  snprintf(config_label, sizeof(config_label), "%u. %s",
+           static_cast<unsigned>(active_bolt_config + 1), mBoltConfig.card_name);
+  displayTextCentered(ofs + (2 * lineh), config_label);
   displayTextCentered(ofs + (3 * lineh), mAppHandler[app_active].app_desc);
 #if HAS_WIFI
   if (mSettings.wifi_enabled) {
     if (mSettings.wifimode == WIFIMODE_AP) {
-      displayTextLeft(ofs + (5 * lineh),
-                      "WiFi " + String(ap_ssid) + ":" + String(ap_password));
+      snprintf(wifi_label, sizeof(wifi_label), "WiFi %s:%s", ap_ssid, ap_password);
+      displayTextLeft(ofs + (5 * lineh), wifi_label);
     }
     displayTextLeft(ofs + (6 * lineh), getIpAddress());
   }

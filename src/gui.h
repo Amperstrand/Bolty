@@ -66,7 +66,7 @@ uint16_t fromrgb(uint8_t r, uint8_t g, uint8_t b) {
   return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
 }
 
-static inline void displayText(int col, int row, String txt) {
+static inline void displayText(int col, int row, const char *txt) {
 #if HAS_DISPLAY
   tft.fillScreen(APPWHITE);
   tft.setCursor(col * 10, row * 10);
@@ -76,7 +76,7 @@ static inline void displayText(int col, int row, String txt) {
 #endif
 }
 
-static inline int displayTextCentered(int y, String txt) {
+static inline int displayTextCentered(int y, const char *txt) {
 #if HAS_DISPLAY
   int16_t w = tft.textWidth(txt);
   int16_t h = tft.fontHeight();
@@ -89,7 +89,7 @@ static inline int displayTextCentered(int y, String txt) {
 #endif
 }
 
-static inline int displayTextLeft(int y, String txt) {
+static inline int displayTextLeft(int y, const char *txt) {
 #if HAS_DISPLAY
   int16_t h = tft.fontHeight();
   tft.setCursor(3, y);
@@ -101,7 +101,7 @@ static inline int displayTextLeft(int y, String txt) {
 #endif
 }
 
-static inline void displayMessage(String txt, uint8_t line) {
+static inline void displayMessage(const char *txt, uint8_t line) {
 #if HAS_DISPLAY
   tft.setFreeFont(&FreeSans9pt7b);
   tft.setTextColor(APPWHITE);
@@ -109,7 +109,8 @@ static inline void displayMessage(String txt, uint8_t line) {
   displayTextCentered(-3 + ((line + 1) * 21), txt);
   tft.setTextColor(APPBLACK);
 #else
-  Serial.println("[msg] " + txt);
+  Serial.print("[msg] ");
+  Serial.println(txt);
 #endif
 }
 
@@ -122,7 +123,8 @@ void draw_battery(bool force_update = false) {
   v = analogRead(ADC_PIN);
   timeStamp = millis();
   float battery_voltage = ((float)v / 4095.0) * 2.0 * 3.3 * (vref / 1000.0);
-  String voltage = "Voltage :" + String(battery_voltage) + "V";
+  char voltage[24];
+  snprintf(voltage, sizeof(voltage), "Voltage :%.2fV", battery_voltage);
   Serial.println(voltage);
 
   float emptyvoltage = 3.2;
@@ -167,8 +169,10 @@ void draw_battery(bool force_update = false) {
     tft.setCursor(posx + 6, posy - 8);
     tft.print("PWR");
   } else {
+    char battery_voltage_text[8];
+    snprintf(battery_voltage_text, sizeof(battery_voltage_text), "%.2f", battery_voltage);
     tft.setCursor(posx + 3, posy - 8);
-    tft.print(String(battery_voltage));
+    tft.print(battery_voltage_text);
   }
 #endif
 }
@@ -215,7 +219,7 @@ void update_screen();
 #if HAS_DISPLAY
   #include <qrcode_rep.h>
 
-bool displayQR(String input) {
+bool displayQR(const char *input) {
   int qrSize = 10;
   int ec_lvl = 0;
   int const sizes[18][4] = {
@@ -227,7 +231,7 @@ bool displayQR(String input) {
       {586, 450, 322, 250}, {644, 504, 364, 280},
   };
 
-  int len = input.length();
+  int len = strlen(input);
   for (int ii = 0; ii < 17; ii++) {
     qrSize = ii + 1;
     if (sizes[ii][ec_lvl] > len) {
@@ -239,7 +243,7 @@ bool displayQR(String input) {
 
   QRCode qrcode;
   uint8_t qrcodeData[qrcode_getBufferSize(qrSize)];
-  qrcode_initText(&qrcode, qrcodeData, qrSize, ec_lvl, input.c_str());
+  qrcode_initText(&qrcode, qrcodeData, qrSize, ec_lvl, input);
 
   Serial.printf("saw qr mode = %d\n", qrcode.mode);
 
@@ -257,8 +261,9 @@ bool displayQR(String input) {
   return true;
 }
 #else
-static inline bool displayQR(String input) {
-  Serial.println("[qr] " + input);
+static inline bool displayQR(const char *input) {
+  Serial.print("[qr] ");
+  Serial.println(input);
   return true;
 }
 #endif

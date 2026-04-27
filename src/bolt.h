@@ -627,8 +627,7 @@ public:
     tft.setFreeFont(&FreeSans9pt7b);
     tft.setTextColor(APPWHITE);
     tft.fillRect(0, -3 + (3 * 23), tft.width(), 21, statcolor);
-    // TODO(Wave B7): remove temporary String wrapper once GUI text APIs accept const char*.
-    displayTextCentered(-3 + (4 * 21), String(get_job_status()));
+    displayTextCentered(-3 + (4 * 21), get_job_status());
     tft.setTextColor(APPBLACK);
 #else
     DBG_PRINT("[status] ");

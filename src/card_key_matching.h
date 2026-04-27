@@ -272,11 +272,3 @@ static bool deterministic_try_known_matches(BoltyNfcReader *nfc,
 
   return false;
 }
-
-static bool deterministic_try_known_matches(BoltyNfcReader *nfc,
-                                            const uint8_t *uid,
-                                            uint8_t uid_len,
-                                            const String &uri,
-                                            DeterministicBoltcardMatch &match) {
-  return deterministic_try_known_matches(nfc, uid, uid_len, uri.c_str(), match);
-}
