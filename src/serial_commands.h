@@ -77,15 +77,20 @@ void serial_print_status() {
   Serial.print(F("  Job: ")); Serial.println(bolt.get_job_status());
   Serial.print(F("  Card: ")); Serial.println(mBoltConfig.card_name);
   Serial.print(F("  LNURL: ")); Serial.println(mBoltConfig.url);
-  Serial.print(F("  k0: ")); Serial.println(mBoltConfig.k0);
-  Serial.print(F("  k1: ")); Serial.println(mBoltConfig.k1);
-  Serial.print(F("  k2: ")); Serial.println(mBoltConfig.k2);
-  Serial.print(F("  k3: ")); Serial.println(mBoltConfig.k3);
-  Serial.print(F("  k4: ")); Serial.println(mBoltConfig.k4);
-  Serial.print(F("  Issuer key: "));
   if (has_issuer_key) {
-    Serial.println(convertIntToHex(current_issuer_key, AES_KEY_LEN));
+    DBG_PRINT(F("  k0: ")); DBG_PRINTLN(mBoltConfig.k0);
+    DBG_PRINT(F("  k1: ")); DBG_PRINTLN(mBoltConfig.k1);
+    DBG_PRINT(F("  k2: ")); DBG_PRINTLN(mBoltConfig.k2);
+    DBG_PRINT(F("  k3: ")); DBG_PRINTLN(mBoltConfig.k3);
+    DBG_PRINT(F("  k4: ")); DBG_PRINTLN(mBoltConfig.k4);
+    DBG_PRINT(F("  Issuer key: "));
+    DBG_PRINTLN(convertIntToHex(current_issuer_key, AES_KEY_LEN));
   } else {
+    DBG_PRINT(F("  k0: ")); DBG_PRINTLN(mBoltConfig.k0);
+    DBG_PRINT(F("  k1: ")); DBG_PRINTLN(mBoltConfig.k1);
+    DBG_PRINT(F("  k2: ")); DBG_PRINTLN(mBoltConfig.k2);
+    DBG_PRINT(F("  k3: ")); DBG_PRINTLN(mBoltConfig.k3);
+    DBG_PRINT(F("  k4: ")); DBG_PRINTLN(mBoltConfig.k4);
     Serial.println(F("(none)"));
   }
   #if HAS_WEB_LOOKUP
@@ -135,15 +140,15 @@ void handle_status() {
 void handle_auth() {
   if (!begin_card_command(F("[auth]"))) return;
   bolt.setCurKeysFromHex(mBoltConfig.k0, mBoltConfig.k1, mBoltConfig.k2, mBoltConfig.k3, mBoltConfig.k4);
-  Serial.print(F("[auth] Trying k0: "));
-  for (int i = 0; i < AES_KEY_LEN; i++) { if (bolt.cur_keys.keys[0][i] < 0x10) Serial.print("0"); Serial.print(bolt.cur_keys.keys[0][i], HEX); }
-  Serial.println();
-  Serial.print(F("[auth] k0 bytes: "));
+  DBG_PRINT(F("[auth] Trying k0: "));
+  for (int i = 0; i < AES_KEY_LEN; i++) { if (bolt.cur_keys.keys[0][i] < 0x10) DBG_PRINT("0"); DBG_PRINT(bolt.cur_keys.keys[0][i], HEX); }
+  DBG_PRINTLN();
+  DBG_PRINT(F("[auth] k0 bytes: "));
   for (int i = 0; i < 16; i++) {
-    Serial.print(bolt.cur_keys.keys[0][i], DEC);
-    Serial.print(" ");
+    DBG_PRINT(bolt.cur_keys.keys[0][i], DEC);
+    DBG_PRINT(" ");
   }
-  Serial.println();
+  DBG_PRINTLN();
   CardTapResult tap = wait_for_card(F("[auth] TIMEOUT"), F("[auth] UID: "), CARD_TAP_TIMEOUT_MS, true);
   if (!tap.found) return;
   Serial.println(F("[auth] About to authenticate..."));
@@ -477,10 +482,10 @@ static bool inspect_match_issuer(const CardTapResult &tap,
     }
   }
 
-  Serial.print(F("[inspect] Issuer key "));
-  Serial.print(convertIntToHex(current_issuer_key, AES_KEY_LEN));
-  Serial.print(F(" -> K1 decrypt: "));
-  Serial.println(issuer_k1_match ? F("MATCH") : F("NO MATCH"));
+  DBG_PRINT(F("[inspect] Issuer key "));
+  DBG_PRINT(convertIntToHex(current_issuer_key, AES_KEY_LEN));
+  DBG_PRINT(F(" -> K1 decrypt: "));
+  DBG_PRINTLN(issuer_k1_match ? F("MATCH") : F("NO MATCH"));
 
   if (!issuer_k1_match) return false;
 
@@ -709,9 +714,9 @@ void handle_derivekeys() {
     return;
   }
 
-  Serial.print(F("[derivekeys] Deterministic K1 matched issuer key "));
+  DBG_PRINT(F("[derivekeys] Deterministic K1 matched issuer key "));
   print_hex_bytes_inline(match.issuer_key, sizeof(match.issuer_key));
-  Serial.println();
+  DBG_PRINTLN();
   Serial.print(F("[derivekeys] Read counter from p=: "));
   Serial.println(match.counter);
 
@@ -725,23 +730,23 @@ void handle_derivekeys() {
   }
 
   store_bolt_config_keys_from_bytes(mBoltConfig, match.keys);
-  Serial.print(F("[derivekeys] FULL MATCH — issuer key "));
+  DBG_PRINT(F("[derivekeys] FULL MATCH — issuer key "));
   print_hex_bytes_inline(match.issuer_key, sizeof(match.issuer_key));
-  Serial.print(F(", version "));
-  Serial.println(match.version);
+  DBG_PRINT(F(", version "));
+  DBG_PRINTLN(match.version);
   Serial.println(F("[derivekeys] Loaded deterministic K0-K4 into active config."));
   Serial.println(F("[derivekeys] K1 and K2 were verified read-only from the card's current NDEF data."));
   Serial.println(F("[derivekeys] K0, K3, and K4 cannot be directly verified read-only, but this is the strongest safe pre-auth signal."));
-  Serial.print(F("[derivekeys] k0: "));
-  Serial.println(mBoltConfig.k0);
-  Serial.print(F("[derivekeys] k1: "));
-  Serial.println(mBoltConfig.k1);
-  Serial.print(F("[derivekeys] k2: "));
-  Serial.println(mBoltConfig.k2);
-  Serial.print(F("[derivekeys] k3: "));
-  Serial.println(mBoltConfig.k3);
-  Serial.print(F("[derivekeys] k4: "));
-  Serial.println(mBoltConfig.k4);
+  DBG_PRINT(F("[derivekeys] k0: "));
+  DBG_PRINTLN(mBoltConfig.k0);
+  DBG_PRINT(F("[derivekeys] k1: "));
+  DBG_PRINTLN(mBoltConfig.k1);
+  DBG_PRINT(F("[derivekeys] k2: "));
+  DBG_PRINTLN(mBoltConfig.k2);
+  DBG_PRINT(F("[derivekeys] k3: "));
+  DBG_PRINTLN(mBoltConfig.k3);
+  DBG_PRINT(F("[derivekeys] k4: "));
+  DBG_PRINTLN(mBoltConfig.k4);
   Serial.println(F("[derivekeys] Next steps: 'auth' gives a single K0 confirmation attempt; 'wipe' performs the actual reset."));
   led_blink(3, 100);
   serial_cmd_active = false;
@@ -771,8 +776,8 @@ void handle_ver() {
 
 void handle_issuer() {
   if (has_issuer_key) {
-    Serial.print(F("[issuer] Current issuer key: "));
-    Serial.println(convertIntToHex(current_issuer_key, AES_KEY_LEN));
+    DBG_PRINT(F("[issuer] Current issuer key: "));
+    DBG_PRINTLN(convertIntToHex(current_issuer_key, AES_KEY_LEN));
   } else {
     Serial.println(F("[issuer] No issuer key set"));
   }
@@ -800,8 +805,8 @@ void handle_set_issuer() {
   }
   memcpy(current_issuer_key, tmp, AES_KEY_LEN);
   has_issuer_key = true;
-  Serial.print(F("[issuer] Issuer key set: "));
-  Serial.println(hex);
+  DBG_PRINT(F("[issuer] Issuer key set: "));
+  DBG_PRINTLN(hex);
   Serial.println(F("[issuer] Per-card K0-K4 will be derived from this key during inspect/burn/wipe"));
 }
 
@@ -834,8 +839,8 @@ void handle_keys() {
   safe_strcpy(mBoltConfig.k4, k4.c_str(), sizeof(mBoltConfig.k4));
   has_issuer_key = false;  // Mutual exclusion: keys overrides issuer
   Serial.println(F("[keys] Keys set"));
-  Serial.print(F("  k0: ")); Serial.println(k0);
-  Serial.print(F("  k4: ")); Serial.println(k4);
+  DBG_PRINT(F("  k0: ")); DBG_PRINTLN(k0);
+  DBG_PRINT(F("  k4: ")); DBG_PRINTLN(k4);
 }
 
 void handle_url() {
@@ -1016,8 +1021,8 @@ void handle_burn() {
     // Post-burn verify: auth with new key 0 to confirm key change worked,
     // then read NDEF to verify the URL was written correctly.
     const uint8_t v_auth0 = bolt.nfc->ntag424_Authenticate(bolt.new_keys.keys[0], 0, AUTH_CMD_EV2_FIRST);
-    Serial.print(F("[burn] VERIFY — AUTH k0: "));
-    Serial.println(v_auth0 == 1 ? F("OK") : F("FAIL"));
+    DBG_PRINT(F("[burn] VERIFY — AUTH k0: "));
+    DBG_PRINTLN(v_auth0 == 1 ? F("OK") : F("FAIL"));
     if (v_auth0 == 1) {
       // Re-detect card (auth may have left ISO-DEP in odd state),
       // then try PLAIN ISO NDEF read (works now that WriteData offset bug is fixed).
@@ -1103,9 +1108,9 @@ void handle_keyver() {
 void handle_check() {
   if (!begin_card_command(F("[check]"))) return;
   bolt.cur_keys = BoltcardKeys::allZeros();
-  Serial.print(F("[check] Using zero key: "));
-  for (int i = 0; i < AES_KEY_LEN; i++) { if (bolt.cur_keys.keys[0][i] < 0x10) Serial.print("0"); Serial.print(bolt.cur_keys.keys[0][i], HEX); }
-  Serial.println();
+  DBG_PRINT(F("[check] Using zero key: "));
+  for (int i = 0; i < AES_KEY_LEN; i++) { if (bolt.cur_keys.keys[0][i] < 0x10) DBG_PRINT("0"); DBG_PRINT(bolt.cur_keys.keys[0][i], HEX); }
+  DBG_PRINTLN();
   CardTapResult tap = wait_for_card(F("[check] TIMEOUT"), F("[check] UID: "), CARD_TAP_TIMEOUT_MS, true);
   if (!tap.found) return;
   uint8_t result = bolt.nfc->ntag424_Authenticate(bolt.cur_keys.keys[0], 0, AUTH_CMD_EV2_FIRST);
@@ -1271,11 +1276,11 @@ void handle_recoverkey() {
   Serial.print(F("[recoverkey] Target: key "));
   Serial.print(slot);
   Serial.println(F(" -> zero, ver=0x00"));
-  Serial.print(F("[recoverkey] Candidate old key: "));
-  Serial.println(old_key_hex);
+  DBG_PRINT(F("[recoverkey] Candidate old key: "));
+  DBG_PRINTLN(old_key_hex);
   if (k0_hex.length() == HEX_KEY_LEN) {
-    Serial.print(F("[recoverkey] Auth K0: "));
-    Serial.println(k0_hex);
+    DBG_PRINT(F("[recoverkey] Auth K0: "));
+    DBG_PRINTLN(k0_hex);
   } else {
     Serial.println(F("[recoverkey] Auth K0: zeros (factory default)"));
   }

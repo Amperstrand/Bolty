@@ -25,6 +25,14 @@ inline void safe_strcpy(char *dst, const char *src, size_t dst_size) {
   dst[dst_size - 1] = '\0';
 }
 
+// Secure memory zeroing — compiler cannot optimize this away.
+// Use for key material, decrypted data, and other secrets on the stack.
+inline void secure_memzero(void *ptr, size_t len) {
+  if (ptr == nullptr) return;
+  volatile uint8_t *p = (volatile uint8_t *)ptr;
+  while (len--) *p++ = 0;
+}
+
 inline const char *ntag424_error_name(uint8_t sw1, uint8_t sw2) {
   if (sw1 == 0x91) {
     switch (sw2) {

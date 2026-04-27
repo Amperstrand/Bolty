@@ -19,6 +19,7 @@
 */
 /**************************************************************************/
 #include <Arduino.h>
+#include <esp_task_wdt.h>
 #include "bolt.h"
 #include "bolty_utils.h"
 #include "PiccData.h"
@@ -421,12 +422,12 @@ static void handle_atom_hold_reset() {
 
   if (fresh.deterministic_full_match) {
     Serial.println(F("[button] Deterministic full match — loading derived keys"));
-    Serial.print(F("[button] Derived K0: "));
-    for (int b = 0; b < 16; b++) { if (fresh.derived_keys[0][b] < 0x10) Serial.print('0'); Serial.print(fresh.derived_keys[0][b], HEX); }
-    Serial.println();
-    Serial.print(F("[button] Derived K1: "));
-    for (int b = 0; b < 16; b++) { if (fresh.derived_keys[1][b] < 0x10) Serial.print('0'); Serial.print(fresh.derived_keys[1][b], HEX); }
-    Serial.println();
+    DBG_PRINT(F("[button] Derived K0: "));
+    for (int b = 0; b < 16; b++) { if (fresh.derived_keys[0][b] < 0x10) DBG_PRINT('0'); DBG_PRINT(fresh.derived_keys[0][b], HEX); }
+    DBG_PRINTLN();
+    DBG_PRINT(F("[button] Derived K1: "));
+    for (int b = 0; b < 16; b++) { if (fresh.derived_keys[1][b] < 0x10) DBG_PRINT('0'); DBG_PRINT(fresh.derived_keys[1][b], HEX); }
+    DBG_PRINTLN();
     store_bolt_config_keys_from_bytes(mBoltConfig, fresh.derived_keys);
     saveBoltConfig(active_bolt_config);
     bolt.loadKeysForWipe(mBoltConfig);
@@ -1037,11 +1038,11 @@ void dumpconfig() {
   Serial.println(mBoltConfig.card_name);
   Serial.println(mBoltConfig.url);
   Serial.println(mBoltConfig.reset_url);
-  Serial.println(mBoltConfig.k0);
-  Serial.println(mBoltConfig.k1);
-  Serial.println(mBoltConfig.k2);
-  Serial.println(mBoltConfig.k3);
-  Serial.println(mBoltConfig.k4);
+  DBG_PRINTLN(mBoltConfig.k0);
+  DBG_PRINTLN(mBoltConfig.k1);
+  DBG_PRINTLN(mBoltConfig.k2);
+  DBG_PRINTLN(mBoltConfig.k3);
+  DBG_PRINTLN(mBoltConfig.k4);
   Serial.println(mBoltConfig.wifi_ssid);
   Serial.println(mBoltConfig.wifi_password);
   Serial.println(mBoltConfig.wifi_probe_enabled ? "probe=1" : "probe=0");
@@ -1242,7 +1243,15 @@ void handleUpload(AsyncWebServerRequest *request, String filename, size_t index,
 void setup(void) {
   Serial.begin(115200);
   while (!Serial)
-    delay(10); // for Leonardo/Micro/Zero
+    delay(10);
+
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = 10000,
+    .idle_core_mask = 0,
+    .trigger_panic = true
+  };
+  esp_task_wdt_init(&wdt_config);
+  esp_task_wdt_add(NULL);
 
   Serial.println("=== Bolty Build Info ===");
   Serial.print("Board: ");
@@ -1624,6 +1633,7 @@ void setup(void) {
 #include "serial_commands.h"
 #endif
 void loop(void) {
+  esp_task_wdt_reset();
 
 #if HAS_LED_MATRIX
   M5.update();
@@ -1708,4 +1718,18 @@ void loop(void) {
 #endif
 
   delay(10);
+
+  static unsigned long last_heap_check = 0;
+  if (millis() - last_heap_check > 60000) {
+    last_heap_check = millis();
+    size_t free_heap = ESP.getFreeHeap();
+    size_t max_alloc = ESP.getMaxAllocHeap();
+    DBG_PRINT(F("[heap] free="));
+    DBG_PRINT(free_heap);
+    DBG_PRINT(F(" max_block="));
+    DBG_PRINTLN(max_alloc);
+    if (max_alloc < 4096) {
+      DBG_PRINTLN(F("[heap] WARNING: low contiguous memory"));
+    }
+  }
 }

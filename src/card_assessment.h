@@ -121,17 +121,17 @@ static void print_deterministic_boltcard_check(BoltyNfcReader *nfc,
       Serial.println(matched_version);
       Serial.println(F("[inspect]   This strongly indicates the deterministic K0-K4 set for this issuer/version is correct."));
       Serial.println(F("[inspect]   It is still not a guarantee that authenticate or wipe will succeed on this tag."));
-      Serial.println(F("[inspect]   Suggested keys command:"));
-      Serial.print(F("[inspect]   keys "));
-      Serial.print(convertIntToHex(matched_keys[0], AES_KEY_LEN));
-      Serial.print(F(" "));
-      Serial.print(convertIntToHex(matched_keys[1], AES_KEY_LEN));
-      Serial.print(F(" "));
-      Serial.print(convertIntToHex(matched_keys[2], AES_KEY_LEN));
-      Serial.print(F(" "));
-      Serial.print(convertIntToHex(matched_keys[3], AES_KEY_LEN));
-      Serial.print(F(" "));
-      Serial.println(convertIntToHex(matched_keys[4], AES_KEY_LEN));
+      DBG_PRINTLN(F("[inspect]   Suggested keys command:"));
+      DBG_PRINT(F("[inspect]   keys "));
+      DBG_PRINT(convertIntToHex(matched_keys[0], AES_KEY_LEN));
+      DBG_PRINT(F(" "));
+      DBG_PRINT(convertIntToHex(matched_keys[1], AES_KEY_LEN));
+      DBG_PRINT(F(" "));
+      DBG_PRINT(convertIntToHex(matched_keys[2], AES_KEY_LEN));
+      DBG_PRINT(F(" "));
+      DBG_PRINT(convertIntToHex(matched_keys[3], AES_KEY_LEN));
+      DBG_PRINT(F(" "));
+      DBG_PRINTLN(convertIntToHex(matched_keys[4], AES_KEY_LEN));
     } else {
       Serial.println(F("[inspect]   K1 matched, but tested deterministic K2 versions did not validate c=."));
       Serial.println(F("[inspect]   This is still a strong indicator that we probably know the issuer key and can likely recover the card more easily."));
