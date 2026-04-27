@@ -251,7 +251,7 @@ inline void store_hex_string(char *out, size_t out_size, const uint8_t *data,
   if (out == nullptr || out_size == 0 || data == nullptr) {
     return;
   }
-  String hex = convertIntToHex((uint8_t *)data, len);
+  String hex = convertIntToHex(data, len);
   strncpy(out, hex.c_str(), out_size - 1);
   out[out_size - 1] = '\0';
 }

@@ -710,11 +710,7 @@ static bool assess_current_card(CardAssessment &assessment) {
               led_signal_key_online();
               Serial.println(F("[assess] Web key lookup match!"));
               // Auto-load into mBoltConfig for wipe/burn
-              strncpy(mBoltConfig.k0, convertIntToHex(web_keys[0], AES_KEY_LEN).c_str(), 33);
-              strncpy(mBoltConfig.k1, convertIntToHex(web_keys[1], AES_KEY_LEN).c_str(), 33);
-              strncpy(mBoltConfig.k2, convertIntToHex(web_keys[2], AES_KEY_LEN).c_str(), 33);
-              strncpy(mBoltConfig.k3, convertIntToHex(web_keys[3], AES_KEY_LEN).c_str(), 33);
-              strncpy(mBoltConfig.k4, convertIntToHex(web_keys[4], AES_KEY_LEN).c_str(), 33);
+              store_bolt_config_keys_from_bytes(mBoltConfig, web_keys);
             }
           }
         }
@@ -1122,11 +1118,7 @@ static void inspect_file_settings() {
 }
 
 static bool inspect_load_keys(uint8_t keys[5][AES_KEY_LEN]) {
-  strncpy(mBoltConfig.k0, convertIntToHex(keys[0], AES_KEY_LEN).c_str(), 33);
-  strncpy(mBoltConfig.k1, convertIntToHex(keys[1], AES_KEY_LEN).c_str(), 33);
-  strncpy(mBoltConfig.k2, convertIntToHex(keys[2], AES_KEY_LEN).c_str(), 33);
-  strncpy(mBoltConfig.k3, convertIntToHex(keys[3], AES_KEY_LEN).c_str(), 33);
-  strncpy(mBoltConfig.k4, convertIntToHex(keys[4], AES_KEY_LEN).c_str(), 33);
+  store_bolt_config_keys_from_bytes(mBoltConfig, keys);
   return true;
 }
 
