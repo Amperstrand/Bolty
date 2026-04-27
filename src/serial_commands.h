@@ -157,6 +157,61 @@ static const __FlashStringHelper * const BOLTCARD_ISSUER_KEY_LABELS[7] = {
   F("ce20da280811144b0aad13fd874eaeca"),
 };
 
+struct CardTapResult {
+  uint8_t uid[MAX_UID_LEN] = {0};
+  uint8_t uid_len = 0;
+  bool found = false;
+};
+
+static CardTapResult wait_for_card(const __FlashStringHelper *timeout_msg,
+                                   const __FlashStringHelper *uid_prefix = nullptr,
+                                   unsigned long timeout_ms = CARD_TAP_TIMEOUT_MS,
+                                   bool settle_after_detect = false) {
+  CardTapResult tap;
+  const unsigned long t0 = millis();
+  do {
+    tap.found = bolty_read_passive_target(bolt.nfc, tap.uid, &tap.uid_len);
+    if (tap.found) {
+      if (uid_prefix != nullptr) {
+        Serial.print(uid_prefix);
+        bolty_print_hex(bolt.nfc, tap.uid, tap.uid_len);
+      }
+      if (settle_after_detect) {
+        delay(50);
+      }
+      return tap;
+    }
+    if (millis() - t0 > timeout_ms) {
+      if (timeout_msg != nullptr) {
+        Serial.println(timeout_msg);
+      }
+      serial_cmd_active = false;
+      return tap;
+    }
+  } while (!tap.found);
+  return tap;
+}
+
+template <typename Fn>
+static uint8_t wait_for_card(const __FlashStringHelper *timeout_msg,
+                             unsigned long timeout_ms,
+                             Fn run_job) {
+  const unsigned long t0 = millis();
+  uint8_t result = JOBSTATUS_WAITING;
+  do {
+    while (Serial.available()) Serial.read();
+    result = run_job();
+    if (millis() - t0 > timeout_ms) {
+      if (timeout_msg != nullptr) {
+        Serial.println(timeout_msg);
+      }
+      serial_cmd_active = false;
+      return JOBSTATUS_WAITING;
+    }
+  } while (result == JOBSTATUS_WAITING);
+  return result;
+}
+
 struct DeterministicBoltcardMatch {
   bool saw_k1_match;
   bool full_match;
@@ -747,19 +802,8 @@ void handle_serial_command(String cmd) {
       Serial.print(" ");
     }
     Serial.println();
-    unsigned long t0 = millis();
-    bool found = false;
-    do {
-      uint8_t uid[MAX_UID_LEN] = {0};
-      uint8_t uidLen;
-      found = bolty_read_passive_target(bolt.nfc, uid, &uidLen);
-      if (found) {
-        Serial.print(F("[auth] UID: "));
-        bolty_print_hex(bolt.nfc, uid, uidLen);
-      }
-      if (millis() - t0 > CARD_TAP_TIMEOUT_MS) { Serial.println(F("[auth] TIMEOUT")); serial_cmd_active = false; return; }
-    } while (!found);
-    delay(50);
+    CardTapResult tap = wait_for_card(F("[auth] TIMEOUT"), F("[auth] UID: "), CARD_TAP_TIMEOUT_MS, true);
+    if (!tap.found) return;
     Serial.println(F("[auth] About to authenticate..."));
     uint8_t result = bolt.nfc->ntag424_Authenticate(bolt.cur_keys.keys[0], 0, AUTH_CMD_EV2_FIRST);
     Serial.print(F("[auth] ntag424_Authenticate returned: "));
@@ -799,15 +843,8 @@ void handle_serial_command(String cmd) {
      Serial.println(F("[ndef] Tap card now..."));
      serial_cmd_active = true;
      led_on();
-       uint8_t uid[MAX_UID_LEN] = {0};
-      uint8_t uid_len = 0;
-      unsigned long t0_ndef = millis();
-      bool found_ndef = false;
-      do {
-        found_ndef = bolty_read_passive_target(bolt.nfc, uid, &uid_len);
-        if (millis() - t0_ndef > CARD_TAP_TIMEOUT_MS) break;
-       } while (!found_ndef);
-      if (found_ndef) {
+       CardTapResult tap = wait_for_card(nullptr);
+       if (tap.found) {
           uint8_t ndef[NDEF_MAX_LEN] = {0};
            int len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
            if (len < 0 && strlen(mBoltConfig.k3) == HEX_KEY_LEN) {
@@ -868,19 +905,10 @@ ndef_fail:
       serial_cmd_active = true;
       led_on();
 
-      uint8_t uid[MAX_UID_LEN] = {0};
-      uint8_t uid_len = 0;
-      unsigned long t0_picc = millis();
-      bool found_picc = false;
-      do {
-        found_picc = bolty_read_passive_target(bolt.nfc, uid, &uid_len);
-        if (millis() - t0_picc > CARD_TAP_TIMEOUT_MS) break;
-      } while (!found_picc);
+      CardTapResult tap = wait_for_card(F("[picc] TIMEOUT — no card detected"));
 
-      if (!found_picc) {
-        Serial.println(F("[picc] TIMEOUT — no card detected"));
+      if (!tap.found) {
         led_blink(5, 100);
-        serial_cmd_active = false;
         goto picc_done;
       }
 
@@ -920,9 +948,9 @@ ndef_fail:
 
         if (picc.valid) {
           // Verify UID matches
-          bool uid_match = (uid_len == 7);
+          bool uid_match = (tap.uid_len == 7);
           for (int i = 0; uid_match && i < 7; i++) {
-            uid_match = (uid[i] == picc.uid[i]);
+            uid_match = (tap.uid[i] == picc.uid[i]);
           }
           Serial.print(F("[picc] UID match: "));
           Serial.println(uid_match ? F("YES") : F("NO"));
@@ -950,26 +978,16 @@ ndef_fail:
       serial_cmd_active = true;
       led_on();
 
-      uint8_t uid[MAX_UID_LEN] = {0};
-      uint8_t uid_len = 0;
-      unsigned long t0_inspect = millis();
-      bool found = false;
-      do {
-        found = bolty_read_passive_target(bolt.nfc, uid, &uid_len);
-        if (millis() - t0_inspect > CARD_TAP_TIMEOUT_MS) {
-          Serial.println(F("[inspect] TIMEOUT"));
-          serial_cmd_active = false;
-          return;
-        }
-      } while (!found);
+      CardTapResult tap = wait_for_card(F("[inspect] TIMEOUT"));
+      if (!tap.found) return;
 
       Serial.println(F("[inspect] --- Card Presence ---"));
       Serial.print(F("[inspect] UID length: "));
-      Serial.println(uid_len);
+      Serial.println(tap.uid_len);
       Serial.print(F("[inspect] UID: "));
-      bolty_print_hex(bolt.nfc, uid, uid_len);
+      bolty_print_hex(bolt.nfc, tap.uid, tap.uid_len);
       Serial.print(F("[inspect] UID compact: "));
-      Serial.println(convertIntToHex(uid, uid_len));
+      Serial.println(convertIntToHex(tap.uid, tap.uid_len));
       delay(50);
 
       Serial.println(F("[inspect] --- Version / Type ---"));
@@ -1142,7 +1160,7 @@ ndef_fail:
         bool keys_auto_loaded = false;
 
         // --- 1. Current Issuer Key Check ---
-        if (has_issuer_key && uid_len == 7 && has_p && p_ok) {
+        if (has_issuer_key && tap.uid_len == 7 && has_p && p_ok) {
           Serial.println(F("[inspect] --- Current Issuer Key Check ---"));
           bool issuer_k1_match = false;
           uint32_t issuer_counter = 0;
@@ -1154,8 +1172,8 @@ ndef_fail:
           for (int vi = 0; vi < 4 && !issuer_k1_match; vi++) {
             uint32_t try_ver = BOLTCARD_VERSION_CANDIDATES[vi];
             uint8_t try_keys[5][AES_KEY_LEN] = {{0}};
-            derive_deterministic_boltcard_keys(bolt.nfc, current_issuer_key, uid, try_ver, try_keys);
-            issuer_k1_match = deterministic_decrypt_p(bolt.nfc, try_keys[1], p_bytes, uid, issuer_decrypted, issuer_counter);
+            derive_deterministic_boltcard_keys(bolt.nfc, current_issuer_key, tap.uid, try_ver, try_keys);
+            issuer_k1_match = deterministic_decrypt_p(bolt.nfc, try_keys[1], p_bytes, tap.uid, issuer_decrypted, issuer_counter);
             if (issuer_k1_match) {
               memcpy(issuer_matched_keys, try_keys, sizeof(issuer_matched_keys));
               issuer_matched_version = (int)try_ver;
@@ -1179,7 +1197,7 @@ ndef_fail:
 
             // Try K2/CMAC verification
             if (c_ok) {
-              bool issuer_cmac_ok = deterministic_verify_cmac(bolt.nfc, issuer_matched_keys[2], uid, issuer_counter, c_bytes);
+               bool issuer_cmac_ok = deterministic_verify_cmac(bolt.nfc, issuer_matched_keys[2], tap.uid, issuer_counter, c_bytes);
               Serial.print(F("[inspect]   K2/CMAC check (version "));
               Serial.print(issuer_matched_version);
               Serial.print(F("): "));
@@ -1211,17 +1229,17 @@ ndef_fail:
 
         // --- 2. Web Lookup ---
         #if HAS_WEB_LOOKUP
-        if (!keys_auto_loaded && uid_len == 7 && has_p && p_ok) {
+        if (!keys_auto_loaded && tap.uid_len == 7 && has_p && p_ok) {
           Serial.println(F("[inspect] --- Web Key Lookup ---"));
           char uid_hex[15] = {0};
-          for (int i = 0; i < uid_len; i++) {
-            snprintf(uid_hex + i*2, 3, "%02X", uid[i]);
+          for (int i = 0; i < tap.uid_len; i++) {
+            snprintf(uid_hex + i*2, 3, "%02X", tap.uid[i]);
           }
           uint8_t web_keys[5][AES_KEY_LEN] = {{0}};
           uint32_t web_counter = 0;
           uint8_t web_decrypted[AES_KEY_LEN] = {0};
 
-          if (web_lookup_and_match(bolt.nfc, uid_hex, p_bytes, uid, web_keys, web_counter, web_decrypted)) {
+          if (web_lookup_and_match(bolt.nfc, uid_hex, p_bytes, tap.uid, web_keys, web_counter, web_decrypted)) {
             Serial.print(F("[inspect]   Web match! Counter: "));
             Serial.println(web_counter);
             Serial.print(F("[inspect]   Decrypted UID: "));
@@ -1230,7 +1248,7 @@ ndef_fail:
 
             // Try K2/CMAC verification
             if (c_ok) {
-              bool web_cmac_ok = deterministic_verify_cmac(bolt.nfc, web_keys[2], uid, web_counter, c_bytes);
+              bool web_cmac_ok = deterministic_verify_cmac(bolt.nfc, web_keys[2], tap.uid, web_counter, c_bytes);
               Serial.print(F("[inspect]   K2/CMAC check: "));
               Serial.println(web_cmac_ok ? F("MATCH") : F("NO MATCH"));
               if (web_cmac_ok) {
@@ -1264,7 +1282,7 @@ ndef_fail:
         #endif
 
         // --- 3. Hardcoded Issuer Keys ---
-        print_deterministic_boltcard_check(bolt.nfc, uid, uid_len, uri);
+        print_deterministic_boltcard_check(bolt.nfc, tap.uid, tap.uid_len, uri);
       }
 
       Serial.println(F("[inspect] --- Safe Summary ---"));
@@ -1289,21 +1307,11 @@ ndef_fail:
     serial_cmd_active = true;
     led_on();
 
-    uint8_t uid[MAX_UID_LEN] = {0};
-    uint8_t uid_len = 0;
-    unsigned long t0_derive = millis();
-    bool found = false;
-    do {
-      found = bolty_read_passive_target(bolt.nfc, uid, &uid_len);
-      if (millis() - t0_derive > CARD_TAP_TIMEOUT_MS) {
-        Serial.println(F("[derivekeys] TIMEOUT"));
-        serial_cmd_active = false;
-        return;
-      }
-    } while (!found);
+    CardTapResult tap = wait_for_card(F("[derivekeys] TIMEOUT"));
+    if (!tap.found) return;
 
     Serial.print(F("[derivekeys] UID: "));
-    bolty_print_hex(bolt.nfc, uid, uid_len);
+    bolty_print_hex(bolt.nfc, tap.uid, tap.uid_len);
 
     uint8_t ndef[NDEF_MAX_LEN] = {0};
     const int ndef_len = bolt.nfc->ntag424_ReadNDEFMessage(ndef, sizeof(ndef));
@@ -1325,7 +1333,7 @@ ndef_fail:
     }
 
     DeterministicBoltcardMatch match;
-    const bool full_match = deterministic_try_known_matches(bolt.nfc, uid, uid_len, uri, match);
+    const bool full_match = deterministic_try_known_matches(bolt.nfc, tap.uid, tap.uid_len, uri, match);
 
     if (!match.saw_k1_match) {
       Serial.println(F("[derivekeys] FAIL — no known deterministic issuer key produced valid PICCData for this card."));
@@ -1604,17 +1612,9 @@ ndef_fail:
     serial_cmd_active = true;
     led_on();
     bolt.loadKeysForBurn(mBoltConfig);
-    uint8_t result;
-    unsigned long t0 = millis();
-    do {
-      while (Serial.available()) Serial.read();
-      result = bolt.burn(String(mBoltConfig.url));
-      if (millis() - t0 > CARD_TAP_TIMEOUT_LONG_MS) {
-        Serial.println(F("[burn] TIMEOUT — no card detected in 30s"));
-        serial_cmd_active = false;
-        return;
-      }
-    } while (result == JOBSTATUS_WAITING);
+    uint8_t result = wait_for_card(F("[burn] TIMEOUT — no card detected in 30s"), CARD_TAP_TIMEOUT_LONG_MS,
+                                   [&]() { return bolt.burn(String(mBoltConfig.url)); });
+    if (result == JOBSTATUS_WAITING) return;
     if (result == JOBSTATUS_GUARD_REJECT) {
       Serial.println(F("[burn] ABORTED - guard rejected (card not in expected state)"));
       led_blink(5, 100);
@@ -1663,17 +1663,9 @@ ndef_fail:
     serial_cmd_active = true;
     led_on();
     bolt.loadKeysForWipe(mBoltConfig);
-    uint8_t result;
-    unsigned long t0 = millis();
-    do {
-      while (Serial.available()) Serial.read();
-      result = bolt.wipe();
-      if (millis() - t0 > CARD_TAP_TIMEOUT_LONG_MS) {
-        Serial.println(F("[wipe] TIMEOUT — no card detected in 30s"));
-        serial_cmd_active = false;
-        return;
-      }
-    } while (result == JOBSTATUS_WAITING);
+    uint8_t result = wait_for_card(F("[wipe] TIMEOUT — no card detected in 30s"), CARD_TAP_TIMEOUT_LONG_MS,
+                                   [&]() { return bolt.wipe(); });
+    if (result == JOBSTATUS_WAITING) return;
     if (result == JOBSTATUS_GUARD_REJECT) {
       Serial.println(F("[wipe] ABORTED - guard rejected (card not in expected state)"));
       led_blink(5, 100);
@@ -1690,19 +1682,8 @@ ndef_fail:
     Serial.println(F("[keyver] Tap card now..."));
     serial_cmd_active = true;
     led_on();
-    unsigned long t0 = millis();
-    bool found = false;
-    do {
-      uint8_t uid[MAX_UID_LEN] = {0};
-      uint8_t uidLen;
-      found = bolty_read_passive_target(bolt.nfc, uid, &uidLen);
-      if (found) {
-        Serial.print(F("[keyver] UID: "));
-        bolty_print_hex(bolt.nfc, uid, uidLen);
-      }
-      if (millis() - t0 > CARD_TAP_TIMEOUT_MS) { Serial.println(F("[keyver] TIMEOUT")); serial_cmd_active = false; return; }
-    } while (!found);
-    delay(50);
+    CardTapResult tap = wait_for_card(F("[keyver] TIMEOUT"), F("[keyver] UID: "), CARD_TAP_TIMEOUT_MS, true);
+    if (!tap.found) return;
     bool all_zero = true;
     for (int k = 0; k < 5; k++) {
       uint8_t kv = bolty_get_key_version(bolt.nfc, k);
@@ -1739,19 +1720,8 @@ ndef_fail:
     Serial.print(F("[check] Using zero key: "));
     for (int i = 0; i < AES_KEY_LEN; i++) { if (bolt.cur_keys.keys[0][i] < 0x10) Serial.print("0"); Serial.print(bolt.cur_keys.keys[0][i], HEX); }
     Serial.println();
-    unsigned long t0 = millis();
-    bool found = false;
-    do {
-      uint8_t uid[MAX_UID_LEN] = {0};
-      uint8_t uidLen;
-      found = bolty_read_passive_target(bolt.nfc, uid, &uidLen);
-      if (found) {
-        Serial.print(F("[check] UID: "));
-        bolty_print_hex(bolt.nfc, uid, uidLen);
-      }
-      if (millis() - t0 > CARD_TAP_TIMEOUT_MS) { Serial.println(F("[check] TIMEOUT")); serial_cmd_active = false; return; }
-    } while (!found);
-    delay(50);
+    CardTapResult tap = wait_for_card(F("[check] TIMEOUT"), F("[check] UID: "), CARD_TAP_TIMEOUT_MS, true);
+    if (!tap.found) return;
     uint8_t result = bolt.nfc->ntag424_Authenticate(bolt.cur_keys.keys[0], 0, AUTH_CMD_EV2_FIRST);
     Serial.println(result == 1 ? F("[check] SUCCESS — card has factory zero keys") : F("[check] FAILED — card does NOT have factory keys"));
     led_blink(result == 1 ? 3 : 5, 100);
@@ -1765,17 +1735,9 @@ ndef_fail:
     bolt.cur_keys = BoltcardKeys::allZeros();
     bolt.new_keys = BoltcardKeys::allZeros();
     String lnurl = "https://dummy.test";
-    uint8_t result;
-    unsigned long t0 = millis();
-    do {
-      while (Serial.available()) Serial.read();
-      result = bolt.burn(lnurl);
-      if (millis() - t0 > CARD_TAP_TIMEOUT_LONG_MS) {
-        Serial.println(F("[dummyburn] TIMEOUT — no card detected in 30s"));
-        serial_cmd_active = false;
-        return;
-      }
-    } while (result == JOBSTATUS_WAITING);
+    uint8_t result = wait_for_card(F("[dummyburn] TIMEOUT — no card detected in 30s"), CARD_TAP_TIMEOUT_LONG_MS,
+                                   [&]() { return bolt.burn(lnurl); });
+    if (result == JOBSTATUS_WAITING) return;
     Serial.print(F("[dummyburn] ")); Serial.println(bolt.get_job_status());
     Serial.println(result == JOBSTATUS_DONE ? F("[dummyburn] SUCCESS") : F("[dummyburn] FAILED"));
     if (result == JOBSTATUS_DONE) {
@@ -1790,17 +1752,9 @@ ndef_fail:
     Serial.println(F("[reset] Factory-key NDEF+SDM reset (keys unchanged)."));
     serial_cmd_active = true;
     led_on();
-    uint8_t result;
-    unsigned long t0 = millis();
-    do {
-      while (Serial.available()) Serial.read();
-      result = bolt.resetNdefOnly();
-      if (millis() - t0 > CARD_TAP_TIMEOUT_LONG_MS) {
-        Serial.println(F("[reset] TIMEOUT — no card detected in 30s"));
-        serial_cmd_active = false;
-        return;
-      }
-    } while (result == JOBSTATUS_WAITING);
+    uint8_t result = wait_for_card(F("[reset] TIMEOUT — no card detected in 30s"), CARD_TAP_TIMEOUT_LONG_MS,
+                                   [&]() { return bolt.resetNdefOnly(); });
+    if (result == JOBSTATUS_WAITING) return;
     if (result == JOBSTATUS_GUARD_REJECT) {
       Serial.println(F("[reset] ABORTED — card has non-factory keys. Use 'wipe' with explicit keys."));
       led_blink(5, 100);
@@ -1818,24 +1772,8 @@ ndef_fail:
     serial_cmd_active = true;
     led_on();
 
-    uint8_t uid_d[MAX_UID_LEN] = {0};
-    uint8_t uidLen_d;
-    unsigned long t0_d = millis();
-    bool found_d = false;
-    do {
-      found_d = bolty_read_passive_target(bolt.nfc, uid_d, &uidLen_d);
-      if (found_d) {
-        Serial.print(F("[diagnose] UID: "));
-        bolty_print_hex(bolt.nfc, uid_d, uidLen_d);
-      }
-      if (millis() - t0_d > CARD_TAP_TIMEOUT_MS) {
-        Serial.println(F("[diagnose] TIMEOUT"));
-        serial_cmd_active = false;
-        return;
-      }
-    } while (!found_d);
-
-    delay(50);
+    CardTapResult tap = wait_for_card(F("[diagnose] TIMEOUT"), F("[diagnose] UID: "), CARD_TAP_TIMEOUT_MS, true);
+    if (!tap.found) return;
 
     // Read all 5 key versions (PLAIN mode — no auth needed)
     Serial.println(F("[diagnose] --- Key Versions ---"));
@@ -1955,24 +1893,8 @@ ndef_fail:
     serial_cmd_active = true;
     led_on();
 
-    uint8_t uid_rk[MAX_UID_LEN] = {0};
-    uint8_t uidLen_rk;
-    unsigned long t0_rk = millis();
-    bool found_rk = false;
-    do {
-      found_rk = bolty_read_passive_target(bolt.nfc, uid_rk, &uidLen_rk);
-      if (found_rk) {
-        Serial.print(F("[recoverkey] UID: "));
-        bolty_print_hex(bolt.nfc, uid_rk, uidLen_rk);
-      }
-      if (millis() - t0_rk > CARD_TAP_TIMEOUT_MS) {
-        Serial.println(F("[recoverkey] TIMEOUT"));
-        serial_cmd_active = false;
-        return;
-      }
-    } while (!found_rk);
-
-    delay(50);
+    CardTapResult tap = wait_for_card(F("[recoverkey] TIMEOUT"), F("[recoverkey] UID: "), CARD_TAP_TIMEOUT_MS, true);
+    if (!tap.found) return;
     bolt.selectNtagApplicationFiles();
 
     uint8_t auth_rk = bolt.nfc->ntag424_Authenticate(auth_key, 0, AUTH_CMD_EV2_FIRST);
@@ -2019,19 +1941,8 @@ ndef_fail:
     led_on();
 
     // Detect card
-    uint8_t uid_ck[MAX_UID_LEN] = {0};
-    uint8_t uidLen_ck;
-    unsigned long t0_ck = millis();
-    bool found_ck = false;
-    do {
-      found_ck = bolty_read_passive_target(bolt.nfc, uid_ck, &uidLen_ck);
-      if (found_ck) {
-        Serial.print(F("[testck] UID: "));
-        bolty_print_hex(bolt.nfc, uid_ck, uidLen_ck);
-      }
-      if (millis() - t0_ck > CARD_TAP_TIMEOUT_MS) { Serial.println(F("[testck] TIMEOUT")); serial_cmd_active = false; return; }
-    } while (!found_ck);
-    delay(50);
+    CardTapResult tap = wait_for_card(F("[testck] TIMEOUT"), F("[testck] UID: "), CARD_TAP_TIMEOUT_MS, true);
+    if (!tap.found) return;
 
     uint8_t zero_key[AES_KEY_LEN] = {0};
     // Distinctive test value — not a real key, just for verification
