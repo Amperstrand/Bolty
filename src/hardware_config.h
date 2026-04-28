@@ -5,16 +5,23 @@
 // Board Selection
 // ============================================================
 // Uncomment ONE of the following to select your board:
-// #define BOARD_TTGO_TDISPLAY      // Default: LILYGO TTGO T-Display (original Bolty hardware)
-// #define BOARD_DEVKITC            // ESP32-DevKitC V4 + Sunfounder PN532
-// #define BOARD_M5STACK_ATOM_MFRC522 // M5Stack Atom Matrix + Unit RFID (MFRC522 over I2C)
+// #define BOARD_TTGO_TDISPLAY         // LILYGO TTGO T-Display (original Bolty hardware)
+// #define BOARD_DEVKITC               // ESP32-DevKitC V4 + Sunfounder PN532
+// #define BOARD_M5STACK_ATOM_MFRC522  // M5Stack Atom Matrix + Unit RFID (MFRC522 over I2C)
+//                                     // ⚠️  RETIRED: LED overheating issue — do not use
+// #define BOARD_M5STICK_MFRC522       // M5Stick-C Plus + Unit RFID (MFRC522 over I2C, G32/G33)
+//                                     // ✅ PRIMARY hardware target
 
 #if !defined(BOARD_TTGO_TDISPLAY) && !defined(BOARD_DEVKITC) && \
-    !defined(BOARD_M5STACK_ATOM_MFRC522)
+    !defined(BOARD_M5STACK_ATOM_MFRC522) && !defined(BOARD_M5STICK_MFRC522)
 #define BOARD_TTGO_TDISPLAY
 #endif
 
-#if defined(BOARD_M5STACK_ATOM_MFRC522)
+#if defined(BOARD_M5STICK_MFRC522)
+#define BOLTY_NFC_BACKEND_MFRC522 1
+#define BOLTY_NFC_BACKEND_PN532 0
+#define BOLTY_BOARD_NAME "M5Stick-C Plus + Unit RFID"
+#elif defined(BOARD_M5STACK_ATOM_MFRC522)
 #define BOLTY_NFC_BACKEND_MFRC522 1
 #define BOLTY_NFC_BACKEND_PN532 0
 #define BOLTY_BOARD_NAME "M5Stack Atom Matrix + Unit RFID"
@@ -40,9 +47,16 @@
 // ============================================================
 
 #if BOLTY_NFC_BACKEND_MFRC522
+#if defined(BOARD_M5STICK_MFRC522)
+// M5Stick-C Plus Grove port + Unit RFID (MFRC522 over I2C, G32=SDA, G33=SCL)
+#define MFRC522_SDA (32)
+#define MFRC522_SCL (33)
+#elif defined(BOARD_M5STACK_ATOM_MFRC522)
 // M5Stack Atom Matrix Grove port + Unit RFID (MFRC522 over I2C)
+// ⚠️  RETIRED board — LED overheating issue. Use M5Stick instead.
 #define MFRC522_SDA (26)
 #define MFRC522_SCL (32)
+#endif
 #define MFRC522_I2C_ADDRESS (0x28)
 #define MFRC522_I2C_FREQUENCY (400000)
 #define NFC_RESET_PIN (-1)
@@ -117,7 +131,8 @@
 // Display Pin Configuration
 // ============================================================
 
-#if defined(BOARD_DEVKITC) || defined(BOARD_DEVKITC_UART) || defined(BOARD_M5STACK_ATOM_MFRC522)
+#if defined(BOARD_DEVKITC) || defined(BOARD_DEVKITC_UART) || \
+    defined(BOARD_M5STACK_ATOM_MFRC522) || defined(BOARD_M5STICK_MFRC522)
 #define HAS_DISPLAY 0
 #define TFT_BL (-1)
 #else
@@ -133,6 +148,10 @@
 #define HAS_BUTTONS 1
 #define BUTTON_1 (-1)
 #define BUTTON_2 (-1)
+#elif defined(BOARD_M5STICK_MFRC522)
+#define HAS_BUTTONS 1
+#define BUTTON_1 (37)
+#define BUTTON_2 (39)
 #elif defined(BOARD_DEVKITC) || defined(BOARD_DEVKITC_UART)
 #define HAS_BUTTONS 0
 #define BUTTON_1 (-1)
@@ -159,7 +178,8 @@
 // ADC / Battery (TTGO only)
 // ============================================================
 
-#if defined(BOARD_DEVKITC) || defined(BOARD_DEVKITC_UART) || defined(BOARD_M5STACK_ATOM_MFRC522)
+#if defined(BOARD_DEVKITC) || defined(BOARD_DEVKITC_UART) || \
+    defined(BOARD_M5STACK_ATOM_MFRC522) || defined(BOARD_M5STICK_MFRC522)
 #define HAS_BATTERY 0
 #define ADC_EN (-1)
 #define ADC_PIN (-1)

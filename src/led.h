@@ -32,6 +32,8 @@ static const uint8_t kLedCount = 25;
 static const uint16_t kResultMs = 600;
 static const uint16_t kActivityMs = 100;
 static const uint16_t kCardPulseMs = 500;
+// Safety: M5Atom LEDs overheat at full brightness. Never exceed 20/255.
+static const uint8_t kMaxBrightness = 20;
 
 static inline void hsv_to_rgb(uint16_t h, uint8_t s, uint8_t v,
                                uint8_t &r, uint8_t &g, uint8_t &b) {
@@ -53,7 +55,7 @@ static inline void hsv_to_rgb(uint16_t h, uint8_t s, uint8_t v,
 static inline void rainbow_cycle(uint16_t per_led_ms) {
   if (!initialized || !supported) return;
   animating = true;
-  M5.Led.setBrightness(255);
+  M5.Led.setBrightness(kMaxBrightness);
   M5.Led.setAllColor(0, 0, 0);
   M5.Led.display();
   for (int i = 0; i < kLedCount; i++) {
@@ -78,12 +80,12 @@ static inline void row_set(int row, uint8_t r, uint8_t g, uint8_t b) {
 static inline void alternate_frame(bool frame_a) {
   if (!initialized || !supported) return;
   animating = true;
-  M5.Led.setBrightness(255);
+  M5.Led.setBrightness(kMaxBrightness);
   M5.Led.setAllColor(0, 0, 0);
   for (int row = 0; row < 5; row++) {
     for (int col = 0; col < 5; col++) {
       if (((row + col) % 2 == 0) == frame_a) {
-        M5.Led.setColor(row * 5 + col, 255, 255, 255);
+        M5.Led.setColor(row * 5 + col, 20, 20, 20);
       }
     }
   }
@@ -115,46 +117,46 @@ static inline void render() {
     return;
   }
 
-  M5.Led.setBrightness(255);
+  M5.Led.setBrightness(kMaxBrightness);
   M5.Led.setAllColor(0, 0, 0);
 
   if (show_error) {
-    M5.Led.setAllColor(255, 0, 0);
+    M5.Led.setAllColor(20, 0, 0);
   } else if (show_success) {
-    M5.Led.setAllColor(0, 255, 0);
+    M5.Led.setAllColor(0, 20, 0);
   } else if (show_blank) {
     static const uint8_t pulse[] = {0, 2, 4, 10, 12, 14, 20, 22, 24};
-    for (auto idx : pulse) M5.Led.setColor(idx, 0, 255, 0);
+    for (auto idx : pulse) M5.Led.setColor(idx, 0, 20, 0);
   } else if (show_programmed) {
     static const uint8_t pulse[] = {0, 2, 4, 10, 12, 14, 20, 22, 24};
-    for (auto idx : pulse) M5.Led.setColor(idx, 255, 0, 0);
+    for (auto idx : pulse) M5.Led.setColor(idx, 20, 0, 0);
   } else if (show_unknown) {
     static const uint8_t pulse[] = {0, 2, 4, 10, 12, 14, 20, 22, 24};
-    for (auto idx : pulse) M5.Led.setColor(idx, 0, 80, 255);
+    for (auto idx : pulse) M5.Led.setColor(idx, 0, 10, 20);
   } else if (show_hold_countdown) {
     for (uint8_t row = 0; row < hold_countdown_rows && row < 5; row++) {
-      row_set(row, 255, 255, 255);
+      row_set(row, 15, 15, 15);
     }
   } else if (show_assessment) {
     for (uint8_t row = 0; row < 5; row++) {
       switch (assessment_rows[row]) {
         case 2:
-          row_set(row, 0, 255, 0);
+          row_set(row, 0, 20, 0);
           break;
         case 1:
-          row_set(row, 255, 180, 0);
+          row_set(row, 20, 14, 0);
           break;
         default:
-          row_set(row, 60, 0, 0);
+          row_set(row, 10, 0, 0);
           break;
       }
     }
   } else if (show_key_local) {
-    M5.Led.setAllColor(0, 255, 0);
+    M5.Led.setAllColor(0, 20, 0);
   } else if (show_key_online) {
-    M5.Led.setAllColor(255, 165, 0);
+    M5.Led.setAllColor(20, 13, 0);
   } else if (show_activity) {
-    M5.Led.setColor(12, 200, 200, 200);
+    M5.Led.setColor(12, 15, 15, 15);
   }
 
   M5.Led.display();
@@ -182,43 +184,43 @@ static inline void led_setup() {
 static inline void led_self_test(bool nfc_ok) {
   if (!bolty_led_internal::initialized || !bolty_led_internal::supported) return;
   bolty_led_internal::animating = true;
-  M5.Led.setBrightness(255);
+  M5.Led.setBrightness(bolty_led_internal::kMaxBrightness);
 
   M5.Led.setAllColor(0, 0, 0);
-  bolty_led_internal::row_set(0, 255, 255, 0);
+  bolty_led_internal::row_set(0, 15, 15, 0);
   M5.Led.display();
   DBG_PRINTLN("[test] LED matrix...");
   delay(300);
   M5.Led.setAllColor(0, 0, 0);
-  bolty_led_internal::row_set(0, 0, 255, 0);
+  bolty_led_internal::row_set(0, 0, 20, 0);
   M5.Led.display();
   DBG_PRINTLN("[test] LED matrix OK");
   delay(300);
 
   M5.Led.setAllColor(0, 0, 0);
-  bolty_led_internal::row_set(0, 0, 255, 0);
-  bolty_led_internal::row_set(1, 255, 255, 0);
+  bolty_led_internal::row_set(0, 0, 20, 0);
+  bolty_led_internal::row_set(1, 15, 15, 0);
   M5.Led.display();
   DBG_PRINTLN("[test] NFC...");
   delay(300);
   M5.Led.setAllColor(0, 0, 0);
-  bolty_led_internal::row_set(0, 0, 255, 0);
-  bolty_led_internal::row_set(1, nfc_ok ? 0 : 255, nfc_ok ? 255 : 0, 0);
+  bolty_led_internal::row_set(0, 0, 20, 0);
+  bolty_led_internal::row_set(1, nfc_ok ? 0 : 20, nfc_ok ? 20 : 0, 0);
   M5.Led.display();
   DBG_PRINT("[test] NFC "); DBG_PRINTLN(nfc_ok ? "OK" : "FAIL");
   delay(300);
 
   M5.Led.setAllColor(0, 0, 0);
-  bolty_led_internal::row_set(0, 0, 255, 0);
-  bolty_led_internal::row_set(1, nfc_ok ? 0 : 255, nfc_ok ? 255 : 0, 0);
-  bolty_led_internal::row_set(2, 255, 255, 0);
+  bolty_led_internal::row_set(0, 0, 20, 0);
+  bolty_led_internal::row_set(1, nfc_ok ? 0 : 20, nfc_ok ? 20 : 0, 0);
+  bolty_led_internal::row_set(2, 15, 15, 0);
   M5.Led.display();
   DBG_PRINTLN("[test] Button (GPIO39)...");
   delay(300);
   M5.Led.setAllColor(0, 0, 0);
-  bolty_led_internal::row_set(0, 0, 255, 0);
-  bolty_led_internal::row_set(1, nfc_ok ? 0 : 255, nfc_ok ? 255 : 0, 0);
-  bolty_led_internal::row_set(2, 0, 255, 0);
+  bolty_led_internal::row_set(0, 0, 20, 0);
+  bolty_led_internal::row_set(1, nfc_ok ? 0 : 20, nfc_ok ? 20 : 0, 0);
+  bolty_led_internal::row_set(2, 0, 20, 0);
   M5.Led.display();
   DBG_PRINTLN("[test] Button present");
   delay(300);
@@ -226,7 +228,7 @@ static inline void led_self_test(bool nfc_ok) {
   if (nfc_ok) {
     bolty_led_internal::rainbow_cycle(20);
   } else {
-    M5.Led.setAllColor(255, 0, 0);
+    M5.Led.setAllColor(20, 0, 0);
     M5.Led.display();
     delay(500);
   }
@@ -308,8 +310,8 @@ static inline void led_set_held(bool held) {
   if (!bolty_led_internal::initialized || !bolty_led_internal::supported) return;
   if (bolty_led_internal::animating) return;
   if (held) {
-    M5.Led.setBrightness(255);
-    M5.Led.setAllColor(255, 255, 255);
+    M5.Led.setBrightness(bolty_led_internal::kMaxBrightness);
+    M5.Led.setAllColor(15, 15, 15);
     M5.Led.display();
   } else {
     M5.Led.setBrightness(1);
