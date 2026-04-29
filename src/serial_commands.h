@@ -1065,6 +1065,9 @@ void handle_probe() {
 void handle_burn() {
   if (!begin_card_command(F("[burn]"))) return;
   bolt.loadKeysForBurn(mBoltConfig);
+  Serial.println(F("[burn] WARNING: Keys not verified. Attempting auth with unverified keys risks"));
+  Serial.println(F("[burn] triggering AUTHENTICATION_DELAY (TotFailCtr) if keys are wrong."));
+  Serial.println(F("[burn] Consider running 'inspect' first to safely verify keys via SDM decryption."));
   uint8_t result = wait_for_card(F("[burn] TIMEOUT — no card detected in 30s"), CARD_TAP_TIMEOUT_LONG_MS,
                                  [&]() { return bolt.burn(mBoltConfig.url); });
   if (result == JOBSTATUS_WAITING) {
@@ -1117,6 +1120,9 @@ void handle_burn() {
 void handle_wipe() {
   if (!begin_card_command(F("[wipe]"))) return;
   bolt.loadKeysForWipe(mBoltConfig);
+  Serial.println(F("[wipe] WARNING: Keys not verified. Attempting auth with unverified keys risks"));
+  Serial.println(F("[wipe] triggering AUTHENTICATION_DELAY (TotFailCtr) if keys are wrong."));
+  Serial.println(F("[wipe] Consider running 'inspect' first to safely verify keys via SDM decryption."));
   uint8_t result = wait_for_card(F("[wipe] TIMEOUT — no card detected in 30s"), CARD_TAP_TIMEOUT_LONG_MS,
                                  [&]() { return bolt.wipe(); });
   if (result == JOBSTATUS_WAITING) {
@@ -1235,8 +1241,8 @@ void handle_reset() {
 }
 
 // Diagnose card state by reading key versions and testing zero-key auth.
-// Classifies card as BLANK, PROVISIONED, HALF-WIPED, or INCONSISTENT based on
-// GetKeyVersion responses and authentication results.
+// Classifies card as BLANK, PROVISIONED, HALF-WIPED, AUTH_DELAY, or
+// INCONSISTENT based on GetKeyVersion responses and authentication results.
 // Ref: NT4H2421Gx datasheet §7.3.1 (Authenticate), §7.3.3 (GetKeyVersion)
 void handle_diagnose() {
   if (!begin_card_command(F("[diagnose]"))) return;
@@ -1261,11 +1267,19 @@ void handle_diagnose() {
     if (kv[k] != KEY_VER_FACTORY) all_zero = false;
   }
   
-  // Test zero-key authentication on key 0 (master)
+  // Test zero-key authentication on key 0 (master). The authenticate helper
+  // returns 1 on success, otherwise the NTAG424 SW2 status byte on failure.
   bolt.selectNtagApplicationFiles();
   uint8_t auth_d = bolt.nfc->ntag424_Authenticate((uint8_t *)ZERO_KEY, 0, AUTH_CMD_EV2_FIRST);
   Serial.print(F("[diagnose] Zero-key auth (key 0): "));
   Serial.println(auth_d == 1 ? "OK" : "FAILED");
+  if (auth_d != 1) {
+    Serial.print(F("[diagnose] Zero-key auth status: 0x"));
+    serial_print_hex_byte(auth_d);
+    Serial.print(F(" ("));
+    Serial.print(ntag424_error_name(SW1_NTAG_SUCCESS, auth_d));
+    Serial.println(F(")"));
+  }
 
   // Classify card state
   Serial.println(F("[diagnose] --- Card State ---"));
@@ -1286,11 +1300,22 @@ void handle_diagnose() {
     Serial.println(F("[diagnose] Key 0 (master) is non-zero. Card is locked."));
     Serial.println(F("[diagnose] To wipe: set known keys with 'keys ...' then 'wipe'"));
     Serial.println(F("[diagnose] If key 0 value is unknown, card is NOT recoverable."));
+  } else if (all_zero && auth_d == SW2_AUTH_DELAY) {
+    Serial.println(F("[diagnose] State: AUTH_DELAY (authentication lockout)"));
+    Serial.println(F("[diagnose] Key versions are all factory (0x00) but zero-key auth FAILED."));
+    Serial.println(F("[diagnose] This indicates TotFailCtr (authentication failure counter) was triggered"));
+    Serial.println(F("[diagnose] by too many failed authentication attempts."));
+    Serial.println(F("[diagnose] Recovery: Remove card from reader field for several seconds,"));
+    Serial.println(F("[diagnose] then re-present and retry. The delay expires with time off-field."));
+    Serial.println(F("[diagnose] IMPORTANT: Use 'inspect' (read-only) instead of 'diagnose' to"));
+    Serial.println(F("[diagnose] safely examine the card without risking more failed auth attempts."));
+    Serial.println(F("[diagnose] 'inspect' reads key versions and NDEF without authentication."));
   } else {
     Serial.println(F("[diagnose] State: INCONSISTENT"));
     Serial.println(F("[diagnose] Key versions all 0x00 but zero-key auth FAILED."));
-    Serial.println(F("[diagnose] Possible: auth counter lockout, card corruption, or hw issue."));
-    Serial.println(F("[diagnose] Try: 'ver' to confirm card type, wait 10s and retry."));
+    Serial.println(F("[diagnose] Auth did not report AUTHENTICATION_DELAY (0x91AD)."));
+    Serial.println(F("[diagnose] Possible: wrong card type, card corruption, or reader/hw issue."));
+    Serial.println(F("[diagnose] Try: 'ver' to confirm card type and inspect the raw auth status above."));
   }
 
   led_blink(3, 100);
@@ -1368,7 +1393,12 @@ void handle_recoverkey() {
   Serial.print(F("[recoverkey] Auth K0: "));
   Serial.println(auth_rk == 1 ? "OK" : "FAILED");
   if (auth_rk != 1) {
-    Serial.println(F("[recoverkey] ABORT — K0 auth failed (wrong master key)"));
+    if (auth_rk == SW2_AUTH_DELAY) {
+      Serial.println(F("[recoverkey] ABORT — AUTH_DELAY (authentication lockout)"));
+      Serial.println(F("[recoverkey] Remove card from field for several seconds, then retry."));
+    } else {
+      Serial.println(F("[recoverkey] ABORT — K0 auth failed (wrong master key)"));
+    }
     led_blink(5, 100);
     serial_cmd_active = false;
     return;
