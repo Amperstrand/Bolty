@@ -98,6 +98,14 @@ fn init_axp192(i2c: &mut I2cDriver) -> Result<(), &'static str> {
     axp192_write_reg(i2c, 0x91, 0xF0, "RTC 3.3V")?;
     axp192_write_reg(i2c, 0x90, 0x02, "GPIO0 LDO mode")?;
 
+    let mut grove_reg = [0u8; 1];
+    i2c.write_read(AXP192_ADDRESS, &[0x10], &mut grove_reg, BLOCK).map_err(|e| {
+        warn!("AXP192 read reg 0x10 failed: {e:?}");
+        "axp192 grove read failed"
+    })?;
+    let grove_val = grove_reg[0] | (1 << 2);
+    axp192_write_reg(i2c, 0x10, grove_val, "Grove 5V boost enable")?;
+
     let mut verify = [0u8; 1];
     i2c.write_read(AXP192_ADDRESS, &[0x12], &mut verify, BLOCK).map_err(|e| {
         warn!("AXP192 verify read failed: {e:?}");

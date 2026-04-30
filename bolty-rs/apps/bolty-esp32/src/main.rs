@@ -55,7 +55,7 @@ compile_error!("`display-st7789` is only supported on `board-m5stick`.");
 #[cfg(target_arch = "xtensa")]
 mod firmware {
     use core::fmt::Write as _;
-    use std::sync::{Arc, Mutex};
+    use std::{sync::{Arc, Mutex}, vec::Vec};
 
     use bolty_core::{
         assessment::{CardAssessment, CardState},
@@ -146,38 +146,6 @@ mod firmware {
     #[cfg(feature = "wifi")]
     let modem = peripherals.modem;
 
-        #[cfg(feature = "board-m5atom")]
-        let (i2c_sda, i2c_scl) = (peripherals.pins.gpio26, peripherals.pins.gpio32);
-        #[cfg(feature = "board-m5stick")]
-        let (i2c_sda, i2c_scl) = (peripherals.pins.gpio32, peripherals.pins.gpio33);
-
-        FreeRtos::delay_ms(50);
-
-        let i2c = match I2cDriver::new(
-            peripherals.i2c0,
-            i2c_sda,
-            i2c_scl,
-            &I2cConfig::new().baudrate(I2C_BAUDRATE_HZ.Hz()),
-        ) {
-            Ok(i2c) => i2c,
-            Err(e) => {
-                log::error!("FATAL: I2C0 init failed: {e:?}");
-                loop {}
-            }
-        };
-        log::info!("I2C0 initialized ({BOARD_NAME}) @ {}Hz", I2C_BAUDRATE_HZ);
-
-        let xcvr = match Mfrc522Transceiver::from_i2c(i2c, DEFAULT_I2C_ADDRESS) {
-            Ok(xcvr) => xcvr,
-            Err(e) => {
-                log::error!("MFRC522 init failed: {e:?}");
-                loop {
-                    FreeRtos::delay_ms(1000);
-                }
-            }
-        };
-        log::info!("MFRC522 initialized at 0x{:02X}", DEFAULT_I2C_ADDRESS);
-
         #[cfg(feature = "display-st7789")]
         {
             let result = unsafe {
@@ -199,13 +167,61 @@ mod firmware {
             }
         }
 
+        #[cfg(feature = "board-m5atom")]
+        let (i2c_sda, i2c_scl) = (peripherals.pins.gpio26, peripherals.pins.gpio32);
+        #[cfg(feature = "board-m5stick")]
+        let (i2c_sda, i2c_scl) = (peripherals.pins.gpio32, peripherals.pins.gpio33);
+
+        FreeRtos::delay_ms(50);
+
+        let mut i2c = match I2cDriver::new(
+            peripherals.i2c0,
+            i2c_sda,
+            i2c_scl,
+            &I2cConfig::new().baudrate(I2C_BAUDRATE_HZ.Hz()),
+        ) {
+            Ok(i2c) => i2c,
+            Err(e) => {
+                log::error!("FATAL: I2C0 init failed: {e:?}");
+                loop {}
+            }
+        };
+        log::info!("I2C0 initialized ({BOARD_NAME}) @ {}Hz", I2C_BAUDRATE_HZ);
+
+        let initial_i2c_scan = scan_i2c_bus(&mut i2c);
+        let mfrc522_seen = initial_i2c_scan.iter().any(|&address| address == DEFAULT_I2C_ADDRESS);
+
+        let (xcvr, raw_i2c, nfc_ready) = if mfrc522_seen {
+            match Mfrc522Transceiver::from_i2c(i2c, DEFAULT_I2C_ADDRESS) {
+                Ok(xcvr) => {
+                    log::info!("MFRC522 initialized at 0x{:02X}", DEFAULT_I2C_ADDRESS);
+                    (Some(xcvr), None, true)
+                }
+                Err(e) => {
+                    log::warn!("MFRC522 init failed, continuing without NFC: {e:?}");
+                    (None, None, false)
+                }
+            }
+        } else {
+            log::warn!(
+                "MFRC522 not detected at 0x{:02X}; continuing without NFC",
+                DEFAULT_I2C_ADDRESS
+            );
+            (None, Some(i2c), false)
+        };
+
         let mut serial = SerialConsole::new();
         let initial_config = BoltyConfig::default();
         let config = Arc::new(Mutex::new(initial_config.clone()));
-        let service = Arc::new(Mutex::new(Esp32BoltyService::new(xcvr, initial_config)));
+        let service = Arc::new(Mutex::new(Esp32BoltyService::new(
+            xcvr,
+            raw_i2c,
+            initial_i2c_scan,
+            initial_config,
+        )));
 
         #[cfg(feature = "display-st7789")]
-        display::set_nfc_ready(true);
+        display::set_nfc_ready(nfc_ready);
         #[cfg(feature = "wifi")]
         let mut wifi_manager = match WifiManager::new(modem) {
             Ok(manager) => Some(manager),
@@ -270,7 +286,9 @@ mod firmware {
     where
         I2C: embedded_hal::i2c::I2c,
     {
-        transceiver: Mfrc522Transceiver<I2C>,
+        transceiver: Option<Mfrc522Transceiver<I2C>>,
+        raw_i2c: Option<I2C>,
+        last_i2c_scan: Vec<u8>,
         current_config: BoltyConfig,
         keys: Option<CardKeys>,
         authenticated_key0: Option<[u8; 16]>,
@@ -283,16 +301,24 @@ mod firmware {
         I2C: embedded_hal::i2c::I2c,
         I2C::Error: core::fmt::Debug,
     {
-        fn new(transceiver: Mfrc522Transceiver<I2C>, current_config: BoltyConfig) -> Self {
+        fn new(
+            transceiver: Option<Mfrc522Transceiver<I2C>>,
+            raw_i2c: Option<I2C>,
+            last_i2c_scan: Vec<u8>,
+            current_config: BoltyConfig,
+        ) -> Self {
+            let nfc_ready = transceiver.is_some();
             let mut service = Self {
                 transceiver,
+                raw_i2c,
+                last_i2c_scan,
                 current_config,
                 keys: None,
                 authenticated_key0: None,
                 last_card: CardAssessment::default(),
                 status: ServiceStatus {
                     last_uid: None,
-                    nfc_ready: true,
+                    nfc_ready,
                     lnurl: None,
                 },
             };
@@ -307,18 +333,36 @@ mod firmware {
 
         fn sync_config(&mut self) {
             self.status.lnurl = self.current_config.lnurl.clone();
+            self.status.nfc_ready = self.transceiver.is_some();
             if self.keys.is_none() {
                 self.keys = self.current_config.pending_keys.clone();
             }
         }
 
-         fn activate_transport(&mut self) -> Result<Mfrc522Transport<'_, I2C>, WorkflowResult> {
-             Mfrc522Transport::activate(&mut self.transceiver).map_err(|_| {
-                 self.status.nfc_ready = true;
-                 self.last_card = CardAssessment::default();
-                 WorkflowResult::CardNotPresent
-             })
-         }
+        fn nfc_available(&self) -> bool {
+            self.transceiver.is_some()
+        }
+
+        fn i2c_scan(&mut self) -> Vec<u8> {
+            if let Some(i2c) = self.raw_i2c.as_mut() {
+                self.last_i2c_scan = scan_i2c_bus(i2c);
+            }
+            self.last_i2c_scan.clone()
+        }
+
+        fn activate_transport(&mut self) -> Result<Mfrc522Transport<'_, I2C>, WorkflowResult> {
+            let Some(transceiver) = self.transceiver.as_mut() else {
+                self.status.nfc_ready = false;
+                self.last_card = CardAssessment::default();
+                return Err(nfc_unavailable_result());
+            };
+
+            Mfrc522Transport::activate(transceiver).map_err(|_| {
+                self.status.nfc_ready = true;
+                self.last_card = CardAssessment::default();
+                WorkflowResult::CardNotPresent
+            })
+        }
 
         fn inspect_with_key(
             &mut self,
@@ -783,6 +827,10 @@ mod firmware {
         };
 
         match &command {
+            Command::I2cScan => {
+                print_i2c_scan(serial, &mut service);
+                return;
+            }
             Command::Picc => {
                 print_picc(serial, &mut service);
                 return;
@@ -834,11 +882,32 @@ mod firmware {
     }
 
     fn print_help(serial: &mut SerialConsole) {
-        serial.line("Commands: help status uid keys <k0..k4> issuer [hex] url <lnurl> burn wipe inspect picc diagnose check");
+        serial.line("Commands: help status uid i2cscan keys <k0..k4> issuer [hex] url <lnurl> burn wipe inspect picc diagnose check");
         #[cfg(feature = "wifi")]
         serial.line("WiFi: wifi <ssid> <password> | wifi off");
         #[cfg(feature = "ota")]
         serial.line("OTA: ota <url>");
+    }
+
+    fn print_i2c_scan<I2C>(serial: &mut SerialConsole, service: &mut Esp32BoltyService<I2C>)
+    where
+        I2C: embedded_hal::i2c::I2c,
+        I2C::Error: core::fmt::Debug,
+    {
+        let found = service.i2c_scan();
+        let mut line = String::<MAX_LINE_LEN>::new();
+        let _ = line.push_str("i2cscan: found ");
+        if found.is_empty() {
+            let _ = line.push_str("none");
+        } else {
+            for (index, address) in found.iter().enumerate() {
+                if index > 0 {
+                    let _ = line.push_str(", ");
+                }
+                let _ = write!(line, "0x{address:02X}");
+            }
+        }
+        serial.ok(line.as_str());
     }
 
     fn print_picc<I2C>(serial: &mut SerialConsole, service: &mut Esp32BoltyService<I2C>)
@@ -962,6 +1031,11 @@ mod firmware {
     where
         I2C: embedded_hal::i2c::I2c,
     {
+        if !service.nfc_available() {
+            serial.fail("nfc unavailable");
+            return;
+        }
+
         let status = service.get_status();
         let mut uid = String::<32>::new();
         if let Some(last_uid) = status.last_uid {
@@ -983,6 +1057,11 @@ mod firmware {
     where
         I2C: embedded_hal::i2c::I2c,
     {
+        if !service.nfc_available() {
+            serial.fail("nfc unavailable");
+            return;
+        }
+
         if let Some(last_uid) = service.get_status().last_uid {
             let mut uid = String::<32>::new();
             let _ = push_uid_hex(&mut uid, &last_uid);
@@ -1057,6 +1136,13 @@ mod firmware {
             Ok(service) => service,
             Err(_) => return,
         };
+
+        if !service.nfc_available() {
+            *card_announced = false;
+            #[cfg(feature = "display-st7789")]
+            display::clear_card();
+            return;
+        }
 
         match service.check_blank() {
             WorkflowResult::CardNotPresent => {
@@ -1141,6 +1227,10 @@ mod firmware {
             let _ = out.push_str("workflow error");
         }
         WorkflowResult::Error(out)
+    }
+
+    fn nfc_unavailable_result() -> WorkflowResult {
+        workflow_error("nfc unavailable")
     }
 
     fn workflow_error_debug<T: core::fmt::Debug>(error: &T) -> WorkflowResult {
@@ -1271,6 +1361,19 @@ mod firmware {
         } else {
             micros as u64 / 1000
         }
+    }
+
+    fn scan_i2c_bus<I2C>(i2c: &mut I2C) -> Vec<u8>
+    where
+        I2C: embedded_hal::i2c::I2c,
+    {
+        let mut found = Vec::new();
+        for address in 0x03..=0x77 {
+            if i2c.write(address, &[0x00]).is_ok() {
+                found.push(address);
+            }
+        }
+        found
     }
 
     #[cfg(feature = "led-matrix")]
