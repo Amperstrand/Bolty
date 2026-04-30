@@ -47,21 +47,32 @@ The upstream `ntag424 = "0.1.0-beta1"` crate has a **protocol bug** in `Authenti
 `LenCap=0x03` signals AES-128 key type (NT4H2421Gx §10.4.1, Table 25). The NTAG 424 DNA
 rejects `LenCap=0x00` for AES-authenticated applications, returning `AuthenticationError`.
 
-The fix lives in `bolty-rs/crates/ntag424-patch/` applied via `[patch.crates-io]` in the
-workspace `Cargo.toml`.
+The fix lives in our GitHub fork pinned by commit hash in `Cargo.toml`.
 
-### Open Decision: ntag424 Crate Strategy
+## Forked Dependencies (GitHub, pinned by commit hash)
 
-The `ntag424` crate is `0.1.0-beta1`, has this protocol bug, and we're now carrying a fork.
-Options to discuss:
+All external NFC/NFC-transport crates are forked under `github.com/Amperstrand` and pinned
+to specific commit hashes in the workspace `Cargo.toml`. This gives us full control during
+development and testing. After validation, consider upstream PRs.
 
-1. **Fork & maintain** — publish our patched version to crates.io as `bolty-ntag424`
-2. **Upstream PR** — submit fix to `codeberg.org/jannschu/ntag424`, track response
-3. **Replace** — evaluate alternative NTAG 424 crates or write a minimal protocol layer
-4. **Vendor** — move the crate into `vendor/` with our other vendored deps
+| Crate | Fork | Upstream | Reason for fork |
+|-------|------|----------|----------------|
+| ntag424 | `Amperstrand/ntag424` | `codeberg.org/jannschu/ntag424` v0.1.0-beta1 | **Protocol bug**: LenCap=0x00 in AuthEV2 First |
+| iso14443 | `Amperstrand/iso14443-rs` | `github.com/Foundation-Devices/iso14443-rs` | ESP-IDF I2C patches, PcdSession support |
+| mfrc522 | `Amperstrand/mfrc522-rs` | vendored from esp32-ccid project | Timer/register patches for ESP-IDF |
 
-Considerations: The crate also has `authenticate_ev2_non_first` (line 30) which sends
-`Lc=0x01` with no LenCap — may need the same fix for EV2 NonFirst auth. Test before relying on it.
+### How to update a fork
+
+1. Push changes to the fork repo on GitHub
+2. Get the new commit hash: `gh api repos/Amperstrand/<repo>/commits/main --jq '.sha'`
+3. Update the `rev = "..."` in `bolty-rs/Cargo.toml` `[workspace.dependencies]`
+4. `cargo update -p <crate-name>` to refresh the lockfile
+
+### Open: upstream PRs
+
+- **ntag424**: The LenCap fix is a 1-line change. Submit to codeberg after testing NonFirst auth.
+- **iso14443**: Evaluate if our patches can be upstreamed to Foundation-Devices.
+- **mfrc522**: Unclear upstream origin — may need to remain a standalone fork.
 
 ## Key Constraints
 
