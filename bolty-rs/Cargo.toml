@@ -1,12 +1,15 @@
 [workspace]
 resolver = "2"
 members = [
-    "bolty-ntag",
-    "bolty-mfrc522",
-    "bolty-embedded",
     "crates/*",
     "apps/*",
 ]
 
 [workspace.dependencies]
-ntag424 = { version = "0.1.0-beta1", features = ["sdm", "key_diversification", "alloc"] }
+ntag424 = { version = "=0.1.0-beta1", features = ["sdm", "key_diversification", "alloc"] }
+
+[patch.crates-io]
+ntag424 = { path = "crates/ntag424-patch" }
+
+[profile.release]
+opt-level = "s"

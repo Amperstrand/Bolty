@@ -1,0 +1,27 @@
+#ifndef BOARDS_TTGO_TDISPLAY_H
+#define BOARDS_TTGO_TDISPLAY_H
+
+#define BOLTY_NFC_BACKEND_MFRC522 0
+#define BOLTY_NFC_BACKEND_PN532 0
+#define BOLTY_NFC_BACKEND_PN532_UART 0
+#define BOLTY_BOARD_NAME "LILYGO TTGO T-Display + PN532"
+
+#define PN532_SCK (17)
+#define PN532_MISO (12)
+#define PN532_MOSI (13)
+#define PN532_SS (15)
+#define PN532_IRQ (-1)
+#define PN532_RSTPD_N (2)
+#define NFC_RESET_PIN PN532_RSTPD_N
+
+#define HAS_DISPLAY 1
+#define TFT_BL (4)
+#define HAS_BUTTONS 1
+#define BUTTON_1 (35)
+#define BUTTON_2 (0)
+#define HAS_LED_MATRIX 0
+#define HAS_BATTERY 1
+#define ADC_EN (14)
+#define ADC_PIN (34)
+
+#endif
