@@ -1,3 +1,6 @@
+> [!IMPORTANT]
+> **Superseded by [Amperstrand/bolty-rs](https://github.com/Amperstrand/bolty-rs)** — this C++ repo is the provenance root; functional work ended 2026-04-30, roadmap issues #7–#19 are historical.
+
 ![Bolty](assets/bolty.jpg)
 
 # Bolty - ESP32-based BoltCard provisioning device
